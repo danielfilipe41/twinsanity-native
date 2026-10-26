@@ -1,0 +1,2 @@
+# LF in the repository and in every checkout: the tools write LF, so files read and written on Windows stay the same
+* text=auto eol=lf
