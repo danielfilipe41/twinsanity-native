@@ -2,9 +2,15 @@
 // microprograms 0x1C0, 0x2D0, 0x398 and 0x500).
 //
 // The game reads back whether something is wholly out of the view, whether it is partly out, and its squared
-// distance from the camera. CPU culling does not match VU0 precision, so the box tests are deliberately
-// conservative: nothing is reported wholly out and every box is reported crossing, leaving clipping and depth to
-// bgfx. The distance is still exact, since level-of-detail selection and seen stamps read it.
+// distance from the camera. Those three answers are not just for skipping work: the scenery cells and the load
+// walls are culled with them, and a linked chunk is drawn through its wall's portal only when the wall comes back
+// wholly in view (ChunkView::CellResult feeding DrawLinkedChunk). A box test that never says "wholly out" and never
+// says "wholly in" therefore draws every linked chunk of the level in full, at its own place, past its wall: the
+// neighbour's terrain shows inside the tunnel, with no collision because a plain link loads scenery only.
+//
+// The tests below judge a box the way VU0's CLIP instruction does, through the matrices the view keeps for it (the link's
+// to the clip space, and a model's through that): wholly out when every corner of the box is past one plane, crossing when
+// some corner is, inside otherwise. The distance stays exact, since level-of-detail selection and seen stamps read it.
 #include "host_graphics.h"
 #include "platform/graphics.h"
 
@@ -37,13 +43,6 @@ struct PlaneColumns
     Vector4 absoluteNormals[3];
     Vector4 normals[3];
     Vector4 offsets;
-};
-
-// A box against four planes, a sign bit a plane: wholly behind it, partly behind it
-struct PlaneTest
-{
-    u32 outside;
-    u32 crossing;
 };
 
 // The camera's frustum's planes in its space, and the same with the sides five times as far out
@@ -378,9 +377,42 @@ void CullLoadModel(const Matrix4x4* model)
     g_Distance = CameraDistance(model);
 }
 
-// 0x1C0: out of the view when wholly behind a side, the near or the far plane, partly when crossing any
-// CPU frustum culling doesn't match the VU0 programs' precision, so it isn't done: nothing is ever reported wholly out, but the
-// distance (the level of detail's, an instance's seen stamp) is still worked out from the box's middle
+// A box's eight corners through a matrix to the clip space, judged the way VU0's CLIP instruction judges them: a box wholly
+// past one plane is out of the view, one past a plane at some corners crosses it
+void JudgeCorners(const Matrix4x4* matrix, const Vector4* min, const Vector4* max, u32* anyBits, u32* everyBits)
+{
+    u32 any = 0;
+    u32 every = 0x3F;
+    for (u32 corner = 0; corner < 8; corner++)
+    {
+        Vector4 point = *min;
+        for (u32 axis = 0; axis < 3; axis++)
+        {
+            (&point.x)[axis] = (corner >> axis) % 2 != 0 ? (&max->x)[axis] : (&min->x)[axis];
+        }
+
+        u32 judgment = Judge(Through(matrix, &point, 1.0f));
+        any |= judgment;
+        every &= judgment;
+    }
+
+    *anyBits = any;
+    *everyBits = every;
+}
+
+// The verdict from a box judged through a matrix the view holds: wholly out when every corner is past one plane, crossing when
+// some corner is past some plane, inside otherwise
+void JudgeBoxThrough(const Matrix4x4* matrix, const Vector4& min, const Vector4& max)
+{
+    u32 any = 0;
+    u32 every = 0;
+    JudgeCorners(matrix, &min, &max, &any, &every);
+    g_Outside = every != 0 ? 1 : 0;
+    g_Clipped = any != 0 ? 1 : 0;
+}
+
+// 0x1C0: out of the view when wholly behind a side, the near or the far plane, partly when crossing any. The distance is the
+// box's middle's, the level of detail's and an instance's seen stamp
 void CullTestBox(const Vector4* corners)
 {
     Vector4 middle;
@@ -388,20 +420,18 @@ void CullTestBox(const Vector4* corners)
     BoxMiddle(corners[0], corners[1], &middle, &half);
     Vector4 apart = Difference(g_LinkCamera, middle);
     g_Distance = FloatToInt(apart.x * apart.x + apart.y * apart.y + apart.z * apart.z);
-    g_Outside = 0;
-    g_Clipped = 1;
+    JudgeBoxThrough(&g_LinkToClip, corners[0], corners[1]);
 }
 
-// 0x500: the planes taken into the model's space, with the matrices to the screen and, partly, to the clip space. The distance
-// either way; like CullTestBox, nothing is reported wholly out (bgfx's depth test and clipping decide)
+// 0x500: the planes taken into the model's space, with the matrices to the screen and, partly, to the clip space. The box is
+// the model's own, so it is judged through the model's matrix to the clip space, which carries the link's: a load wall's portal
+// once a linked chunk's view loaded one
 void CullTestBoxAt(const Box* box, const Matrix4x4* model)
 {
-    (void)box;
     g_Distance = CameraDistance(model);
-    g_Outside = 0;
-    g_Clipped = 1;
     g_Screen = Product(*model, g_LinkToScreen);
     g_Clip = Product(*model, g_LinkToClip);
+    JudgeBoxThrough(&g_Clip, box->min, box->max);
 }
 
 CullOutcome CullResult()

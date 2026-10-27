@@ -89,6 +89,77 @@ def decode(word):
     return "%-6s vf%-2d <- vf%-2d, vf%-2d  (mask %x)" % (name, fd, fs, ft, mask)
 
 
+# ---------------------------------------------------------------- the upper half
+# A VU instruction is 64 bits: the upper half (bits 0-31 of the word pair, at the lower address) holds
+# the integer and memory operations and the branches, the lower half the floating point ones. Only the
+# lower half was decoded above, so a program's memory reads (LQ, the planes and the boxes) were invisible.
+UPPER_OPS = {
+    0x00: "LQ", 0x01: "SQ", 0x04: "ILW", 0x05: "ISW", 0x08: "IADDIU", 0x09: "ISUBIU",
+    0x10: "FCEQ", 0x11: "FCSET", 0x12: "FCAND", 0x13: "FCOR", 0x14: "FSEQ", 0x15: "FSSET",
+    0x16: "FSAND", 0x17: "FSOR", 0x18: "FMEQ", 0x19: "FMAND", 0x1A: "FMOR", 0x1C: "FCGET",
+    0x20: "B", 0x21: "BAL", 0x24: "JR", 0x25: "JALR",
+    0x28: "IBEQ", 0x29: "IBNE", 0x2C: "IBLTZ", 0x2D: "IBGTZ", 0x2E: "IBLEZ", 0x2F: "IBGEZ",
+    0x30: "IADD", 0x31: "ISUB", 0x32: "IADDI", 0x34: "IAND", 0x35: "IOR", 0x36: "ISUBI", 0x37: "IANDI",
+}
+MASKS = "xyzw"
+
+
+def decode_upper(word):
+    op = word & 0x3F
+    name = UPPER_OPS.get(op)
+    if name is None:
+        return None
+    it = (word >> 16) & 0x1F
+    is_ = (word >> 11) & 0x1F
+    dest = (word >> 6) & 0x1F
+    mask = (word >> 21) & 0xF
+    flags = (word >> 27) & 0x1F
+    if name in ("LQ", "SQ", "ILW", "ISW"):
+        offset = (word & 0x7FF) * 8
+        if offset >= 0x4000:
+            offset -= 0x8000
+        fields = "".join(MASKS[b] for b in range(4) if mask & (1 << b)) or "-"
+        return "%-6s vf%-2d <- %s  (vi%02d %+#x)" % (name, dest, fields, is_, offset) if name == "LQ" else \
+            "%-6s %s -> (vi%02d %+#x)  vf%d" % (name, fields, is_, offset, dest)
+    if name in ("IADD", "ISUB", "IAND", "IOR"):
+        return "%-6s vi%d <- vi%d, vi%d%s" % (name, dest, is_, it, "  E" if flags & 0x2 else "")
+    if name in ("IADDI", "ISUBI", "IANDI"):
+        immediate = (word >> 16) & 0x7FFF
+        return "%-6s vi%d <- vi%s, %d" % (name, is_, it, immediate)
+    if name == "IBEQ":
+        return "IBEQ   vi%d, vi%d  -> %+#x" % (is_, it, (word & 0x7FF) * 8)
+    if name == "IBNE":
+        return "IBNE   vi%d, vi%d  -> %+#x" % (is_, it, (word & 0x7FF) * 8)
+    if name in ("IBLTZ", "IBGTZ", "IBLEZ", "IBGEZ"):
+        return "%-6s vi%02d -> %+#x" % (name, is_, (word & 0x7FF) * 8)
+    if name == "B":
+        return "B      -> %+#x" % ((word & 0x7FF) * 8)
+    if name == "BAL":
+        return "BAL    vi%02d -> %+#x" % (is_, (word & 0x7FF) * 8)
+    if name == "JR":
+        return "JR     vi%02d" % is_
+    if name == "JALR":
+        return "JALR   vi%02d, vi%02d" % (is_, dest)
+    if name in ("FCEQ", "FCAND", "FCOR", "FSEQ", "FSAND", "FSOR"):
+        return "%-6s %+#x" % (name, (word >> 16) & 0xFFFFFF)
+    return name
+
+
+def main_pairs():
+    args = [a for a in sys.argv[1:]]
+    data = BLOB.read_bytes()
+    offset = int(args[0], 0) if args else 0xB3F0
+    count = int(args[1], 0) if len(args) > 1 else 40
+    for index in range(count):
+        off = offset + index * 8
+        upper = struct.unpack_from("<I", data, off)[0]
+        lower = struct.unpack_from("<I", data, off + 4)[0]
+        micro = off - CODE_BASE
+        up = decode_upper(upper)
+        text = "%-46s | %s" % (up if up is not None else "?%02x" % (upper & 0x3F), decode(lower))
+        print("0x%05x  micro %+#05x  %s" % (off, micro, text))
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     data = BLOB.read_bytes()
@@ -108,4 +179,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--pairs":
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        main_pairs()
+    else:
+        main()

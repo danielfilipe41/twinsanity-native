@@ -26,7 +26,6 @@ Known issues:
 - Cortex bee chase is bugged, watch this video on how to go through it even with it bugged: https://youtu.be/O_tHFcklyX8
 - Pop-in is noticeable; a distance setting is planned.
 - Ambient sounds play during the chase sequence when they probably should not.
-- The next area does not always load correctly after the chase.
 
 ## Getting the game
 
