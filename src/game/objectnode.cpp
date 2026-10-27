@@ -1,8 +1,5 @@
 #include "game/objectnode.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/animation.h"
 #include "game/behaviours.h"
 #include "game/clock.h"
@@ -159,32 +156,6 @@ u32 ObjectNode::Update(TimeClock* clock)
                 {
                     // The frame's move kept, and the instance put back unless it moves by itself
                     place = owner->place;
-                    // TS_FRAMEMOVE=1: the three things the recorded move is made of - where the frame started, where the
-                    // place says it is, and where its matrix says it is - with the bits word that decides whether
-                    // SyncPosition copies the matrix over at all. The recorded move is position minus frameStart, so if
-                    // those two are not both this frame's, the difference is a lump from another frame
-                    static const bool frameMoveDiag = std::getenv("TS_FRAMEMOVE") != nullptr;
-                    if (frameMoveDiag)
-                    {
-                        std::FILE* file = std::fopen("framemove.log", "ab");
-                        if (file != nullptr)
-                        {
-                            std::fprintf(file,
-                                         "frame %u inst %p bits %08X start %g %g %g pos %g %g %g matrix %g %g %g\n",
-                                         static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(owner),
-                                         static_cast<unsigned>(place->bits.value),
-                                         static_cast<double>(frameStart.x),
-                                         static_cast<double>(frameStart.y), static_cast<double>(frameStart.z),
-                                         static_cast<double>(place->position.x),
-                                         static_cast<double>(place->position.y),
-                                         static_cast<double>(place->position.z),
-                                         static_cast<double>(place->matrix.m[3][0]),
-                                         static_cast<double>(place->matrix.m[3][1]),
-                                         static_cast<double>(place->matrix.m[3][2]));
-                            std::fclose(file);
-                        }
-                    }
-
                     place->SyncPosition();
                     frameMove = place->position;
                     frameMove.x = frameMove.x - frameStart.x;

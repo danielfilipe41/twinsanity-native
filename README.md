@@ -16,16 +16,13 @@ real. Nothing from the game is included in the repository. You need your own cop
 
 ## Status
 
-The PC port is the current focus. Working: boot, menus, levels, characters, cutscenes, movies,
-audio, saves and memory cards, keyboard and gamepad input. Rough edges: camera behaviour, audio
-mixing, some draw ordering and pop-in.
+The Linux port is the current focus. Currently doing a full 100% playthrough to see if its working normally
 
 Known issues:
-
-- The camera can sit inside characters, jump between positions, get stuck, pass through walls.
-- Cortex bee chase is bugged, watch this video on how to go through it even with it bugged: https://youtu.be/O_tHFcklyX8
 - Pop-in is noticeable; a distance setting is planned.
-- Ambient sounds play during the chase sequence when they probably should not.
+- Missing any settings related to a pc port.
+- Missing skipping cutscenes.
+- Minor audio cutting issues
 
 ## Getting the game
 

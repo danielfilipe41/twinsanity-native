@@ -1,9 +1,6 @@
 #include "game/place.h"
 
-#include <cstdio>
-
 #include "game/memory.h"
-#include "game/clock.h"
 #include "gcc2.h"
 #include "platform/math.h"
 
@@ -150,70 +147,6 @@ void DestroyMathsItemBuilder(void* builder, u32 destroyFlags)
     }
 }
 
-bool g_PlaceWriteTrace = false;
-
-namespace
-{
-// The places whose writes are traced: the one or two bodies a speed defect is being followed on
-constexpr u32 WatchedPlaceCount = 8;
-const ObjectPlace* g_WatchedPlaces[WatchedPlaceCount] = {};
-
-bool IsWatchedPlace(const ObjectPlace* place)
-{
-    for (u32 index = 0; index < WatchedPlaceCount; index++)
-    {
-        if (g_WatchedPlaces[index] == place)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-}
-
-void WatchPlaceWrites(const ObjectPlace* place)
-{
-    if (IsWatchedPlace(place))
-    {
-        return;
-    }
-
-    for (u32 index = 0; index < WatchedPlaceCount; index++)
-    {
-        if (g_WatchedPlaces[index] == nullptr)
-        {
-            g_WatchedPlaces[index] = place;
-            return;
-        }
-    }
-}
-
-void TracePlaceWrite(const ObjectPlace* place, const char* what, const void* caller, const Vector4* value)
-{
-    if (!IsWatchedPlace(place))
-    {
-        return;
-    }
-
-    // Opened and closed per line, like the rest of these probes: a file held open from a static is created wherever the
-    // working directory was at the first call and is then missing from the logs' own directory
-    std::FILE* file = std::fopen("placewrite.log", "ab");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    std::fprintf(file, "frame %u place %p what %s caller %p pos %g %g %g value %g %g %g\n",
-                 static_cast<unsigned>(g_RenderedFrames), static_cast<const void*>(place), what, caller,
-                 static_cast<double>(place->position.x), static_cast<double>(place->position.y),
-                 static_cast<double>(place->position.z),
-                 value != nullptr ? static_cast<double>(value->x) : 0.0,
-                 value != nullptr ? static_cast<double>(value->y) : 0.0,
-                 value != nullptr ? static_cast<double>(value->z) : 0.0);
-    std::fclose(file);
-}
-
 void SyncPlacePosition(ObjectPlace* place)
 {
     place->SyncPosition();
@@ -248,10 +181,6 @@ u32 MovePlaceLocally(ObjectPlace* place, const Vector4* offset)
 
     RotateAndTranslate(place);
     place->SyncPosition();
-    if (g_PlaceWriteTrace)
-    {
-        TracePlaceWrite(place, "MovePlaceLocally", __builtin_return_address(0), offset);
-    }
 
     place->MarkMoved();
     const Matrix4x4& matrix = place->matrix;

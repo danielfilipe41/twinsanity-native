@@ -14,9 +14,12 @@
 #include "host_graphics.h"
 #include "platform/graphics.h"
 
+#include "game/camerarig.h"
+#include "game/instances.h"
 #include "game/math.h"
 #include "game/particles.h"
 #include "game/scenery.h"
+#include "game/view.h"
 
 namespace
 {
@@ -248,6 +251,19 @@ void SetViewFrustum(f32 near, f32 far, f32 aspect, const s32* fieldOfView)
     // slightly wrong near plane. The depth test and bgfx's clipping decide what is seen anyway.
     constexpr f32 CullNear = 0.05f;
     (void)near;
+    // The view's projection is the screen's aspect times the lens's pixels' aspect (RenderView::Update), and the game
+    // hands only the screen's aspect: the planes have to be made for the same one, or a lens' boxes get culled off
+    // screen (and an instance never marked seen, its updates throttled as if it were far away)
+    InstanceContext* camera = CameraInstance();
+    if (camera != nullptr)
+    {
+        auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens));
+        if (lens != nullptr)
+        {
+            aspect = aspect * lens->pixelAspect;
+        }
+    }
+
     LensFrustum(CullNear, far, aspect, 1.0f, *fieldOfView, g_ViewPlanes);
     LensFrustum(CullNear, far, aspect, FarSidesScale, *fieldOfView, g_FarViewPlanes);
 }

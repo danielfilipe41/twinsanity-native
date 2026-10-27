@@ -289,6 +289,4 @@ struct HostDrawCounters
     u32 skinChecksum;
 };
 const HostDrawCounters& HostDrawCounts();
-// The camera's own numbers, once a frame, when TS_CAMLOG names a file (camlog.cpp)
-void HostCameraLog(const RenderView* view);
 }

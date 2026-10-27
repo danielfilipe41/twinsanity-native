@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 namespace
 {
@@ -32,7 +33,6 @@ constexpr s32 DirectoryClusters = 2;
 constexpr u32 SaveNameLimit = 10;
 constexpr u32 FileNameLimit = 0x21;
 constexpr s32 ResultCount = 12;
-constexpr u32 PathLength = 1024;
 
 char g_Region[8];
 char g_Product[16];
@@ -72,45 +72,39 @@ void Finish(s32 succeeded, s32 step, s32 error)
 }
 
 // The base directory all cards live under ($XDG_DATA_HOME/twinsanity, ~/.local/share/twinsanity without it)
-void BasePath(char* path)
+std::string BasePath()
 {
     const char* dataHome = ::getenv("XDG_DATA_HOME");
     if (dataHome != nullptr && dataHome[0] != '\0')
     {
-        ::snprintf(path, PathLength, "%s/twinsanity", dataHome);
-        return;
+        return std::string(dataHome) + "/twinsanity";
     }
 
     const char* home = ::getenv("HOME");
     if (home != nullptr && home[0] != '\0')
     {
-        ::snprintf(path, PathLength, "%s/.local/share/twinsanity", home);
-        return;
+        return std::string(home) + "/.local/share/twinsanity";
     }
 
-    ::snprintf(path, PathLength, "/tmp/twinsanity");
+    return "/tmp/twinsanity";
 }
 
-void CardPath(char* path, s32 port, s32 slot)
+std::string CardPath(s32 port, s32 slot)
 {
-    char base[PathLength];
-    BasePath(base);
-    ::snprintf(path, PathLength, "%s/card%d_%d", base, port, slot);
+    char suffix[32];
+    ::snprintf(suffix, sizeof(suffix), "/card%d_%d", port, slot);
+    return BasePath() + suffix;
 }
 
 // A save's directory, as on the card
-void SavePath(char* path, s32 port, s32 slot, const char* save)
+std::string SavePath(s32 port, s32 slot, const char* save)
 {
-    char card[PathLength];
-    CardPath(card, port, slot);
-    ::snprintf(path, PathLength, "%s/%s%s%s", card, g_Region, g_Product, save);
+    return CardPath(port, slot) + "/" + g_Region + g_Product + save;
 }
 
-void FilePath(char* path, s32 port, s32 slot, const char* save, const char* file)
+std::string FilePath(s32 port, s32 slot, const char* save, const char* file)
 {
-    char directory[PathLength];
-    SavePath(directory, port, slot, save);
-    ::snprintf(path, PathLength, "%s/%s", directory, file);
+    return SavePath(port, slot, save) + "/" + file;
 }
 
 // A save or file name the game gives: verbatim, but never a path of its own. An empty name is fine: the game's own save is
@@ -139,19 +133,16 @@ bool MakeDirectory(const char* path)
 
 // Makes every directory path needs that isn't there yet (its own name left for MakeDirectory): a fresh host has neither the
 // base nor its parents
-bool MakeDirectories(char* path)
+bool MakeDirectories(const std::string& path)
 {
-    for (char* at = path + 1; *at != '\0'; at++)
+    for (std::size_t at = 1; at < path.size(); at++)
     {
-        if (*at != '/')
+        if (path[at] != '/')
         {
             continue;
         }
 
-        *at = '\0';
-        bool made = MakeDirectory(path);
-        *at = '/';
-        if (!made)
+        if (!MakeDirectory(path.substr(0, at).c_str()))
         {
             return false;
         }
@@ -163,10 +154,8 @@ bool MakeDirectories(char* path)
 // The card's free space in kilobytes (the base's filesystem, the root's when nothing's there yet)
 s32 FreeKilobytes()
 {
-    char base[PathLength];
-    BasePath(base);
     struct statvfs status;
-    if (::statvfs(base, &status) != 0 && ::statvfs("/", &status) != 0)
+    if (::statvfs(BasePath().c_str(), &status) != 0 && ::statvfs("/", &status) != 0)
     {
         return 0;
     }
@@ -201,16 +190,21 @@ void FillEntry(FileEntry* entry, const char* name, const struct stat& status)
     entry->reserved0 = 0;
     entry->reserved1[0] = 0;
     entry->reserved1[1] = 0;
-    ::snprintf(entry->name, sizeof(entry->name), "%s", name);
+    // The entry's name is 32 bytes; a longer host name keeps its first 31
+    std::size_t length = ::strlen(name);
+    if (length >= sizeof(entry->name))
+    {
+        length = sizeof(entry->name) - 1;
+    }
+    ::memcpy(entry->name, name, length);
+    entry->name[length] = '\0';
 }
 
 void FormatStep()
 {
-    char base[PathLength];
-    BasePath(base);
-    char card[PathLength];
-    CardPath(card, g_Context.port, g_Context.slot);
-    bool made = MakeDirectories(base) && MakeDirectory(base) && MakeDirectory(card);
+    std::string base = BasePath();
+    std::string card = CardPath(g_Context.port, g_Context.slot);
+    bool made = MakeDirectories(base) && MakeDirectory(base.c_str()) && MakeDirectory(card.c_str());
     Finish(made ? 1 : 0, made ? 1 : 0, made ? 0 : errno);
 }
 
@@ -228,13 +222,11 @@ void CreateSaveStep()
     }
     // The card root only exists after a format, and fresh hosts never run one (the storage reports formatted): make the
     // parents here so the save directory's mkdir has somewhere to land
-    char base[PathLength];
-    BasePath(base);
-    char card[PathLength];
-    CardPath(card, g_Context.port, g_Context.slot);
-    char path[PathLength];
-    SavePath(path, g_Context.port, g_Context.slot, g_Context.save);
-    bool made = MakeDirectories(base) && MakeDirectory(base) && MakeDirectory(card) && MakeDirectory(path);
+    std::string base = BasePath();
+    std::string card = CardPath(g_Context.port, g_Context.slot);
+    std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
+    bool made = MakeDirectories(base) && MakeDirectory(base.c_str()) && MakeDirectory(card.c_str()) &&
+                MakeDirectory(path.c_str());
     Finish(made ? 1 : 0, made ? 1 : 0, made ? 0 : errno);
 }
 
@@ -247,9 +239,8 @@ void MeasureSaveStep()
         Finish(0, 0, ENOENT);
         return;
     }
-    char path[PathLength];
-    SavePath(path, g_Context.port, g_Context.slot, g_Context.save);
-    DIR* directory = ::opendir(path);
+    std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
+    DIR* directory = ::opendir(path.c_str());
     if (directory == nullptr)
     {
         *g_Context.kilobytes = -1;
@@ -264,10 +255,9 @@ void MeasureSaveStep()
         {
             continue;
         }
-        char child[PathLength];
-        ::snprintf(child, PathLength, "%s/%s", path, found->d_name);
+        std::string child = path + "/" + found->d_name;
         struct stat status;
-        if (::stat(child, &status) == 0)
+        if (::stat(child.c_str(), &status) == 0)
         {
             kilobytes += static_cast<s32>((static_cast<u32>(status.st_size) + ClusterSize - 1) >> ClusterShift);
         }
@@ -286,9 +276,8 @@ void FindFileStep()
         Finish(0, 0, ENOENT);
         return;
     }
-    char path[PathLength];
-    SavePath(path, g_Context.port, g_Context.slot, g_Context.save);
-    DIR* directory = ::opendir(path);
+    std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
+    DIR* directory = ::opendir(path.c_str());
     if (directory == nullptr)
     {
         Finish(0, 1, ENOENT);
@@ -301,10 +290,9 @@ void FindFileStep()
         {
             continue;
         }
-        char child[PathLength];
-        ::snprintf(child, PathLength, "%s/%s", path, listed->d_name);
+        std::string child = path + "/" + listed->d_name;
         struct stat status;
-        if (::stat(child, &status) == 0)
+        if (::stat(child.c_str(), &status) == 0)
         {
             if (g_Context.size != nullptr)
             {
@@ -335,9 +323,8 @@ void WriteStep()
         Finish(0, 0, ENAMETOOLONG);
         return;
     }
-    char directory[PathLength];
-    SavePath(directory, g_Context.port, g_Context.slot, g_Context.save);
-    DIR* save = ::opendir(directory);
+    std::string directory = SavePath(g_Context.port, g_Context.slot, g_Context.save);
+    DIR* save = ::opendir(directory.c_str());
     if (save == nullptr)
     {
         Finish(0, 0, Platform::Saves::ErrorNoSave);
@@ -351,9 +338,8 @@ void WriteStep()
         Finish(0, 0, Platform::Saves::ErrorNotEnoughSpace);
         return;
     }
-    char path[PathLength];
-    FilePath(path, g_Context.port, g_Context.slot, g_Context.save, g_Context.file);
-    s32 file = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    std::string path = FilePath(g_Context.port, g_Context.slot, g_Context.save, g_Context.file);
+    s32 file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (file < 0)
     {
         Finish(0, 0, errno == ENOSPC ? Platform::Saves::ErrorNotEnoughSpace : Platform::Saves::ErrorNoSave);
@@ -369,7 +355,7 @@ void WriteStep()
             s32 error = errno == ENOSPC ? Platform::Saves::ErrorNotEnoughSpace : Platform::Saves::ErrorNoSave;
             ::ftruncate(file, 0);
             ::close(file);
-            ::unlink(path);
+            ::unlink(path.c_str());
             Finish(0, 0, error);
             return;
         }
@@ -388,9 +374,8 @@ void ReadStep()
         Finish(0, 0, Platform::Saves::ErrorNoSave);
         return;
     }
-    char path[PathLength];
-    FilePath(path, g_Context.port, g_Context.slot, g_Context.save, g_Context.file);
-    s32 file = ::open(path, O_RDONLY);
+    std::string path = FilePath(g_Context.port, g_Context.slot, g_Context.save, g_Context.file);
+    s32 file = ::open(path.c_str(), O_RDONLY);
     if (file < 0)
     {
         Finish(0, 0, Platform::Saves::ErrorNoSave);

@@ -12,9 +12,6 @@
 #include "game/reference.h"
 #include "platform/graphics.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 EABI_EXPORT(FUN_0026fe40, PushCameraShake);
 EABI_EXPORT(FUN_00270040, PushCameraShakeAxes);
 EABI_EXPORT(func_0027E030, &CameraPointFollower::SetRate);
@@ -778,42 +775,6 @@ u32 CameraLensNode::Update(TimeClock* clock)
         if (SetPlaceMatrix(owner->place, &matrix) != 0)
         {
             QueueObject(owner);
-        }
-
-        // TS_CAM=1: where the camera actually ends up, every 25 of the game's frames, so a camera that jumps, drifts or
-        // sits where it should not can be read off the log rather than argued about: the position it was put at, the
-        // field of view, whether it is blending into another rig, and the lens's own instance
-        if (std::getenv("TS_CAM") != nullptr && g_RenderedFrames % 25 == 0)
-        {
-            std::FILE* file = std::fopen("camera.log", "ab");
-            if (file != nullptr)
-            {
-                // Beside it, where the player is and how far the camera sits from him: the distance is the number that
-                // says whether the camera keeps its ground (retail pulls in close) and whether it falls behind as he
-                // speeds up, and it needs no second log to work out
-                f32 away = -1.0f;
-                f32 above = 0.0f;
-                if (g_PlayerCharacter != nullptr && g_PlayerCharacter->instance != nullptr &&
-                    g_PlayerCharacter->instance->place != nullptr)
-                {
-                    const Vector4* at = &g_PlayerCharacter->instance->place->position;
-                    f32 across = matrix.m[3][0] - at->x;
-                    f32 rise = matrix.m[3][1] - at->y;
-                    f32 along = matrix.m[3][2] - at->z;
-                    away = __builtin_sqrtf(across * across + along * along);
-                    above = rise;
-                }
-
-                std::fprintf(file,
-                             "frame %u lens %p pos %g %g %g | fov %d | rig %p next %p | blendStart %u | "
-                             "apart %g rise %g\n",
-                             g_RenderedFrames, static_cast<const void*>(owner),
-                             static_cast<double>(matrix.m[3][0]), static_cast<double>(matrix.m[3][1]),
-                             static_cast<double>(matrix.m[3][2]), static_cast<int>(angle),
-                             static_cast<const void*>(rig), static_cast<const void*>(next), blendStart,
-                             static_cast<double>(away), static_cast<double>(above));
-                std::fclose(file);
-            }
         }
     }
 

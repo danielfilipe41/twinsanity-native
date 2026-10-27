@@ -1,6 +1,4 @@
 #include "game/cameras.h"
-#include <cstdio>
-#include <cstdlib>
 
 #include "game/agentlab.h"
 #include "game/camerarig.h"
@@ -419,36 +417,8 @@ void CameraSplineCamera::Destroy(u32 destroyFlags)
     DestroyBase(this, destroyFlags);
 }
 
-namespace
-{
-// TS_SPLINELOG's file, opened on the first spline evaluation
-FILE* g_SplineLog = nullptr;
-u32 g_SplineLogLines = 0;
-bool g_SplineLogRead = false;
-
-void OpenSplineLog()
-{
-    if (g_SplineLogRead)
-    {
-        return;
-    }
-
-    g_SplineLogRead = true;
-    const char* spec = std::getenv("TS_SPLINELOG");
-    if (spec != nullptr && spec[0] != '\0')
-    {
-        g_SplineLog = std::fopen(spec, "w");
-        if (g_SplineLog != nullptr)
-        {
-            std::setvbuf(g_SplineLog, nullptr, _IONBF, 0);
-        }
-    }
-}
-}
-
 f32 CameraSplineCamera::At(const Vector4* target, CameraTarget*, Vector4* out)
 {
-    OpenSplineLog();
     CurveSearch search;
     search.segment = -1;
     SplineNearestSearch(spline, target, &search);
@@ -456,23 +426,7 @@ f32 CameraSplineCamera::At(const Vector4* target, CameraTarget*, Vector4* out)
     CameraSubtype::AtParameter(along, out);
     f32 ahead = OffsetAt(along);
     f32 length = spline->lengths[spline->count - 1];
-    Vector4 placed = *out;
     PointBetween(Clamped(along + ahead / length), target, out);
-    // TS_SPLINELOG=<path>: where the track camera thinks it is on the curve, and where that puts the camera. The
-    // authored place jumping 2 to 10 units a frame while the ball moves 0.1 says either the parameter along is
-    // snapping between distant parts of the curve (the nearest-point search locking onto the wrong sample) or the
-    // parameter is smooth and the point it is turned into is not
-    if (g_SplineLog != nullptr && g_SplineLogLines < 40000)
-    {
-        std::fprintf(g_SplineLog,
-                     "SPLINE %u along %.5f seg %d share %.5f len %.3f ahead %.3f target %.3f %.3f %.3f "
-                     "place %.3f %.3f %.3f count %d step %.4f\n",
-                     g_SplineLogLines++, static_cast<double>(along), search.segment,
-                     static_cast<double>(search.share), static_cast<double>(length), static_cast<double>(ahead),
-                     static_cast<double>(target->x), static_cast<double>(target->y), static_cast<double>(target->z),
-                     static_cast<double>(placed.x), static_cast<double>(placed.y), static_cast<double>(placed.z),
-                     spline->count, static_cast<double>(spline->step));
-    }
 
     return along;
 }

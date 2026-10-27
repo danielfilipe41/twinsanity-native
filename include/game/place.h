@@ -6,13 +6,6 @@
 
 struct ObjectPlace;
 
-// TS_PLACE=1: every write to a watched place's position is named by its writer, with the caller's return address, so a
-// body whose speed is read back off its own movement can have each displacement attributed to the code that made it. The
-// value is the target for a MoveTo and the offset for a MoveBy (none where the write takes none)
-extern bool g_PlaceWriteTrace;
-void WatchPlaceWrites(const ObjectPlace* place);
-void TracePlaceWrite(const ObjectPlace* place, const char* what, const void* caller, const Vector4* value);
-
 extern "C"
 {
     // The rotation a matrix turns by, and a place turned by a rotation (after its own, made a unit one) unless it's
@@ -102,11 +95,6 @@ struct alignas(16) ObjectPlace
     {
         if ((bits.value & PlaceBits::MatrixMoved) != 0)
         {
-            if (g_PlaceWriteTrace)
-            {
-                TracePlaceWrite(this, "SyncPosition", __builtin_return_address(0), nullptr);
-            }
-
             position.x = matrix.m[3][0];
             position.w = matrix.m[3][3];
             position.y = matrix.m[3][1];
@@ -131,11 +119,6 @@ struct alignas(16) ObjectPlace
         if (to->x == position.x && to->y == position.y && to->z == position.z)
         {
             return false;
-        }
-
-        if (g_PlaceWriteTrace)
-        {
-            TracePlaceWrite(this, "MoveTo", __builtin_return_address(0), to);
         }
 
         MarkMoved();
@@ -165,11 +148,6 @@ struct alignas(16) ObjectPlace
         if (__builtin_fabsf(move->x) <= Epsilon && __builtin_fabsf(move->y) <= Epsilon && __builtin_fabsf(move->z) <= Epsilon)
         {
             return false;
-        }
-
-        if (g_PlaceWriteTrace)
-        {
-            TracePlaceWrite(this, "MoveBy", __builtin_return_address(0), move);
         }
 
         SyncPosition();

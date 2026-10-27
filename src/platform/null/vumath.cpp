@@ -1,8 +1,6 @@
 // VU0 macro-mode maths on the CPU: the CPU versions of the functions
 // src/platform/ps2/matrices.cpp and src/platform/ps2/bounds.cpp implement with VU0
 // macro instructions. The null platform only needs the results.
-#include <cstdio>
-#include <cstdlib>
 #include "game/collision.h"
 #include "game/hull.h"
 #include "game/math.h"
@@ -183,8 +181,15 @@ void VuTransposeRotation(const Matrix4x4* matrix, Matrix4x4* out)
 void VuInvertRigid(Matrix4x4* out, const Matrix4x4* matrix)
 {
     // The rotation transposed, the translation turned by it and negated. The position
-    // is read first: the PS2's sequence works in registers, and in place is a caller
+    // is read first: the PS2's sequence works in registers, and in place is a caller.
+    // The translation is negated before it is turned (the microprogram's vmulx by the -1
+    // it makes of vf0w), then the rows' shares are taken in turn, because VU0 rounds each
+    // of those steps
     Vector4 position = *RowOf(matrix, PositionRow);
+    const f32* place = reinterpret_cast<const f32*>(&position);
+    f32 moveX = place[0] * -1.0f;
+    f32 moveY = place[1] * -1.0f;
+    f32 moveZ = place[2] * -1.0f;
     Matrix4x4 inverse;
     for (s32 row = 0; row < 3; row++)
     {
@@ -196,11 +201,10 @@ void VuInvertRigid(Matrix4x4* out, const Matrix4x4* matrix)
         inverse.m[row][3] = 0.0f;
     }
 
-    const f32* place = reinterpret_cast<const f32*>(&position);
     for (s32 column = 0; column < 3; column++)
     {
         inverse.m[PositionRow][column] =
-            -(place[0] * inverse.m[0][column] + place[1] * inverse.m[1][column] + place[2] * inverse.m[2][column]);
+            inverse.m[0][column] * moveX + inverse.m[1][column] * moveY + inverse.m[2][column] * moveZ;
     }
 
     inverse.m[PositionRow][PositionRow] = 1.0f;
@@ -215,11 +219,13 @@ void MultiplyRotations(Vector4* out, const Vector4* a, const Vector4* b)
 {
     // a's w times b's vector plus b's w times a's, plus their cross product (the PS2's
     // vopmula/vopmsub of b by a leaves a's cross b in the vector); the w the product of
-    // the ws less the dot product
-    f32 x = a->w * b->x + b->w * a->x + (a->y * b->z - a->z * b->y);
-    f32 y = a->w * b->y + b->w * a->y + (a->z * b->x - a->x * b->z);
-    f32 z = a->w * b->z + b->w * a->z + (a->x * b->y - a->y * b->x);
-    f32 w = a->w * b->w - (a->x * b->x + a->y * b->y + a->z * b->z);
+    // the ws less the dot product. The sums are taken in the microprogram's order - the
+    // cross product's first terms, then each scaled vector, then the second cross term -
+    // and the w's dot taken off one axis at a time, because VU0 rounds each step
+    f32 x = a->y * b->z + a->x * b->w + b->x * a->w - b->y * a->z;
+    f32 y = a->z * b->x + a->y * b->w + b->y * a->w - b->z * a->x;
+    f32 z = a->x * b->y + a->z * b->w + b->z * a->w - b->x * a->y;
+    f32 w = a->w * b->w - a->z * b->z - a->y * b->y - a->x * b->x;
     out->x = x;
     out->y = y;
     out->z = z;
@@ -245,15 +251,17 @@ void VuMultiplyMatrices(const Matrix4x4* a, const Matrix4x4* b, Matrix4x4* out)
 void VuTransformPoint(const Matrix4x4* matrix, const Vector4* point, Vector4* out)
 {
     // The point's w taken as 1 (the PS2's vmaddw by vf0w): the rows weighted by x, y
-    // and z, the fourth row whole. Its w the fourth row's w
+    // and z, the fourth row whole; every lane summed in the microprogram's order - the
+    // rows by x, y and z then the fourth - because VU0 rounds each step
     const auto& rows = matrix->m;
     f32 x = point->x * rows[0][0] + point->y * rows[1][0] + point->z * rows[2][0] + rows[PositionRow][0];
     f32 y = point->x * rows[0][1] + point->y * rows[1][1] + point->z * rows[2][1] + rows[PositionRow][1];
     f32 z = point->x * rows[0][2] + point->y * rows[1][2] + point->z * rows[2][2] + rows[PositionRow][2];
+    f32 w = point->x * rows[0][3] + point->y * rows[1][3] + point->z * rows[2][3] + rows[PositionRow][3];
     out->x = x;
     out->y = y;
     out->z = z;
-    out->w = rows[PositionRow][PositionRow];
+    out->w = w;
 }
 
 void VuRotateVector(const Matrix4x4* matrix, const Vector4* vector, Vector4* out)
@@ -291,59 +299,47 @@ void VuTransformByRows(const Matrix4x4* rows, const Vector4* point, Vector4* out
 void MatrixFromRotation(Matrix4x4* matrix, const Vector4* rotation)
 {
     // The PS2's sequence scales the rotation by the square root of 2, so the products
-    // of its parts come out doubled: the rows' w 0, the position row left as it was
+    // of its parts come out doubled: the rows' w 0, the position row left as it was.
+    // The doubled products are the scaled factors' own products (not 2 * x * y), and the
+    // diagonal's terms are taken off one at a time, because VU0 rounds each of those steps
+    constexpr f32 SquareRootOf2 = 0x1.6A09E6p+0f;
     f32 x = rotation->x;
     f32 y = rotation->y;
     f32 z = rotation->z;
-    f32 w = rotation->w;
-    matrix->m[0][0] = 1.0f - 2.0f * (y * y + z * z);
-    matrix->m[0][1] = 2.0f * (x * y + z * w);
-    matrix->m[0][2] = 2.0f * (z * x - y * w);
+    f32 doubledX = x * x + x * x;
+    f32 doubledY = y * y + y * y;
+    f32 doubledZ = z * z + z * z;
+    f32 scaledX = x * SquareRootOf2;
+    f32 scaledY = y * SquareRootOf2;
+    f32 scaledZ = z * SquareRootOf2;
+    f32 scaledW = rotation->w * SquareRootOf2;
+    f32 xy = scaledX * scaledY;
+    f32 yz = scaledY * scaledZ;
+    f32 zx = scaledZ * scaledX;
+    f32 xw = scaledX * scaledW;
+    f32 yw = scaledY * scaledW;
+    f32 zw = scaledZ * scaledW;
+    f32 lessX = 1.0f - doubledX;
+    matrix->m[0][0] = 1.0f - doubledY - doubledZ;
+    matrix->m[0][1] = xy + zw;
+    matrix->m[0][2] = zx - yw;
     matrix->m[0][3] = 0.0f;
-    matrix->m[1][0] = 2.0f * (x * y - z * w);
-    matrix->m[1][1] = 1.0f - 2.0f * (x * x + z * z);
-    matrix->m[1][2] = 2.0f * (y * z + x * w);
+    matrix->m[1][0] = xy - zw;
+    matrix->m[1][1] = lessX - doubledZ;
+    matrix->m[1][2] = yz + xw;
     matrix->m[1][3] = 0.0f;
-    matrix->m[2][0] = 2.0f * (z * x + y * w);
-    matrix->m[2][1] = 2.0f * (y * z - x * w);
-    matrix->m[2][2] = 1.0f - 2.0f * (x * x + y * y);
+    matrix->m[2][0] = zx + yw;
+    matrix->m[2][1] = yz - xw;
+    matrix->m[2][2] = lessX - doubledY;
     matrix->m[2][3] = 0.0f;
-}
-
-namespace
-{
-// TS_PLANELOG=<path>: log the collision planes and count the triangles with no area. The file is opened on the first
-// plane so an empty log still shows that the path ran.
-FILE* g_PlaneLog = nullptr;
-u32 g_ZeroPlanes = 0;
-u32 g_AllPlanes = 0;
-bool g_PlaneLogRead = false;
-
-void OpenPlaneLog()
-{
-    if (g_PlaneLogRead)
-    {
-        return;
-    }
-
-    g_PlaneLogRead = true;
-    const char* spec = std::getenv("TS_PLANELOG");
-    if (spec != nullptr && spec[0] != '\0')
-    {
-        g_PlaneLog = std::fopen(spec, "w");
-        if (g_PlaneLog != nullptr)
-        {
-            std::setvbuf(g_PlaneLog, nullptr, _IONBF, 0);
-            std::fprintf(g_PlaneLog, "PLANES opened\n");
-        }
-    }
-}
 }
 
 u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* second, const Vector4* third)
 {
     // The cross product of the edges from the first vertex made a unit vector, its w
-    // less how far along it the first vertex is
+    // less how far along it the first vertex is. The w is nought less the dot product, as
+    // the microprogram's vsubx.w takes it (not the dot's sign flipped), and the dot's terms
+    // are summed in the microprogram's order, because VU0 rounds each step
     f32 edgeX = second->x - first->x;
     f32 edgeY = second->y - first->y;
     f32 edgeZ = second->z - first->z;
@@ -356,25 +352,6 @@ u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* se
     // A zero-area triangle gives a zero-length normal. A plain IEEE 1/0 would make a plane of NaNs that compares false
     // against everything; the console's divide returns the largest float instead, leaving a useless but finite plane.
     f32 length = __builtin_sqrtf(normalX * normalX + normalY * normalY + normalZ * normalZ);
-    OpenPlaneLog();
-    g_AllPlanes++;
-    // Periodic tally so a short log is not mistaken for a path that never ran
-    if (g_PlaneLog != nullptr && g_AllPlanes % 100000 == 0)
-    {
-        std::fprintf(g_PlaneLog, "PLANES %u of them, %u with no area\n", g_AllPlanes, g_ZeroPlanes);
-    }
-
-    if (length == 0.0f)
-    {
-        g_ZeroPlanes++;
-        if (g_PlaneLog != nullptr && g_ZeroPlanes <= 200)
-        {
-            std::fprintf(g_PlaneLog, "ZEROPLANE %u %.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f\n", g_ZeroPlanes,
-                         first->x, first->y, first->z, second->x, second->y, second->z, third->x, third->y,
-                         third->z);
-        }
-    }
-
     f32 scale = 1.0f / length;
     normalX = normalX * scale;
     normalY = normalY * scale;
@@ -382,7 +359,7 @@ u32 PlaneThroughTriangle(Vector4* plane, const Vector4* first, const Vector4* se
     plane->x = normalX;
     plane->y = normalY;
     plane->z = normalZ;
-    plane->w = -(normalX * first->x + normalY * first->y + normalZ * first->z);
+    plane->w = 0.0f - (normalX * first->x + normalY * first->y + normalZ * first->z);
     return Epsilon < length;
 }
 
@@ -390,7 +367,8 @@ void GetBbox(const Vector4* points, s32 count, Box* box, const Matrix4x4* matrix
 {
     // Each point moved by the matrix (its own w taking the fourth row's share, as in
     // VuTransformByRows), the smallest and the largest x, y and z kept; the corners'
-    // w the first point's moved w
+    // w the first point's moved w. Each pair taken as the microprogram's vmini and vmax
+    // take them (the second operand's way with a tie)
     Vector4 moved;
     VuTransformByRows(matrix, &points[0], &moved);
     Vector4 min = moved;
@@ -398,35 +376,12 @@ void GetBbox(const Vector4* points, s32 count, Box* box, const Matrix4x4* matrix
     for (s32 index = 1; index < count; index++)
     {
         VuTransformByRows(matrix, &points[index], &moved);
-        if (moved.x < min.x)
-        {
-            min.x = moved.x;
-        }
-
-        if (max.x < moved.x)
-        {
-            max.x = moved.x;
-        }
-
-        if (moved.y < min.y)
-        {
-            min.y = moved.y;
-        }
-
-        if (max.y < moved.y)
-        {
-            max.y = moved.y;
-        }
-
-        if (moved.z < min.z)
-        {
-            min.z = moved.z;
-        }
-
-        if (max.z < moved.z)
-        {
-            max.z = moved.z;
-        }
+        min.x = Platform::Math::Min(min.x, moved.x);
+        max.x = Platform::Math::Max(max.x, moved.x);
+        min.y = Platform::Math::Min(min.y, moved.y);
+        max.y = Platform::Math::Max(max.y, moved.y);
+        min.z = Platform::Math::Min(min.z, moved.z);
+        max.z = Platform::Math::Max(max.z, moved.z);
     }
 
     box->min = min;
@@ -435,40 +390,18 @@ void GetBbox(const Vector4* points, s32 count, Box* box, const Matrix4x4* matrix
 
 void PointsBox(const Vector4* points, s32 count, Box* box)
 {
-    // The points' box: the first point in both corners, the rest taken in
+    // The points' box: the first point in both corners, the rest taken in as the
+    // microprogram's vmini and vmax take them
     Vector4 min = points[0];
     Vector4 max = points[0];
     for (s32 index = 1; index < count; index++)
     {
-        if (points[index].x < min.x)
-        {
-            min.x = points[index].x;
-        }
-
-        if (max.x < points[index].x)
-        {
-            max.x = points[index].x;
-        }
-
-        if (points[index].y < min.y)
-        {
-            min.y = points[index].y;
-        }
-
-        if (max.y < points[index].y)
-        {
-            max.y = points[index].y;
-        }
-
-        if (points[index].z < min.z)
-        {
-            min.z = points[index].z;
-        }
-
-        if (max.z < points[index].z)
-        {
-            max.z = points[index].z;
-        }
+        min.x = Platform::Math::Min(min.x, points[index].x);
+        max.x = Platform::Math::Max(max.x, points[index].x);
+        min.y = Platform::Math::Min(min.y, points[index].y);
+        max.y = Platform::Math::Max(max.y, points[index].y);
+        min.z = Platform::Math::Min(min.z, points[index].z);
+        max.z = Platform::Math::Max(max.z, points[index].z);
     }
 
     box->min = min;
@@ -477,15 +410,16 @@ void PointsBox(const Vector4* points, s32 count, Box* box)
 
 void TriangleBounds(Box* box, const Vector4* first, const Vector4* second, const Vector4* third)
 {
-    // The corners' least and largest x, y and z. The PS2 leaves their w what its
+    // The corners' least and largest x, y and z, the first two taken in then the third,
+    // as the microprogram's vmini and vmax take them. The PS2 leaves their w what its
     // registers had; the first corner's w stands in for it deterministically
-    box->min.x = first->x < second->x ? (first->x < third->x ? first->x : third->x) : (second->x < third->x ? second->x : third->x);
-    box->min.y = first->y < second->y ? (first->y < third->y ? first->y : third->y) : (second->y < third->y ? second->y : third->y);
-    box->min.z = first->z < second->z ? (first->z < third->z ? first->z : third->z) : (second->z < third->z ? second->z : third->z);
+    box->min.x = Platform::Math::Min(Platform::Math::Min(first->x, second->x), third->x);
+    box->min.y = Platform::Math::Min(Platform::Math::Min(first->y, second->y), third->y);
+    box->min.z = Platform::Math::Min(Platform::Math::Min(first->z, second->z), third->z);
     box->min.w = first->w;
-    box->max.x = first->x < second->x ? (second->x < third->x ? third->x : second->x) : (first->x < third->x ? third->x : first->x);
-    box->max.y = first->y < second->y ? (second->y < third->y ? third->y : second->y) : (first->y < third->y ? third->y : first->y);
-    box->max.z = first->z < second->z ? (second->z < third->z ? third->z : second->z) : (first->z < third->z ? third->z : first->z);
+    box->max.x = Platform::Math::Max(Platform::Math::Max(first->x, second->x), third->x);
+    box->max.y = Platform::Math::Max(Platform::Math::Max(first->y, second->y), third->y);
+    box->max.z = Platform::Math::Max(Platform::Math::Max(first->z, second->z), third->z);
     box->max.w = first->w;
 }
 

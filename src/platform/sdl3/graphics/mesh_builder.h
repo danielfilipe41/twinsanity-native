@@ -28,24 +28,6 @@ struct Ps2RigidMesh
     f32 boundsMin[3] = {0.0f, 0.0f, 0.0f};
     f32 boundsMax[3] = {0.0f, 0.0f, 0.0f};
     u32 checksum = 0;
-    // The colour-branch tally (the debug probes): how many vertices' colours the address-4 UV row's low bytes set
-    // and how many the address-6 packed RGBA row overwrote. A packet whose colours all come from address 4 has no
-    // packed colour row
-    u32 address4Colours = 0;
-    u32 address6Colours = 0;
-    // The first address-4 row's first element, raw (the debug probes): the words the host reads as U, V, and the two
-    // the address-4 branch turns into a colour when the unpack has four components
-    u32 address4Sample[4] = {0, 0, 0, 0};
-    // The packet's leading UNPACK command words (the debug probes): the row layout (each command's kind, count and
-    // VU1 address) a draw decoded with, so a packet whose rows differ from the usual layout can be told apart
-    u32 rowCodes[8] = {0};
-    u32 rowCodeCount = 0;
-    // How many position rows were 32-bit words and how many were 16-bit halfwords (the address-3 rows), and whether a
-    // non-float element size was seen: a rigid packet whose address-3 row isn't a 32-bit float row the host reads as
-    // floats would explode
-    u32 positionRows32 = 0;
-    u32 positionRows16 = 0;
-    u32 unknownRow = 0;
 };
 
 // Parses one submodel packet (packetSize bytes at packet) into out. Returns false when the DMA/VIF walk

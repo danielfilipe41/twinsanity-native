@@ -7,13 +7,7 @@
 #include "host_graphics.h"
 #include "draws_host.h"
 
-#include <cstdio>
-#include <cstdlib>
-
-#include "game/camerarig.h"
 #include "game/controllers.h"
-#include "game/followcamera.h"
-#include "game/instances.h"
 #include "game/math.h"
 #include "game/place.h"
 #include "game/reference.h"
@@ -180,12 +174,6 @@ bgfx::VertexLayout SkyCopyLayout()
 // (the PS2's FinishSky has bilinear off: two screen pixels for one texel), no depth, straight colour write
 void DrawSkyCopy(u32 width, u32 height)
 {
-    // The TS_NO switch: the sky buffer kept off the frame
-    if (Platform::Graphics::HostStageDisabled("skycopy"))
-    {
-        return;
-    }
-
     if (!bgfx::isValid(g_skyColour) || width == 0 || height == 0 ||
         !bgfx::getAvailTransientVertexBuffer(4, SkyCopyLayout()))
     {
@@ -270,107 +258,10 @@ bool HostSkyReadBuffer(u32 width, u32 height, u8* out)
 
 void DrawChunkSky(Sky* sky, RenderView* view)
 {
-    // The TS_NO switch: the whole sky pass (the meshes and the copy)
-    if (Platform::Graphics::HostStageDisabled("sky"))
-    {
-        return;
-    }
-
     if (sky == nullptr || view == nullptr)
     {
         return;
     }
-    // TS_CAMLOG=<path>: the view's projection and the camera's place, once a frame. A chunk's sky is the one place the
-    // host is handed the view whole, so the numbers live here. The field of view is the projection's y scale (its x
-    // scale is that over the aspect), the place the camera itself: a view that looks "too far away" shows either a
-    // wider cotangent than the lens asked for (a projection that stopped following its lens) or a place further back
-    // than the rig's distance
-    {
-        static bool probeRead = false;
-        static FILE* probeFile = nullptr;
-        static u32 probeFrame = 0xFFFFFFFF;
-        static u32 probeLine = 0;
-        if (!probeRead)
-        {
-            probeRead = true;
-            const char* spec = std::getenv("TS_CAMLOG");
-            if (spec != nullptr && spec[0] != '\0')
-            {
-                probeFile = std::fopen(spec, "w");
-                if (probeFile != nullptr)
-                {
-                    std::setvbuf(probeFile, nullptr, _IONBF, 0);
-                }
-            }
-        }
-
-        if (probeFile != nullptr && probeFrame != Platform::Graphics::HostFrameCounter())
-        {
-            probeFrame = Platform::Graphics::HostFrameCounter();
-            if (probeLine < 4000)
-            {
-                probeLine++;
-                ObjectPlace* cameraPlace = CameraPlaceOf(view);
-                if (cameraPlace != nullptr)
-                {
-                    cameraPlace->SyncPosition();
-                }
-
-                const Vector4* at = cameraPlace != nullptr ? &cameraPlace->position : nullptr;
-                // The lens's own fov, for the comparison the projection's scale is checked against, and the rig behind
-                // it: the follow positioner's distance (what "too far away" actually is), whether it has gone to a
-                // trigger's place, and whether its probes think the view is blocked (the "stuck" state)
-                s32 lensFov = 0;
-                u32 lensChanged = 0xFFFFFFFF;
-                f32 rigDistance = 0.0f;
-                f32 rigLow = 0.0f;
-                f32 rigHigh = 0.0f;
-                f32 rigGoal = 0.0f;
-                f32 rigShare = 0.0f;
-                u32 rigFollow = 0;
-                u64 rigBits = 0;
-                u32 rigBlocked = 0xFFFFFFFF;
-                u32 rigPositioner = 0;
-                if (view->cameraObject != nullptr && view->cameraObject->object != nullptr)
-                {
-                    auto* instance = static_cast<InstanceContext*>(view->cameraObject->object);
-                    auto* lens = static_cast<CameraLensNode*>(GetGameNode(&instance->nodes, NodeCameraLens));
-                    if (lens != nullptr)
-                    {
-                        lensFov = lens->fov;
-                        lensChanged = lens->bits.projectionChanged;
-                        CameraRig* rig = lens->rig;
-                        CameraPositioner* positioner = rig != nullptr ? rig->positioner : nullptr;
-                        // Only a follow rig's positioner is a FollowCameraPositioner: the vtable says which, so a
-                        // scripted or keyed camera's bytes are never read as one
-                        if (positioner != nullptr && positioner->vtable == g_FollowCameraPositionerVTable)
-                        {
-                            auto* follow = static_cast<FollowCameraPositioner*>(positioner);
-                            rigDistance = follow->distance.current;
-                            rigLow = follow->distance.low;
-                            rigHigh = follow->distance.high;
-                            rigGoal = follow->distance.initial;
-                            rigShare = follow->distance.share;
-                            rigBits = follow->bits.value;
-                            rigFollow = 1;
-                            rigBlocked = follow->blockedSince;
-                            rigPositioner = 1;
-                        }
-                    }
-                }
-
-                std::fprintf(probeFile,
-                             "CAM %u inverseAspect %.6f cot %.6f xscale %.6f lensfov %d changed %u camera %.3f %.3f "
-                             "%.3f follow %u dist %.3f low %.2f high %.2f goal %.3f share %.3f bits %llx "
-                             "blockedSince %u pos %u\n",
-                             probeLine, view->inverseAspect, view->projection.m[1][1], view->projection.m[0][0],
-                             lensFov, lensChanged, at != nullptr ? at->x : 0.0f, at != nullptr ? at->y : 0.0f,
-                             at != nullptr ? at->z : 0.0f, rigFollow, rigDistance, rigLow, rigHigh, rigGoal, rigShare,
-                             static_cast<unsigned long long>(rigBits), rigBlocked, rigPositioner);
-            }
-        }
-    }
-
     const RenderTargetDescription* target = g_RenderTarget;
     if (target == nullptr || target->width <= 0 || target->height <= 0)
     {

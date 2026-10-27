@@ -17,9 +17,6 @@
 #include "platform/graphics.h"
 #include "platform/math.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 EABI_EXPORT(ScaleJoint, ScaleJoint);
 EABI_EXPORT(TranslateJoint, TranslateJoint);
 EABI_EXPORT(DoAnimation, DoAnimation);
@@ -851,8 +848,6 @@ void ProgressAnimationChain(AnimationChain* chain, u32 main, s32 now)
 
 void ProgressJointChains(JointAnimation* joint, s32 now, u32 detail, AnimationChain* parentChain)
 {
-    // TS_JOINTS=1: the joints carrying a chain of their own are written out (see below)
-    static const bool jointChainDiag = std::getenv("TS_JOINTS") != nullptr;
     u32 own = joint->joint->detail.level;
     AnimationChain* chain = joint->chain;
     if (chain != nullptr)
@@ -860,54 +855,6 @@ void ProgressJointChains(JointAnimation* joint, s32 now, u32 detail, AnimationCh
         chain->next = parentChain;
         ProgressAnimationChain(chain, 1, now);
         ProgressAnimationChain(chain, 0, now);
-        // TS_JOINTS=1: the joints carrying a chain of their own. A joint whose chain holds a status with no data poses at its
-        // bind matrix for as long as that status lives, which is how one joint of a model (a seagull's wing) sits wrong
-        // through a whole cutscene while its neighbours animate. Only a joint's first sighting and any chain holding a
-        // dataless status are written, so the file stays small however long the run is
-        if (jointChainDiag)
-        {
-            bool dataless = chain->main == nullptr;
-            for (AnimationStatus* status = chain->main; status != nullptr; status = status->next)
-            {
-                if (status->main == nullptr)
-                {
-                    dataless = true;
-                }
-            }
-
-            static u32 seen[256][8];
-            const u32 id = joint->joint->id;
-            const u32 index = joint->joint->index;
-            const u32 bit = 1u << (index & 31);
-            const bool first = (seen[id][index >> 5] & bit) == 0;
-            seen[id][index >> 5] |= bit;
-            static u32 noted = 0;
-            if ((first || dataless) && noted < 4000)
-            {
-                noted++;
-                std::FILE* file = std::fopen("joints.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "chain joint=%u index=%u level=%u children=%u parent=%d dataless=%d main=", id,
-                                 index, joint->joint->detail.level, joint->bits.childCount,
-                                 parentChain != nullptr ? 1 : 0, dataless ? 1 : 0);
-                    u32 listed = 0;
-                    for (AnimationStatus* status = chain->main; status != nullptr && listed < 4;
-                         status = status->next, listed++)
-                    {
-                        std::fprintf(file,
-                                     "[bits=%08x data=%d blendsIn=%u ended=%u weight=%.2f frame=%.2f time=%d len=%d]",
-                                     status->bits.value, status->main != nullptr ? 1 : 0, status->bits.blendsIn,
-                                     status->bits.ended, static_cast<double>(status->weight),
-                                     static_cast<double>(status->frameShare), status->time, status->length);
-                    }
-
-                    std::fprintf(file, " kept=%u\n", chain->main != nullptr || chain->blendShapes != nullptr ? 1 : 0);
-                    std::fclose(file);
-                }
-            }
-        }
-
         if (chain->main != nullptr || chain->blendShapes != nullptr)
         {
             parentChain = joint->chain;

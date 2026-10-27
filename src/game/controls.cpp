@@ -13,8 +13,6 @@
 #include "game/place.h"
 
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 
 EABI_EXPORT(FUN_00162da8, &ControlsHandler::Move);
 
@@ -157,28 +155,6 @@ void ControlsHandler::TurnToward(const Vector4* direction, const Vector4* up, co
     MultiplyRotations(turn, turn, &from);
 }
 
-void TraceButtonMove(const CharacterAgent* character, const char* what, const void* caller)
-{
-    static u32 noted = 0;
-    if (std::getenv("TS_SPEED") == nullptr || 40000 <= noted++)
-    {
-        return;
-    }
-
-    std::FILE* file = std::fopen("buttonwrite.log", "ab");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    std::fprintf(file,
-                 "frame %u inst %p what %s caller %p moveX %g moveZ %g locked %08X\n",
-                 static_cast<unsigned>(g_RenderedFrames), static_cast<const void*>(character->instance), what, caller,
-                 static_cast<double>(character->buttons.moveX), static_cast<double>(character->buttons.moveZ),
-                 static_cast<unsigned>(character->buttons.locked.value));
-    std::fclose(file);
-}
-
 void ControlsHandler::GiveTurn(Vector4* turn, const Vector4* move, AgentNode* node)
 {
     f32 moveX = move->x;
@@ -199,26 +175,6 @@ void ControlsHandler::GiveTurn(Vector4* turn, const Vector4* move, AgentNode* no
         moveX = moveX / length;
     }
 
-    // TS_SPEED=1: the only writer of the two fields the walk reads as its stick. If this never runs for a body during a
-    // chase, that body's stick is whatever the last caller left there - a stale value from an earlier level or menu -
-    // and the walk goes by it every frame
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 600)
-        {
-            s32 kind = static_cast<CharacterAgent*>(node->agent)->properties->GetInt(CharacterKindProperty);
-            std::FILE* file = std::fopen("stickwrite.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "GiveTurn kind %d moveX %g moveZ %g length %g caller %p\n", static_cast<int>(kind),
-                             static_cast<double>(moveX), static_cast<double>(moveZ), static_cast<double>(length),
-                             __builtin_return_address(0));
-                std::fclose(file);
-            }
-        }
-    }
-
     buttons.turn = buttons.locked.turn != 0 ? 0.0f : share;
     // The move fields take the pair made no longer than a whole one above, not the axes as they came in (asm
     // FUN_00162c40: f24 = f21 and f23 = f22 first, then div.s f23,f22,f20 and div.s f24,f21,f20 when the length is past
@@ -228,39 +184,10 @@ void ControlsHandler::GiveTurn(Vector4* turn, const Vector4* move, AgentNode* no
     // about a sixth. This port kept the raw pair and every character ran fast by exactly the excess
     buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : moveZ;
     buttons.moveX = buttons.locked.moveX != 0 ? 0.0f : moveX;
-    TraceButtonMove(static_cast<CharacterAgent*>(node->agent), "GiveTurn", __builtin_return_address(0));
 }
 
 void ControlsHandler::Move(f32 length, InstanceContext* instance, const Vector4* direction)
 {
-    // TS_SPEED=1: who asks a body's controls for a move, and how hard. A body with no pad and no motion driving it should
-    // not be asked at all, and yet one is - the chase's runner sits at exactly stick 1.0 for a whole run, which is a
-    // scripted full-strength ask rather than anything a stick produces. The caller's return address names it; resolve it
-    // with addr2line against build/host/sdl3/game-with-data (and symbol_addrs.txt for the retail names)
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 400)
-        {
-            auto* controls = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-            auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
-            s32 kind = node != nullptr ? static_cast<CharacterAgent*>(node->agent)->properties->GetInt(CharacterKindProperty)
-                                       : -1;
-            std::FILE* file = std::fopen("movewrite.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file,
-                             "frame %u Move length %g kind %d pad %p motionDriven %u caller %p\n",
-                             static_cast<unsigned>(g_RenderedFrames), static_cast<double>(length),
-                             static_cast<int>(kind),
-                             static_cast<void*>(controls != nullptr ? controls->pad : nullptr),
-                             controls != nullptr ? controls->bits.motionDriven : 0xFFFFFFFFu,
-                             __builtin_return_address(0));
-                std::fclose(file);
-            }
-        }
-    }
-
     ObjectPlace* place = instance->place;
     RotateAndTranslate(place);
     auto* node = static_cast<AgentNode*>(GetGameNode(&instance->nodes, NodeCharacter));
@@ -293,14 +220,7 @@ void ControlsHandler::MoveBy(TimeClock*, const Vector4* velocity, InstanceContex
     direction.x = direction.x * share;
     direction.y = direction.y * share;
     direction.z = direction.z * share;
-    // TS_STICK2D=1: the length taken from the two flat axes alone. Retail squares all three (asm 0x1630D8: mul.s f20,f2,f2
-    // / mul.s f4,f0,f0 / mul.s f1,f3,f3, add.s twice, then the root), so this is not what the game does - it is a test of
-    // whether a single frame's vertical snap, from a bump the runner climbs over, is what his motion driven speed reads as a
-    // run. If the chase settles at his walk with this set, the snap is the whole defect and the fix is upstream of here
-    static const bool flatOnly = std::getenv("TS_STICK2D") != nullptr;
-    f32 length = flatOnly
-                     ? __builtin_sqrtf(direction.x * direction.x + direction.z * direction.z)
-                     : __builtin_sqrtf(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+    f32 length = __builtin_sqrtf(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
     f32 inverse = InverseLength(&direction, LengthEpsilon);
     direction.x = direction.x * inverse;
     direction.y = direction.y * inverse;
@@ -470,7 +390,6 @@ void VehicleControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
 
     buttons.moveX = buttons.locked.moveX != 0 ? 0.0f : moveX;
     buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : moveZ;
-    TraceButtonMove(CharacterOf(instance), "VehicleControls", __builtin_return_address(0));
 }
 
 void StickControls::Destroy(u32 destroyFlags)
@@ -496,5 +415,4 @@ void StickControls::Frame(TimeClock*, GamePad* pad, InstanceContext* instance)
     // (bits 0 and 1 of the word at 0xF0). It writes no moveX at all, so this matches it exactly
     buttons.turn = buttons.locked.turn != 0 ? 0.0f : x;
     buttons.moveZ = buttons.locked.moveZ != 0 ? 0.0f : y;
-    TraceButtonMove(CharacterOf(instance), "StickControls", __builtin_return_address(0));
 }

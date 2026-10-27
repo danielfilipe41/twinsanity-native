@@ -1,6 +1,3 @@
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/agents.h"
 
 #include "game/animation.h"
@@ -270,38 +267,6 @@ void CharacterAgent::CrouchFrame(TimeClock* clock, CharacterPart* part)
     u32 kind = AttackKind(part);
     crouch->Frame(buttons.circle, stick, buttons.turn, clock);
     u32 state = crouch->bits.state;
-    static const bool crouchLog = std::getenv("TS_CRAWL") != nullptr;
-    if (crouchLog)
-    {
-        // The greatest squared stick this agent has reached, and the greatest the player's own agent has: a crawl attempt
-        // cannot be missed by sampling
-        static f32 best = 0.0f;
-        static f32 bestAny = 0.0f;
-        static bool reported = false;
-        if (stick > bestAny)
-        {
-            bestAny = stick;
-        }
-        if (stick > best)
-        {
-            best = stick;
-            reported = false;
-        }
-        if (reported == false && best > 1.2f)
-        {
-            reported = true;
-            static std::FILE* log = std::fopen("crawl.log", "ab");
-            if (log != nullptr)
-            {
-                std::fprintf(log, "crouch agent %p state %u moveX %g moveZ %g stick2 %g circle %g (%s) speed %g\n",
-                             static_cast<void*>(this), state, static_cast<double>(buttons.moveX),
-                             static_cast<double>(buttons.moveZ), static_cast<double>(stick), static_cast<double>(buttons.circle),
-                             stick > 1.2f ? "past 1.2" : "under 1.2",
-                             static_cast<double>(properties->GetFloat(CrouchController::PropCrawlSpeed)));
-                std::fflush(log);
-            }
-        }
-    }
     kind = KindWhile(kind, state == CrouchController::StateSliding || state == CrouchController::StateSlideEnd, AttackWalkInto,
                      AttackSlide);
     kind = KindWhile(kind, crouch->bits.slideVariantKind != 0, AttackSlide, AttackSlideVariant);
@@ -358,21 +323,6 @@ void CharacterAgent::SpinFrame(TimeClock* clock, CharacterPart* part)
     // As the crouch's: retail (FUN_0012e8e0) squares the two move axes, adds them and takes the root (the SQRT.S at
     // 0x0012E95C), handing the spin controller the same length the crouch gets
     f32 stick = __builtin_sqrtf(buttons.moveZ * buttons.moveZ + buttons.moveX * buttons.moveX);
-    // TS_CRAWL=1 writes what the crouch and spin frames see, to crawl.log beside crash.log: what the stick fields hold and
-    // what the squared size comes to against each gate
-    static const bool spinLog = std::getenv("TS_CRAWL") != nullptr;
-    if (spinLog)
-    {
-        static std::FILE* log = std::fopen("crawl.log", "ab");
-        static u32 tick = 0;
-        if (log != nullptr && tick++ % 30 == 0)
-        {
-            std::fprintf(log, "spin moveX %g moveZ %g stick2 %g circle %g square %g\n", static_cast<double>(buttons.moveX),
-                         static_cast<double>(buttons.moveZ), static_cast<double>(stick), static_cast<double>(buttons.circle),
-                         static_cast<double>(buttons.square));
-            std::fflush(log);
-        }
-    }
     u32 kind = AttackKind(part);
     // A character with a gun spins with circle (the second float is never read)
     if (gun == nullptr)
@@ -525,23 +475,6 @@ void CharacterAgent::LinkFrame(TimeClock* clock, CharacterPart* part)
 
 void CharacterAgent::WalkFrame(TimeClock* clock, CharacterPart* part)
 {
-    // TS_MOVE=1: the crouch bit and crouch state exactly as the walk sees them — the walk's zero-speed ask steals the frame
-    // whenever this bit reads 0 while the character is crouched
-    if (std::getenv("TS_MOVE") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 1500)
-        {
-            std::FILE* file = std::fopen("walkbit.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "WalkFrame crouching=%u crawling=%u crouchState=%d moveZ=%g moveX=%g\n",
-                             part->moveBits.crouching, part->moveBits.crawling, crouch != nullptr ? crouch->bits.state : -1,
-                             static_cast<double>(buttons.moveZ), static_cast<double>(buttons.moveX));
-                std::fclose(file);
-            }
-        }
-    }
     if (walk == nullptr)
     {
         part->moveBits.walking = 0;
@@ -572,27 +505,6 @@ void CharacterAgent::WalkFrame(TimeClock* clock, CharacterPart* part)
 
         stick = {buttons.moveZ, 0.0f, buttons.moveX, 1.0f};
         turn = buttons.turn;
-    }
-
-    // TS_SPEED=1: the stick the walk is about to read, as the walk will see it, with the state the walk was in last frame
-    // and the speed it asked for. The chase's runner asks nothing for two frames and then asks seven, and the place moves
-    // more than the ask on the frame after, so what the walk thought it was doing across that gap is the thing to see
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 60000)
-        {
-            std::FILE* file = std::fopen("walkstick.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "frame %u inst %p moveX %g moveZ %g turn %g dead %u state %u speed %g\n",
-                             static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(instance),
-                             static_cast<double>(buttons.moveX), static_cast<double>(buttons.moveZ),
-                             static_cast<double>(buttons.turn), state.dead,
-                             static_cast<unsigned>(walk->bits.state), static_cast<double>(walk->speed));
-                std::fclose(file);
-            }
-        }
     }
 
     walk->Frame(strafe, turn, clock, &stick);
@@ -830,36 +742,8 @@ void CharacterAgent::TellTrigger(FollowCamera* camera, InstanceContext* trigger,
     OfferCamera(camera, cameraNode, cameraNode->bits.kind, this);
 }
 
-namespace
-{
-// TS_TRIGLOG's file, opened on its first use, and how many lines it has taken
-FILE* g_TriggerLog = nullptr;
-u32 g_TriggerLogLine = 0;
-bool g_TriggerLogRead = false;
-
-void OpenTriggerLog()
-{
-    if (g_TriggerLogRead)
-    {
-        return;
-    }
-
-    g_TriggerLogRead = true;
-    const char* spec = std::getenv("TS_TRIGLOG");
-    if (spec != nullptr && spec[0] != '\0')
-    {
-        g_TriggerLog = std::fopen(spec, "w");
-        if (g_TriggerLog != nullptr)
-        {
-            std::setvbuf(g_TriggerLog, nullptr, _IONBF, 0);
-        }
-    }
-}
-}
-
 void CharacterAgent::CheckTriggers()
 {
-    OpenTriggerLog();
     auto* follow = static_cast<FollowNode*>(GetGameNode(&instance->nodes, NodeFollow));
     u32 played = g_AgentsGameController->progress.play.character;
     s32 character = properties->GetInt(CharacterKindProperty);
@@ -873,45 +757,6 @@ void CharacterAgent::CheckTriggers()
     // again, one only in the old set that it's left, one only in the new set that it's entered
     ReferenceSet now;
     GatherTriggerInstances(&now, instance->chunk, g_TriggerNodeKinds, instance);
-    // TS_TRIGLOG=<path>: how many trigger instances the ball's hull found this frame, how many were camera nodes, and
-    // how many the follow camera took. A window of nil camera triggers is one of: nothing gathered (the instances are
-    // not there - a chunk or cell fault), gathered but no camera node, or gathered and offered but refused
-    if (g_TriggerLog != nullptr)
-    {
-        u32 cameraNodes = 0;
-        u32 messageNodes = 0;
-        u32 cameraPolled = 0;
-        for (u32 index = 0; index < now.count; index++)
-        {
-            auto* candidate = static_cast<InstanceContext*>(now.handles[index] != nullptr ? now.handles[index]->object : nullptr);
-            if (candidate == nullptr)
-            {
-                continue;
-            }
-
-            auto* camera = static_cast<CameraNode*>(GetGameNode(&candidate->nodes, NodeCameraTrigger));
-            if (camera != nullptr)
-            {
-                cameraNodes++;
-                if (camera->bits.neverPolled != 0)
-                {
-                    cameraPolled++;
-                }
-            }
-            else if (GetGameNode(&candidate->nodes, NodeMessageTrigger) != nullptr)
-            {
-                messageNodes++;
-            }
-        }
-
-        u32 pending = follow->camera.pending != nullptr ? 1 : 0;
-        u32 current = follow->camera.current != nullptr ? 1 : 0;
-        std::fprintf(g_TriggerLog,
-                     "TRIG %u gathered %u cameraNodes %u polled %u messageNodes %u pendingAfter %u currentAfter %u "
-                     "cell %p\n",
-                     g_TriggerLogLine++, now.count, cameraNodes, cameraPolled, messageNodes, pending, current,
-                     static_cast<void*>(instance->chunk != nullptr ? instance->chunk->instanceCells : nullptr));
-    }
     FollowCamera* camera = &follow->camera;
     HandleWalk fresh = {g_HandleWalkVTable, 0, &now};
     HandleWalk old = {g_HandleWalkVTable, 0, &triggers};
@@ -1338,7 +1183,6 @@ void CharacterAgent::Frame(TimeClock* clock)
     }
 
     FindGroundPoint();
-    TraceButtonMove(this, "FrameZero", __builtin_return_address(0));
     buttons.moveX = 0.0f;
     buttons.turn = 0.0f;
     buttons.moveZ = 0.0f;

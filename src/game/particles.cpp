@@ -1,8 +1,5 @@
 #include "game/particles.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include "abi.h"
 
 #include "game/chunkdata.h"
@@ -1819,25 +1816,6 @@ extern "C"
         }
 
         const ParticleSystem* system = g_LoadedParticleSystems[systemIndex];
-        // TS_DIAG=1: whether the script's particle system index resolves at all (capped, so the file stays small). Every line
-        // saying loaded=0 means the level's particle section was never read into the registry, which is exactly "no explosion"
-        if (std::getenv("TS_DIAG") != nullptr)
-        {
-            static u32 noted = 0;
-            if (noted < 4000)
-            {
-                noted++;
-                std::FILE* file = std::fopen("particles.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "StartParticleEmitter systemIndex=%d runtimeIndex=%d loaded=%d at=%.1f,%.1f,%.1f chunk=%p\n",
-                                 systemIndex, *runtimeIndex, system != nullptr ? 1 : 0, static_cast<double>(x),
-                                 static_cast<double>(y), static_cast<double>(z), static_cast<void*>(chunk));
-                    std::fclose(file);
-                }
-            }
-        }
-
         if (system == nullptr)
         {
             return;
@@ -2962,83 +2940,6 @@ extern "C"
         }
 
         s32 visited = 0;
-        // TS_DIAG=1: an audit of the whole list, kept by the same switch as the counters below: entries no blend-mode bucket
-        // of the frame would take (their system's mode is not one of the frame's) and entries whose texture page carries no
-        // material at their mode. Either submits nothing at all once the mode loop is done with it, so an effect (an
-        // explosion) can be alive, placed and counted as drawn nowhere, with no gate of the draw having counted it
-        static u32 unMode = 0;
-        static u32 unMaterial = 0;
-        static const bool particleDiag = std::getenv("TS_DIAG") != nullptr;
-        static u32 audits;
-        if (particleDiag && ++audits % 256 == 0)
-        {
-            u32 noMode = 0;
-            u32 noMaterial = 0;
-            for (ParticleDrawEntry* entry = g_ParticleDrawLists[list]; entry != nullptr; entry = entry->next)
-            {
-                if (entry->block == nullptr)
-                {
-                    continue;
-                }
-
-                ParticleSystem* system = entry->system;
-                if (system->renderTable == nullptr)
-                {
-                    noMode++;
-                    continue;
-                }
-
-                bool taken = false;
-                for (s32 mode = 0; mode < modes; mode++)
-                {
-                    if (static_cast<s8>(system->blendMode) == order[mode])
-                    {
-                        taken = true;
-                        break;
-                    }
-                }
-
-                if (!taken)
-                {
-                    noMode++;
-                    continue;
-                }
-
-                EmitterRuntime* owner = entry->owner;
-                s32 page = owner != nullptr ? system->texturePage : entry->texturePage;
-                if (page < 0 || static_cast<u32>(page) >= ParticlePageCount ||
-                    g_ParticlePages[page].materials[static_cast<s8>(system->blendMode)] == nullptr)
-                {
-                    noMaterial++;
-                }
-            }
-
-            unMode = noMode;
-            unMaterial = noMaterial;
-        }
-
-        // TS_DIAG=1: how many entries the list holds, which gate drops them, and how many are actually drawn. entries=0
-        // means no blend mode ever matched the entry's system mode; entries>0 with drawn=0 means a gate (see the columns)
-        auto note = [](u32 gate) {
-            static u32 counts[8];
-            static u32 ticks;
-            counts[gate]++;
-            if (++ticks % 256 != 0)
-            {
-                return;
-            }
-
-            std::FILE* file = std::getenv("TS_DIAG") != nullptr ? std::fopen("particledraw.log", "ab") : nullptr;
-            if (file == nullptr)
-            {
-                return;
-            }
-
-            std::fprintf(file, "particle draw entries=%u drawn=%u noView=%u culled=%u pastCutoff=%u unMode=%u unMaterial=%u\n",
-                         counts[0], counts[6], counts[1], counts[2], counts[3], unMode, unMaterial);
-            std::fclose(file);
-        };
-
         for (s32 mode = 0; mode < modes; mode++)
         {
             for (ParticleDrawEntry* entry = g_ParticleDrawLists[list]; entry != nullptr; entry = entry->next)
@@ -3079,11 +2980,9 @@ extern "C"
                     keepsTranslation = static_cast<s8>(entry->keepsEmitTranslation) != 0;
                 }
 
-                note(0);
                 s32 view = ParticleViewOf(views, chunk);
                 if (view == -1)
                 {
-                    note(1);
                     continue;
                 }
 
@@ -3092,94 +2991,11 @@ extern "C"
                 if (Platform::Math::ParticleBlockView(view, keepsTranslation, system->boundingExtents, gravity, place, system->scaleFactor,
                                                       &matrix, &distance))
                 {
-                    note(2);
                     continue;
-                }
-
-                // TS_DIAG=1: one line per system a frame, the emitter's place and the place the draw takes next to the
-                // place that place has to be at (the emitter's own place through the chunk's toScreen, the chunk's own
-                // matrix, not the view's copy of it). The difference between the two is the pull the microprogram applies
-                // and nothing else, so a line where they differ by more than the pull says the view or the composition
-                // is wrong; a line whose place is not the emitter's own says the emitter's place is wrong
-                if (particleDiag)
-                {
-                    static const s32 NotedSystems = 64;
-                    static const ParticleSystem* noted[NotedSystems];
-                    static u32 notedCount = 0;
-                    static u32 notedFrame = 0;
-                    static u32 notedLines = 0;
-                    if (notedFrame != g_RenderedFrames)
-                    {
-                        notedFrame = g_RenderedFrames;
-                        notedCount = 0;
-                    }
-
-                    bool seen = false;
-                    for (u32 index = 0; index < notedCount; index++)
-                    {
-                        if (noted[index] == system)
-                        {
-                            seen = true;
-                            break;
-                        }
-                    }
-
-                    if (!seen && notedCount < NotedSystems && notedLines < 4000)
-                    {
-                        noted[notedCount] = system;
-                        notedCount++;
-                        notedLines++;
-                        const Matrix4x4& toScreen = chunk->toScreen;
-                        f32 expected[4];
-                        for (u32 column = 0; column < 4; column++)
-                        {
-                            // An emission that keeps its translation takes the place from its frame, which is in every
-                            // particle's own start, so the block's matrix has no place in its fourth row and the row
-                            // that is left is the view's own (the chunk's toScreen's translation)
-                            expected[column] = keepsTranslation
-                                                  ? toScreen.m[3][column]
-                                                  : place[0] * toScreen.m[0][column] + place[1] * toScreen.m[1][column] +
-                                                        place[2] * toScreen.m[2][column] + toScreen.m[3][column];
-                        }
-
-                        std::FILE* file = std::fopen("particles.log", "ab");
-                        if (file != nullptr)
-                        {
-                            std::fprintf(file,
-                                         "particle draw system %.*s scale %.4f place %.2f %.2f %.2f chunk %p view %d "
-                                         "kept %d drawn %.2f %.2f %.2f expected %.2f %.2f %.2f\n"
-                                         "  texture %.1f %.1f %.1f %.1f frames %u start %u hold %u rate %.4f\n"
-                                         "  mode %d page %d colour %.3f %.3f %.3f alpha %.3f size %.0f x %.0f\n",
-                                         16, system->name, static_cast<double>(system->scaleFactor),
-                                         static_cast<double>(place[0]), static_cast<double>(place[1]),
-                                         static_cast<double>(place[2]), static_cast<void*>(chunk), view,
-                                         keepsTranslation ? 1 : 0, static_cast<double>(matrix.m[3][0]),
-                                         static_cast<double>(matrix.m[3][1]), static_cast<double>(matrix.m[3][2]),
-                                         static_cast<double>(expected[0]), static_cast<double>(expected[1]),
-                                         static_cast<double>(expected[2]),
-                                         static_cast<double>(system->textureStartX),
-                                         static_cast<double>(system->textureStartY),
-                                         static_cast<double>(system->textureEndX),
-                                         static_cast<double>(system->textureEndY),
-                                         static_cast<unsigned>(system->textureFrameCount),
-                                         static_cast<unsigned>(system->textureFrameStart),
-                                         static_cast<unsigned>(system->textureFrameHold),
-                                         static_cast<double>(system->textureFrameRate),
-                                         static_cast<int>(static_cast<s8>(system->blendMode)),
-                                         static_cast<int>(system->texturePage),
-                                         static_cast<double>(system->colourKeys[0].red),
-                                         static_cast<double>(system->colourKeys[0].green),
-                                         static_cast<double>(system->colourKeys[0].blue),
-                                         static_cast<double>(system->alphaKeys[0].value),
-                                         static_cast<double>(system->minSize), static_cast<double>(system->maxSize));
-                            std::fclose(file);
-                        }
-                    }
                 }
 
                 if (!(distance < system->drawCutOff))
                 {
-                    note(3);
                     continue;
                 }
 
@@ -3191,7 +3007,6 @@ extern "C"
                 }
 
                 Material* material = g_ParticlePages[page].materials[static_cast<s8>(entry->system->blendMode)];
-                note(6);
                 Platform::Graphics::DrawParticleBlock(entry->block, entry->system->renderTable, &matrix, material, g_ParticleTime);
             }
         }

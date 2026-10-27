@@ -1,6 +1,3 @@
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/agentparts.h"
 
 #include "game/characters.h"
@@ -264,45 +261,11 @@ u32 CharacterPart::RequestForward(f32 speed)
 {
     if (moveBits.forwardRequested != 0)
     {
-        // TS_MOVE=1: a request dropped because one was already made (first wins) — a crawl's own speed is dropped when
-        // something else asks earlier in the same frame, which shows as "the crawl barely moves"
-        if (std::getenv("TS_MOVE") != nullptr)
-        {
-            static u32 noted = 0;
-            if (noted++ < 2000)
-            {
-                std::FILE* file = std::fopen("move.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "RequestForward DROPPED asked=%g kept=%g\n", static_cast<double>(speed),
-                                 static_cast<double>(wantedForward));
-                    std::fclose(file);
-                }
-            }
-        }
-
         return 0;
     }
 
     wantedForward = speed;
     moveBits.forwardRequested = 1;
-    // TS_MOVE=1: the request that won the frame, with the caller's return address (resolve with addr2line) — the crawl's
-    // 1.75 is dropped because something asks first with a walk-class speed
-    if (std::getenv("TS_MOVE") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 500)
-        {
-            std::FILE* file = std::fopen("move.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "RequestForward TAKEN speed=%g caller=%p\n", static_cast<double>(speed),
-                             __builtin_return_address(0));
-                std::fclose(file);
-            }
-        }
-    }
-
     return 1;
 }
 

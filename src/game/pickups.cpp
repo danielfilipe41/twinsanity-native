@@ -19,8 +19,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 
 // The custom pickups (pickups of subtypes 16 and 17): their object node (kind 1), which the code model of its custom slot drives
 // through its states, the code models' slots and the spin the idle ones share. The events' handle release sits here too, where
@@ -103,59 +101,6 @@ Vector4 DefaultVelocity()
     Vector4 velocity = g_DefaultBox.min;
     velocity.w = 1.0f;
     return velocity;
-}
-
-// TS_PICKUP=1: one line per attracted update while a pickup flies to its focus (to pickup.log beside crash.log), the arithmetic
-// laid out so the pull can be checked against the pack's: the elapsed time in clock units and seconds, the pack's pull and the
-// pull the function worked out from it (after the ID and riding multipliers), the share of the velocity kept, the distance left
-// to the focus, and the velocity before and after the update. The file is opened on the switch's first line, and at most 200
-// lines of each flight are written (a fresh flight or pickup starts the count again), 1000 a session. Only called under the
-// switch
-std::FILE* g_PickupLog = nullptr;
-const PickupObjectNode* g_PickupLogNode = nullptr;
-u32 g_PickupLogNoted = 0;
-u32 g_PickupLogSession = 0;
-
-void LogPickupFlight(const PickupObjectNode* node, f32 elapsed, s32 units, f32 packPull, f32 pull, f32 kept, f32 distance,
-                     const Vector4* before, const Vector4* after, s32 body, s32 moved)
-{
-    if (g_PickupLog == nullptr)
-    {
-        g_PickupLog = std::fopen("pickup.log", "ab");
-    }
-    if (g_PickupLog == nullptr || g_PickupLogSession >= 1000)
-    {
-        return;
-    }
-
-    if (node != g_PickupLogNode)
-    {
-        g_PickupLogNode = node;
-        g_PickupLogNoted = 0;
-    }
-
-    if (g_PickupLogNoted++ < 200)
-    {
-        std::fprintf(g_PickupLog,
-                     "pickup %p state %u elapsed %g units %d pack %g pull %g kept %g dist %g before %g %g %g after %g %g %g "
-                     "body %d moved %d\n",
-                     static_cast<const void*>(node), static_cast<unsigned>(node->bits.state), static_cast<double>(elapsed),
-                     units, static_cast<double>(packPull), static_cast<double>(pull), static_cast<double>(kept),
-                     static_cast<double>(distance), static_cast<double>(before->x), static_cast<double>(before->y),
-                     static_cast<double>(before->z), static_cast<double>(after->x), static_cast<double>(after->y),
-                     static_cast<double>(after->z), body, moved);
-        std::fflush(g_PickupLog);
-        g_PickupLogSession++;
-    }
-}
-
-// TS_PICKUP=1: the flight ended (collected, or its focus lost): the next flight's lines start a fresh count
-void EndPickupFlight(const PickupObjectNode* node)
-{
-    if (node == g_PickupLogNode)
-    {
-        g_PickupLogNoted = 0;
-    }
 }
 }
 
@@ -576,15 +521,6 @@ u32 PickupObjectNode::Update(TimeClock* clock)
 
 void PickupObjectNode::FlyToFocus(CustomPickup* pickup, TimeClock* clock)
 {
-    // TS_PICKUP=1 writes one line per attracted update to pickup.log beside crash.log (see LogPickupFlight above). Nothing is
-    // read or written for it when the switch is unset; the copy of the velocity is kept for the line's "before" only
-    static const bool pickupLog = std::getenv("TS_PICKUP") != nullptr;
-    Vector4 before;
-    if (pickupLog)
-    {
-        before = velocity;
-    }
-
     // Closer than half a unit it's there
     constexpr f32 ReachedSquared = 0.25f;
     // While the player rides something the pull is 4 times as strong
@@ -603,11 +539,6 @@ void PickupObjectNode::FlyToFocus(CustomPickup* pickup, TimeClock* clock)
     if (focus == nullptr)
     {
         SetState(clock, StateIdle);
-        if (pickupLog)
-        {
-            EndPickupFlight(this);
-        }
-
         return;
     }
 
@@ -635,11 +566,6 @@ void PickupObjectNode::FlyToFocus(CustomPickup* pickup, TimeClock* clock)
         if (reached)
         {
             SetState(clock, StateCollected);
-            if (pickupLog)
-            {
-                EndPickupFlight(this);
-            }
-
             return;
         }
     }
@@ -668,16 +594,6 @@ void PickupObjectNode::FlyToFocus(CustomPickup* pickup, TimeClock* clock)
 
     f32 elapsed = SecondsSinceUpdate(this, clock);
     f32 inverse = InverseLength(&way, LengthEpsilon);
-    // TS_PICKUP=1: the clock units behind elapsed, and the distance to the focus (1 over the inverse the way is normalized
-    // with, before the riding multiplier)
-    s32 units = 0;
-    f32 distance = 0.0f;
-    if (pickupLog)
-    {
-        units = static_cast<s32>(clock->time - this->time);
-        distance = inverse != 0.0f ? 1.0f / inverse : 0.0f;
-    }
-
     way.x = way.x * inverse;
     way.y = way.y * inverse;
     way.z = way.z * inverse;
@@ -721,19 +637,7 @@ void PickupObjectNode::FlyToFocus(CustomPickup* pickup, TimeClock* clock)
             QueueObject(instance);
         }
 
-        if (pickupLog)
-        {
-            LogPickupFlight(this, elapsed, units, pickup->pull, pull, kept, distance, &before, &velocity, 0,
-                            static_cast<s32>(moved));
-        }
-
         return;
-    }
-
-    // TS_PICKUP=1: the body path's line (no MoveBy; velocity here is the updated one, the body's own taken next)
-    if (pickupLog)
-    {
-        LogPickupFlight(this, elapsed, units, pickup->pull, pull, kept, distance, &before, &velocity, 1, -1);
     }
 
     velocity = body->velocity;

@@ -2,7 +2,6 @@
 // Platform::Audio, fed to a 48 kHz stereo stream.
 #include "spu_mixer.h"
 
-#include "../graphics/host_graphics.h"
 #include "debug.h"
 #include "platform/sound.h"
 
@@ -120,13 +119,6 @@ s32 Platform::Sound::InitialiseRemote()
     if (std::getenv("TS_SOUNDLOG") != nullptr)
     {
         g_SoundLog = true;
-    }
-
-    // TS_NO=audio: up without sound while a crash is traced elsewhere
-    if (Platform::Graphics::HostStageDisabled("audio"))
-    {
-        std::fprintf(stderr, "audio: disabled via TS_NO=audio\n");
-        return 0;
     }
 
     return StartAudio() ? 0 : -1;

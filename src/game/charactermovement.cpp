@@ -17,9 +17,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
 
 EABI_EXPORT(FUN_0012e328, &CharacterAgent::MeasureVelocity);
 EABI_EXPORT(FUN_00136168, &CharacterAgent::EaseVelocity);
@@ -244,145 +241,6 @@ void CharacterAgent::EaseVelocity(f32 seconds, const Vector4* wanted)
         if (static_cast<CharacterPart*>(part)->moveBits.linkedFirst != 0)
         {
             link->Second()->SetFloorSurface(surface);
-        }
-
-        // TS_SPEED=1: what the ground's acceleration works from, for each body, every 25 of the game's own frames. Which
-        // number grows is what tells the speed defect apart: the speed asked for (wanted, from the walk and the script),
-        // the surface's own acceleration and flow, or the velocity itself running away from both. The body is named by its
-        // instance's address and whether the player drives it, and the speed it actually travels at is worked out here
-        // from its own place against the game's frame counter, so it can be put beside the velocity it reports: the two
-        // agreeing means the movement is honest and the defect is upstream, and travelling faster than the velocity means
-        // something is applying the move more than once
-        if (std::getenv("TS_SPEED") != nullptr)
-        {
-            struct Tracked
-            {
-                const InstanceContext* instance;
-                u32 frame;
-                Vector4 position;
-            };
-            constexpr u32 TrackedCount = 8;
-            static Tracked tracked[TrackedCount] = {};
-
-            Vector4 position;
-            Position(&position);
-            const u32 frame = g_RenderedFrames;
-            Tracked* slot = nullptr;
-            for (u32 i = 0; i < TrackedCount; i++)
-            {
-                if (tracked[i].instance == instance)
-                {
-                    slot = &tracked[i];
-                    break;
-                }
-            }
-
-            if (slot == nullptr)
-            {
-                for (u32 i = 0; i < TrackedCount; i++)
-                {
-                    if (tracked[i].instance == nullptr)
-                    {
-                        slot = &tracked[i];
-                        break;
-                    }
-                }
-            }
-
-            if (slot != nullptr)
-            {
-                if (slot->instance == nullptr)
-                {
-                    slot->instance = instance;
-                    slot->frame = frame;
-                    slot->position = position;
-                }
-                else if (frame - slot->frame >= 25)
-                {
-                    f32 passed = static_cast<f32>(frame - slot->frame) * seconds;
-                    f32 travelled = 0.0f;
-                    if (0.0f < passed)
-                    {
-                        Vector4 moved = {position.x - slot->position.x, position.y - slot->position.y,
-                                         position.z - slot->position.z, 1.0f};
-                        travelled = __builtin_sqrtf(moved.x * moved.x + moved.z * moved.z) / passed;
-                    }
-
-                    std::FILE* file = std::fopen("speed.log", "ab");
-                    if (file != nullptr)
-                    {
-                        // Who it is matters: the chase's runaway is a named character, and the log is worthless if it can
-                        // only say "a body". The kind is the agent's first int property (characters.h's PlayableCharacter)
-                        const char* who = "?";
-                        switch (properties->GetInt(CharacterKindProperty))
-                        {
-                        case CharacterCrash: who = "crash"; break;
-                        case CharacterCortex: who = "cortex"; break;
-                        case CharacterTallCrash: who = "tall-crash"; break;
-                        case CharacterNina: who = "nina"; break;
-                        case CharacterNone: who = "none"; break;
-                        case CharacterMecha: who = "mecha"; break;
-                        default: break;
-                        }
-
-                        // The game's own clock against the host's: how many logic steps a second are actually being
-                        // taken. Everything else in this log is internally consistent even when the game is running fast
-                        // in wall-clock time, because velocity, distance and frame count would all agree; only this does
-                        // not. 50 is right for this disc
-                        // Against the HOST's clock, not the game's. Measuring the game's frames against Platform::Time's
-                        // ticks is circular - that clock is advanced by exactly one step per logic frame, so it always
-                        // divides back out to the rate we meant to run at, however fast the loop is really going. Only a
-                        // wall clock says whether the game is running faster than 50 steps a second in real time, which
-                        // is what "everything happens too soon" looks like
-                        static std::chrono::steady_clock::time_point firstReal;
-                        static u32 firstFrame = 0;
-                        if (firstFrame == 0)
-                        {
-                            firstReal = std::chrono::steady_clock::now();
-                            firstFrame = frame;
-                        }
-
-                        f32 realSeconds = std::chrono::duration_cast<std::chrono::duration<f32>>(
-                                              std::chrono::steady_clock::now() - firstReal).count();
-                        f32 logicHz = 0.0f < realSeconds ? static_cast<f32>(frame - firstFrame) / realSeconds : 0.0f;
-
-                        // The drive is the thing that decides whether the walk uses the stick at all (characters.cpp's
-                        // Controlled, which is this bit): a body driven by its motion follows its animation, and one that
-                        // is not runs at its property and throws the animation's speed away. The properties are printed
-                        // beside it so the two numbers can be told apart
-                        auto* controlsNode = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-                        const u32 motionDriven = controlsNode != nullptr ? controlsNode->bits.motionDriven : 0xFFFFFFFFu;
-
-                        std::fprintf(file,
-                                     "frame %u %s body %p%s logic %g Hz pos %g %g %g | travelled %g u/s | vel %g %g %g | "
-                                     "wanted %g %g | seconds %g | drive %u ctrl %u stick %g props %g/%g air %g holder %p | "
-                                     "surface %u accel %g flow %g %g downhill %g steep %g | stand %d | state %u speed %g\n",
-                                     frame, who, static_cast<const void*>(instance),
-                                     Controlled() != 0 ? " (driven)" : "", static_cast<double>(logicHz),
-                                     static_cast<double>(position.x), static_cast<double>(position.y),
-                                     static_cast<double>(position.z), static_cast<double>(travelled),
-                                     static_cast<double>(velocity.x), static_cast<double>(velocity.y),
-                                     static_cast<double>(velocity.z), static_cast<double>(wanted->x),
-                                     static_cast<double>(wanted->z), static_cast<double>(seconds), motionDriven,
-                                     static_cast<u32>(Controlled()),
-                                     static_cast<double>(__builtin_sqrtf(buttons.moveZ * buttons.moveZ +
-                                                                        buttons.moveX * buttons.moveX)),
-                                     static_cast<double>(properties->GetFloat(WalkController::PropWalkSpeed)),
-                                     static_cast<double>(properties->GetFloat(WalkController::PropRunSpeed)),
-                                     static_cast<double>(properties->GetFloat(JumpController::PropAirSpeed)),
-                                     static_cast<const void*>(properties), surface->surfaceId,
-                                     static_cast<double>(surface->acceleration), static_cast<double>(surface->flow.x),
-                                     static_cast<double>(surface->flow.z), static_cast<double>(surface->downhillPull),
-                                     static_cast<double>(surface->steepNormalY), state.standing,
-                                     walk != nullptr ? walk->bits.state : 0u,
-                                     walk != nullptr ? static_cast<double>(walk->speed) : 0.0);
-                        std::fclose(file);
-                    }
-
-                    slot->frame = frame;
-                    slot->position = position;
-                }
-            }
         }
 
         AccelerateOnSurface(surface, seconds, &velocity, wanted, &groundNormal);
@@ -686,38 +544,6 @@ void CharacterAgent::MoveBy(f32 seconds, f32 turn, CharacterPart* part, const Ve
     Vector4 after;
     PlacePosition(&after);
     Vector4 moved = {after.x - before.x, after.y - before.y, after.z - before.z, 1.0f};
-    // TS_SPEED=1: what the walk asked for beside what the solve actually did. They should agree; where moved is the longer
-    // of the two the collision is putting the body somewhere the walk did not, and since a motion driven body's speed is
-    // read back off its own place, that extra becomes its speed on the next frame and its stick thereafter
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 40000)
-        {
-            std::FILE* file = std::fopen("bodystep.log", "ab");
-            if (file != nullptr)
-            {
-                f32 askedLen = __builtin_sqrtf(step.x * step.x + step.y * step.y + step.z * step.z);
-                f32 movedLen = __builtin_sqrtf(moved.x * moved.x + moved.y * moved.y + moved.z * moved.z);
-                // The object node's own frame move beside the two: what the walk asked, where the solve put the body,
-                // and what the instance is then recorded as having moved. The last minus the second is displacement the
-                // walk did not make, and that is what a motion driven body's speed is read back from
-                auto* trackedNode = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject));
-                const Vector4* recorded = trackedNode != nullptr ? &trackedNode->frameMove : nullptr;
-                std::fprintf(file,
-                             "frame %u inst %p step %g %g %g moved %g %g %g asked %g movedLen %g recorded %g %g %g\n",
-                             static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(instance),
-                             static_cast<double>(step.x), static_cast<double>(step.y), static_cast<double>(step.z),
-                             static_cast<double>(moved.x), static_cast<double>(moved.y), static_cast<double>(moved.z),
-                             static_cast<double>(askedLen), static_cast<double>(movedLen),
-                             recorded != nullptr ? static_cast<double>(recorded->x) : 0.0,
-                             recorded != nullptr ? static_cast<double>(recorded->y) : 0.0,
-                             recorded != nullptr ? static_cast<double>(recorded->z) : 0.0);
-                std::fclose(file);
-            }
-        }
-    }
-
     if (rising && Rising < velocity.y && RiseAsked < step.y && moved.y / step.y < RiseShare)
     {
         velocity.y -= seconds * RiseSlowing;

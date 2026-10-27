@@ -6,8 +6,6 @@
 #include "game/math.h"
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 
 // A particle view's state: the frustum's planes in the chunk's space and the camera's place, as VU0 programs 0xCB0,
 // 0xA08 and 0xB90 read it from VU0 memory. The SDL3 platform fills these in (culling.cpp); they are weak so the null
@@ -33,17 +31,24 @@ constexpr f32 RayEdgeMargin = 0.1f;
 // How many planes a view's frustum has: the near and the far plane and the four sides, the six TransformPlanes moves
 constexpr u32 ViewPlaneCount = 6;
 
-// The arc cosine of a value from 0 to 1 (radians), as the game's ArcCosine
-// works it out (src/game/rotations.cpp)
+// The game's ArcCosine (src/game/rotations.cpp) exactly: the value's magnitude, its complement's root times the arc cosine of
+// the magnitude, and the angle taken off a half turn when the value was negative
 f32 ArcCosine(f32 cosine)
 {
-    f32 complement = 1.0f - cosine;
+    f32 value = __builtin_fabsf(cosine);
+    f32 complement = 1.0f - value;
     if (complement < 0.0f)
     {
         complement = 0.0f;
     }
 
-    return ArcCosineOfPositive(cosine) * __builtin_sqrtf(complement);
+    f32 radians = ArcCosineOfPositive(value) * __builtin_sqrtf(complement);
+    if (cosine < 0.0f)
+    {
+        radians = Pi - radians;
+    }
+
+    return radians;
 }
 
 // The camera's place in a view loaded for the frame's particles, the origin for a view nothing was loaded for (a view
@@ -168,11 +173,13 @@ void Platform::Math::SlerpRotations(const Vector4* from, const Vector4* to, f32 
 
     if (!(cosine <= SlerpStraightCosine))
     {
-        // Along a straight line, made a unit one again
-        out->x = (target.x - from->x) * share + from->x;
-        out->y = (target.y - from->y) * share + from->y;
-        out->z = (target.z - from->z) * share + from->z;
-        out->w = (target.w - from->w) * share + from->w;
+        // Along a straight line: each end's share of one less the other's (0x1C0's vsub of the share from 1, then the two
+        // weighted terms added in that order because VU0 rounds each step), made a unit one again
+        f32 fromShare = 1.0f - share;
+        out->x = from->x * fromShare + target.x * share;
+        out->y = from->y * fromShare + target.y * share;
+        out->z = from->z * fromShare + target.z * share;
+        out->w = from->w * fromShare + target.w * share;
         f32 squared = out->x * out->x + out->y * out->y + out->z * out->z + out->w * out->w;
         f32 inverse = 0.0f;
         if (InverseEpsilon * InverseEpsilon < squared)
@@ -190,15 +197,18 @@ void Platform::Math::SlerpRotations(const Vector4* from, const Vector4* to, f32 
         return;
     }
 
-    // Each weighted by the sine of the other's share of the angle over the angle's sine (from's by sin((share - 1) angle))
+    // Each weighted by the sine of its share of the angle over the angle's sine (from's by the sine of one less its share), the
+    // arguments the microprogram gives its polynomial and the shares taken in that order, because VU0 rounds each step
     f32 angle = ArcCosine(cosine);
-    f32 shares[4];
-    SinCosPolynomial(angle * share, angle * share - angle, shares);
+    f32 towardSine[4];
+    SinCosPolynomial(angle * share, 0.0f, towardSine);
+    f32 fromSine[4];
+    SinCosPolynomial((1.0f - share) * angle, 0.0f, fromSine);
     f32 sineCos[4];
-    SinCosPolynomial(angle, angle, sineCos);
+    SinCosPolynomial(angle, 0.0f, sineCos);
     f32 inverse = 1.0f / sineCos[0];
-    f32 toShare = shares[0] * inverse;
-    f32 fromShare = -shares[2] * inverse;
+    f32 toShare = towardSine[0] * inverse;
+    f32 fromShare = fromSine[0] * inverse;
 
     out->x = from->x * fromShare + target.x * toShare;
     out->y = from->y * fromShare + target.y * toShare;
@@ -209,11 +219,34 @@ void Platform::Math::SlerpRotations(const Vector4* from, const Vector4* to, f32 
 void Platform::Math::EulerRotation(const Vector4* anglesNow, const Vector4* anglesNext, const Vector4* moveNow,
                                    const Vector4* moveNext, Vector4* rotation, Vector4* move)
 {
-    // The share between this frame's angles and the next's is in the next's w
+    // The share between this frame's angles and the next's is in the next's w. Each angle the shorter way round: the
+    // microprogram takes the difference back inside half a turn before the share is applied, so a frame pair that
+    // straddles the ±π wrap doesn't swing the long way round
     f32 share = anglesNext->w;
-    f32 x = (anglesNext->x - anglesNow->x) * share + anglesNow->x;
-    f32 y = (anglesNext->y - anglesNow->y) * share + anglesNow->y;
-    f32 z = (anglesNext->z - anglesNow->z) * share + anglesNow->z;
+    auto shortest = [](f32 from, f32 to)
+    {
+        f32 difference = to - from;
+        if (Pi < difference)
+        {
+            difference = difference - TwoPi;
+        }
+        else if (difference < -Pi)
+        {
+            difference = difference + TwoPi;
+        }
+        else
+        {
+            return to;
+        }
+
+        return from + difference;
+    };
+
+    // Each angle as the microprogram blends it (0x818's vaddax of this frame's, vmsubaw of its own share, vmaddw of the
+    // next's): the terms in that order because VU0 rounds each step
+    f32 x = anglesNow->x - anglesNow->x * share + shortest(anglesNow->x, anglesNext->x) * share;
+    f32 y = anglesNow->y - anglesNow->y * share + shortest(anglesNow->y, anglesNext->y) * share;
+    f32 z = anglesNow->z - anglesNow->z * share + shortest(anglesNow->z, anglesNext->z) * share;
     // The rotation from the blended angles about x, y and z (turning about x, then y, then z), as GetRotationXYZ works it out
     f32 sinCosXZ[4];
     SinCosPolynomial(x * 0.5f, z * 0.5f, sinCosXZ);
@@ -227,10 +260,10 @@ void Platform::Math::EulerRotation(const Vector4* anglesNow, const Vector4* angl
     rotation->y = sinXsinZ * sinCosY[1] + cosXcosZ * sinCosY[0];
     rotation->z = cosXsinZ * sinCosY[1] - sinXcosZ * sinCosY[0];
     rotation->w = cosXcosZ * sinCosY[1] + sinXsinZ * sinCosY[0];
-    // The translation the same share between the two
-    move->x = (moveNext->x - moveNow->x) * share + moveNow->x;
-    move->y = (moveNext->y - moveNow->y) * share + moveNow->y;
-    move->z = (moveNext->z - moveNow->z) * share + moveNow->z;
+    // The translation the same share between the two, its terms in that same order for the same reason: VU0 rounds each step
+    move->x = moveNow->x - moveNow->x * share + moveNext->x * share;
+    move->y = moveNow->y - moveNow->y * share + moveNext->y * share;
+    move->z = moveNow->z - moveNow->z * share + moveNext->z * share;
     move->w = 1.0f;
 }
 
@@ -243,10 +276,12 @@ void Platform::Math::TurnRotation(const Vector4* by, Vector4* rotation)
 
 void Platform::Math::Lerp(const Vector4* from, const Vector4* to, f32 share, Vector4* out)
 {
-    // From + (to - from) share, its w 1 (the macro sequence's vmaddw by the share and vmove.w from vf0)
-    out->x = (to->x - from->x) * share + from->x;
-    out->y = (to->y - from->y) * share + from->y;
-    out->z = (to->z - from->z) * share + from->z;
+    // From + (to - from) share, its w 1 (the macro sequence's vmaddw by the share and vmove.w from vf0). The terms are taken
+    // in the microprogram's order - the vaddax of the from, the vmsubaw of the from's own share, then the vmaddw of the to's -
+    // because VU0 rounds each step
+    out->x = from->x - from->x * share + to->x * share;
+    out->y = from->y - from->y * share + to->y * share;
+    out->z = from->z - from->z * share + to->z * share;
     out->w = 1.0f;
 }
 
@@ -257,24 +292,23 @@ void Platform::Math::JointMatrix(const Vector4* rotation, const Vector4* parentS
     if (rotation != nullptr)
     {
         MatrixFromRotation(&local, rotation);
-        // Divided by the parent's scale and scaled by its own (0x548, 0x668 with a scale): each row by its own factor, a
-        // scale before the matrix
+        // The rotation's own scale along each row (a scale before the matrix), and every column times the inverse of the
+        // parent's scale along that column (0x548, 0x668 with a scale; 0x790 in the parent's space)
+        f32 inverses[3] = {1.0f, 1.0f, 1.0f};
+        if (parentScale != nullptr)
+        {
+            inverses[0] = 1.0f / parentScale->x;
+            inverses[1] = 1.0f / parentScale->y;
+            inverses[2] = 1.0f / parentScale->z;
+        }
+
         for (u32 row = 0; row < 3; row++)
         {
-            f32 factor = 1.0f;
-            if (parentScale != nullptr)
+            f32 own = scale != nullptr ? (&scale->x)[row] : 1.0f;
+            for (u32 column = 0; column < 3; column++)
             {
-                factor /= (&parentScale->x)[row];
+                local.m[row][column] = local.m[row][column] * own * inverses[column];
             }
-
-            if (scale != nullptr)
-            {
-                factor *= (&scale->x)[row];
-            }
-
-            local.m[row][0] *= factor;
-            local.m[row][1] *= factor;
-            local.m[row][2] *= factor;
         }
     }
     else
@@ -335,24 +369,13 @@ bool Platform::Math::ParticleBlockView(s32 view, bool keepsTranslation, const f3
     *distance = far;
     // The place pulled towards the camera by the scale
     f32 pulled[3] = {place[0], place[1], place[2]};
-    // TS_NOPULL=1: skip the pull and use the emitter's place unchanged.
-    static const bool noPull = std::getenv("TS_NOPULL") != nullptr;
-    const f32 pull = noPull ? 0.0f : scale;
+    const f32 pull = scale;
     if (0.0f < far)
     {
         f32 along = pull / far;
         pulled[0] = place[0] - x * along;
         pulled[1] = place[1] - y * along;
         pulled[2] = place[2] - z * along;
-    }
-
-    // TS_DIAG=1: log every block's place, pull, camera and matrix to particleview.log.
-    static const bool placeDiag = std::getenv("TS_DIAG") != nullptr;
-    static u32 placeLines = 0;
-    const bool logPlace = placeDiag && placeLines < 4000;
-    if (logPlace)
-    {
-        placeLines++;
     }
 
     // The block's matrix: identity in rows 0 to 2, the place the block's particles are born at in row 3.
@@ -372,8 +395,6 @@ bool Platform::Math::ParticleBlockView(s32 view, bool keepsTranslation, const f3
     Vector4 at = keepsTranslation ? Vector4{0.0f, 0.0f, 0.0f, 1.0f} : Vector4{pulled[0], pulled[1], pulled[2], 1.0f};
 
     *RowOf(matrix, PositionRow) = at;
-    // The block's translation row before the view's matrix is folded in.
-    const Vector4 blockRow = *RowOf(matrix, PositionRow);
     // Fold in the view's second matrix (the chunk's toScreen, as retail's UploadParticleView does). The block's matrix
     // takes the particle's units into the chunk's space, and toScreen takes the chunk's into the game's screen
     // coordinates. The row-vector product applies the first matrix first, as every other draw that pairs the two does.
@@ -383,26 +404,6 @@ bool Platform::Math::ParticleBlockView(s32 view, bool keepsTranslation, const f3
         Matrix4x4 composed;
         VuMultiplyMatrices(matrix, toScreen, &composed);
         *matrix = composed;
-    }
-    if (logPlace)
-    {
-        // The draw's place, the emitter's place, the pull, the camera and the final row, in one line each draw.
-        const Vector4* row = RowOf(matrix, PositionRow);
-        std::FILE* file = std::fopen("particleview.log", "ab");
-        if (file != nullptr)
-        {
-            std::fprintf(file,
-                         "particleview view %d kept %d place %.2f %.2f %.2f scale %.4f camera %.2f %.2f %.2f far %.2f "
-                         "pulled %.2f %.2f %.2f block %.2f %.2f %.2f row %.2f %.2f %.2f w %.3f\n",
-                         view, keepsTranslation ? 1 : 0, static_cast<double>(place[0]), static_cast<double>(place[1]),
-                         static_cast<double>(place[2]), static_cast<double>(scale), static_cast<double>(camera.x),
-                         static_cast<double>(camera.y), static_cast<double>(camera.z), static_cast<double>(far),
-                         static_cast<double>(pulled[0]), static_cast<double>(pulled[1]), static_cast<double>(pulled[2]),
-                         static_cast<double>(blockRow.x), static_cast<double>(blockRow.y), static_cast<double>(blockRow.z),
-                         static_cast<double>(row->x), static_cast<double>(row->y), static_cast<double>(row->z),
-                         static_cast<double>(row->w));
-            std::fclose(file);
-        }
     }
     // Cull the block's box, at the emitter's place (before the pull), against the view's planes. A box that only crosses
     // a plane is still drawn, and a view with no planes culls nothing.
@@ -418,8 +419,16 @@ bool Platform::Math::ParticleBlockView(s32 view, bool keepsTranslation, const f3
 
 f32 Platform::Math::DivideBySquareRoot(f32 value, f32 square)
 {
-    f32 root = std::sqrt(square);
-    f32 result = value / root;
+    // VU0's division by a square root: the magnitude's root, and the division by nothing left to the FPU (an infinity or a
+    // NaN, as VU0's own is) rather than the host's divide-by-zero
+    if (square == 0.0f)
+    {
+        f32 infinite = value / square;
+        OPTIMIZER_BARRIER_F32(infinite);
+        return infinite;
+    }
+
+    f32 result = static_cast<f32>(static_cast<double>(value) / __builtin_sqrt(static_cast<double>(__builtin_fabsf(square))));
     OPTIMIZER_BARRIER_F32(result);
     return result;
 }
@@ -449,7 +458,6 @@ bool Platform::Math::FinishRayTriangle(Vector4* hit)
     const Vector4& c = g_RayTriangle[2];
     Vector4 edge1 = {b.x - a.x, b.y - a.y, b.z - a.z, 0.0f};
     Vector4 edge2 = {c.x - a.x, c.y - a.y, c.z - a.z, 0.0f};
-    Vector4 delta = {g_RayEnd.x - g_RayStart.x, g_RayEnd.y - g_RayStart.y, g_RayEnd.z - g_RayStart.z, 0.0f};
     // The triangle's plane normal, not made unit: the two ends' distances are only used for their signs and their ratio
     Vector4 normal = {edge1.y * edge2.z - edge1.z * edge2.y, edge1.z * edge2.x - edge1.x * edge2.z,
                       edge1.x * edge2.y - edge1.y * edge2.x, 0.0f};
@@ -483,8 +491,11 @@ bool Platform::Math::FinishRayTriangle(Vector4* hit)
         return false;
     }
 
-    Vector4 point = {g_RayStart.x + delta.x * share, g_RayStart.y + delta.y * share,
-                     g_RayStart.z + delta.z * share, 1.0f};
+    // The crossing the microprogram's vaddax/vmsubaw/vmaddw chain gives: the start, less its own share, plus the end's
+    // share - the terms in that order because VU0 rounds each step
+    Vector4 point = {g_RayStart.x - g_RayStart.x * share + g_RayEnd.x * share,
+                     g_RayStart.y - g_RayStart.y * share + g_RayEnd.y * share,
+                     g_RayStart.z - g_RayStart.z * share + g_RayEnd.z * share, 1.0f};
 
     // Each edge's distance from the hit, in world units and positive inside. The edge turned a quarter turn about the
     // plane normal points inward whichever way the triangle is wound, so no facing test is needed.

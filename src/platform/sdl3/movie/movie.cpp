@@ -566,12 +566,6 @@ void Platform::Movie::Draw(Player* player, const Area& area, s32 width, s32 heig
     {
         at[vertex] = vertices[vertex];
     }
-    // The TS_NO switch: the movie kept off the frame
-    if (Platform::Graphics::HostStageDisabled("movie"))
-    {
-        return;
-    }
-
     bgfx::setViewMode(MovieView, bgfx::ViewMode::Sequential);
     // The movie lands on the scene target, like every other pass: the composite at the frame's end copies the whole
     // frame (the PS2 draws everything into one frame buffer), so drawing to the backbuffer would be covered

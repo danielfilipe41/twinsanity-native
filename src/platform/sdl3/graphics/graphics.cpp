@@ -39,120 +39,6 @@ size_t g_FrameMemoryUsed = 0;
 // The frame FinishFrame last presented (the probes' gate: HostFrameCounter)
 u32 g_frameCounter = 0;
 
-// TS_SHADERLOG=<path>: the materials' shader inventory, both the types and the per-material lines. One handle is
-// shared so the two writers do not truncate each other's output.
-FILE* ShaderLog()
-{
-    static FILE* file = nullptr;
-    static bool opened = false;
-    if (!opened)
-    {
-        opened = true;
-        const char* path = std::getenv("TS_SHADERLOG");
-        if (path != nullptr && path[0] != '\0')
-        {
-            file = std::fopen(path, "w");
-        }
-    }
-    return file;
-}
-
-// TS_DRAWLOG=<frame>:<path>: every 3D submodel the game submits in that frame - kind, packet, whether the host mesh
-// builder parses it and to what. Tells a draw never issued (a mesh absent from the scene) from one that submits but
-// parses to nothing (a decode bail) or to wrong geometry
-FILE* DrawLog()
-{
-    static bool read = false;
-    static FILE* file = nullptr;
-    static u32 frame = 0;
-    static u32 lines = 0;
-    if (!read)
-    {
-        read = true;
-        const char* spec = std::getenv("TS_DRAWLOG");
-        if (spec != nullptr && spec[0] != '\0')
-        {
-            const char* colon = std::strchr(spec, ':');
-            frame = static_cast<u32>(std::strtoul(spec, nullptr, 10));
-            const char* path = colon != nullptr ? colon + 1 : "/tmp/draw.log";
-            file = std::fopen(path, "w");
-            if (file != nullptr)
-            {
-                std::setvbuf(file, nullptr, _IONBF, 0);
-            }
-        }
-    }
-
-    if (file != nullptr && Platform::Graphics::HostFrameCounter() >= frame &&
-        Platform::Graphics::HostFrameCounter() < frame + 1 && lines < 40000)
-    {
-        lines++;
-        return file;
-    }
-
-    return nullptr;
-}
-
-// How many triangle corners reference the most-referenced vertex of an index list: a healthy strip keeps this at 3,
-// a mesh whose triangles mostly share one vertex (rendering as a fan from that vertex) approaches the triangle count
-template <typename Index>
-size_t FanMax(const std::vector<Index>& indexes, u32 vertexCount)
-{
-    if (vertexCount == 0 || indexes.empty())
-    {
-        return 0;
-    }
-
-    std::vector<u32> use(vertexCount, 0);
-    size_t best = 0;
-    for (Index index : indexes)
-    {
-        if (index < use.size())
-        {
-            best = best < ++use[index] ? use[index] : best;
-        }
-    }
-
-    return best;
-}
-
-// The screen extent a draw's vertices project to: min/max clip-space x/y/z (before the w divide) and the largest
-// |clip.xyz| relative to w, which a mesh whose transform collapses vertices (a fan from a point, or a wild scale)
-// blows up. Printed by the TS_DRAWLOG probes
-void DrawExtent(const u8* vertices, size_t vertexBytes, size_t stride, size_t positionOffset, const Matrix4x4* mvp,
-                f32* minX, f32* maxX, f32* minY, f32* maxY, f32* ratio)
-{
-    *minX = 1.0e30f;
-    *maxX = -1.0e30f;
-    *minY = 1.0e30f;
-    *maxY = -1.0e30f;
-    f32 spread = 0.0f;
-    for (size_t index = 0; index + 1 <= vertexBytes / stride; index++)
-    {
-        f32 p[3];
-        std::memcpy(p, vertices + index * stride + positionOffset, sizeof(p));
-        f32 clip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        for (u32 column = 0; column < 4; column++)
-        {
-            clip[column] = p[0] * mvp->m[0][column] + p[1] * mvp->m[1][column] + p[2] * mvp->m[2][column] +
-                           mvp->m[3][column];
-        }
-
-        f32 w = clip[3] != 0.0f ? clip[3] : 1.0e-9f;
-        *minX = clip[0] / w < *minX ? clip[0] / w : *minX;
-        *maxX = clip[0] / w > *maxX ? clip[0] / w : *maxX;
-        *minY = clip[1] / w < *minY ? clip[1] / w : *minY;
-        *maxY = clip[1] / w > *maxY ? clip[1] / w : *maxY;
-        f32 ax = clip[0] < 0.0f ? -clip[0] : clip[0];
-        f32 ay = clip[1] < 0.0f ? -clip[1] : clip[1];
-        f32 aw = w < 0.0f ? -w : w;
-        f32 relative = (ax + ay) / aw;
-        spread = relative > spread ? relative : spread;
-    }
-
-    *ratio = spread;
-}
-
 void ResetFrameMemory()
 {
     g_FrameMemory.clear();
@@ -429,18 +315,11 @@ u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShader
     bool firstTextured = false;
     bool billboard = false;
     s32 firstType = 0;
-    // TS_SHADERLOG: the shader types too, telling a material whose type makes it a billboard from one misread
-    FILE* typeFile = ShaderLog();
     for (s32 index = 0; index < shaderCount; index++)
     {
         s32 type;
         stream->ReadS32(&type);
-        if (typeFile != nullptr)
-        {
-            std::fprintf(typeFile, "SHADERTYPE index %d type %08x\n", index, static_cast<u32>(type));
-            std::fflush(typeFile);
-        }
-        // The type-0x1B shader makes its model a billboard (shaderclasses.cpp's ShaderType1BMakesBillboard); any of a
+            // The type-0x1B shader makes its model a billboard (shaderclasses.cpp's ShaderType1BMakesBillboard); any of a
         // material's shaders answers yes (resources.cpp's AnyShader over the shader vtables)
         if (type == ShaderTypeBillboard)
         {
@@ -461,28 +340,7 @@ u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShader
         }
         // The settings each shader carries: which pass a multi-shader material's second draw is, and which filter,
         // alpha preset and alpha-failure action the audit needs to know before any of them can be reproduced
-        if (typeFile != nullptr)
-        {
-            std::fprintf(typeFile,
-                         "SHADERSETTINGS index %d tex %u blends %u preset %u alphaTest %u alphaMethod %u alphaRef %u "
-                         "alphaFail %u destTest %u destMode %u depth %u gouraud %u stq %u fog %u linear %u noFba %u "
-                         "aa %u noDepthWrite %u ownAlpha %u scroll %g %g\n",
-                         index, shaderTextureId,
-                         static_cast<unsigned>(shaderSettings[Platform::Graphics::HostShaderSettingBlends]),
-                         static_cast<unsigned>(shaderSettings[Platform::Graphics::HostShaderSettingPreset]),
-                         static_cast<unsigned>(shaderSettings[Platform::Graphics::HostShaderSettingAlphaTest]),
-                         static_cast<unsigned>(shaderSettings[Platform::Graphics::HostShaderSettingAlphaMethod]),
-                         static_cast<unsigned>(shaderSettings[Platform::Graphics::HostShaderSettingAlphaReference]),
-                         static_cast<unsigned>(shaderSettings[5]), static_cast<unsigned>(shaderSettings[6]),
-                         static_cast<unsigned>(shaderSettings[7]), static_cast<unsigned>(shaderSettings[8]),
-                         static_cast<unsigned>(shaderSettings[10]), static_cast<unsigned>(shaderSettings[12]),
-                         static_cast<unsigned>(shaderSettings[13]), static_cast<unsigned>(shaderSettings[23]),
-                         static_cast<unsigned>(shaderSettings[24]), static_cast<unsigned>(shaderSettings[26]),
-                         static_cast<unsigned>(shaderSettings[27]), static_cast<unsigned>(shaderSettings[17]),
-                         static_cast<double>(shaderScroll.speeds[0]), static_cast<double>(shaderScroll.speeds[1]));
-            std::fflush(typeFile);
-        }
-        if (index > 0 && laterSettings != nullptr && static_cast<u32>(index) < Platform::Graphics::HostMaterialPasses)
+            if (index > 0 && laterSettings != nullptr && static_cast<u32>(index) < Platform::Graphics::HostMaterialPasses)
         {
             std::memcpy(laterSettings[index - 1], shaderSettings, sizeof(shaderSettings));
         }
@@ -579,7 +437,7 @@ namespace
 {
 // The field rate the game's logic runs at, and whether the picture is PAL. The rate is the disc's, not the display's: this
 // is the PAL release, so the game's logic steps 50 times a second, and everything the game counts per frame (the movers'
-// state machines, the emitters' aging, the pickup's formula) assumes that step. TS_FPS overrides it for experiments only.
+// state machines, the emitters' aging, the pickup's formula) assumes that step.
 // WaitVSync paces the host's loop to it and Platform::Time steps the game's clock by exactly one field, so frameTime is
 // one exact field and does not inherit the host's jitter
 bool g_palDisplay = false;
@@ -656,38 +514,10 @@ void Platform::Graphics::StartRenderer(s32 height, bool pal)
     // offsets and tiling either way, so only the rate follows the region
     g_palDisplay = pal;
     // The game's logic runs at the disc's field rate (50 on this PAL disc), and the picture is presented at the monitor's
-    // (60 by default; TS_FPS picks another). They are separate on purpose: the logic must not follow the display, or the
-    // game runs 1.2x fast on a 60 Hz monitor, which is what a flat 60 did to every per-frame count the game has
-    s32 displayRate = 60;
-    if (const char* text = std::getenv("TS_FPS"); text != nullptr && text[0] != '\0')
-    {
-        displayRate = static_cast<s32>(std::strtol(text, nullptr, 10));
-    }
-
-    if (displayRate < 10)
-    {
-        displayRate = 10;
-    }
-    else if (displayRate > 1000)
-    {
-        displayRate = 1000;
-    }
-
-    // TS_LOGICFPS is the experiment: it changes the game's own step, which is only right for testing the frame rate itself
-    s32 logicRate = pal ? 50 : 60;
-    if (const char* text = std::getenv("TS_LOGICFPS"); text != nullptr && text[0] != '\0')
-    {
-        logicRate = static_cast<s32>(std::strtol(text, nullptr, 10));
-    }
-
-    if (logicRate < 10)
-    {
-        logicRate = 10;
-    }
-    else if (logicRate > 1000)
-    {
-        logicRate = 1000;
-    }
+    // (60 by default). They are separate on purpose: the logic must not follow the display, or the game runs 1.2x fast
+    // on a 60 Hz monitor, which is what a flat 60 did to every per-frame count the game has
+    const s32 displayRate = 60;
+    const s32 logicRate = pal ? 50 : 60;
 
     Platform::Time::SetRates(logicRate, displayRate);
     g_hostFrameRate = Platform::Time::DisplayRate();
@@ -987,122 +817,6 @@ void Platform::Graphics::FinishFrame()
     // it over the backbuffer now, so the window shows the finished picture
     HostCompositeScene();
 
-    // TS_SHOT=<frames>[:<prefix>]: one-shot PPM capture of the finished scene (the frame's colour the composite copies
-    // to the screen), e.g. TS_SHOT=30,60,120:/tmp/shot writes /tmp/shot30.ppm, ... . bgfx cannot read the backbuffer,
-    // but the scene target holds the same content
-    static bool captureRead = false;
-    static std::vector<u32> captureFrames;
-    static const char* capturePrefix = nullptr;
-    if (!captureRead)
-    {
-        captureRead = true;
-        const char* spec = std::getenv("TS_SHOT");
-        if (spec != nullptr && *spec != '\0')
-        {
-            const char* colon = std::strchr(spec, ':');
-            capturePrefix = colon != nullptr ? colon + 1 : "/tmp/shot";
-            const char* at = spec;
-            while (at != nullptr && (colon == nullptr || at < colon) && *at != '\0')
-            {
-                captureFrames.push_back(static_cast<u32>(std::strtoul(at, nullptr, 10)));
-                const char* comma = std::strchr(at, ',');
-                at = comma != nullptr ? comma + 1 : nullptr;
-            }
-        }
-    }
-
-    if (capturePrefix != nullptr)
-    {
-        for (u32 want : captureFrames)
-        {
-            if (want != frame)
-            {
-                continue;
-            }
-
-            bgfx::TextureHandle scene = HostSceneColour();
-            if (bgfx::isValid(scene))
-            {
-                // The stages to capture: bgfx runs a view's blits before its draws, so a blit in view V shows the
-                // scene as every view before V left it. 30 (unused) is the whole scene ahead of the composite; 3 is
-                // the sky plus the opaque 3D alone; 20 adds the blended buckets; 25 adds decals, shadows, particles,
-                // distortion and the UI. TS_SHOTVIEW=<v[,v...]>, default 30
-                static std::vector<u32> captureViews;
-                static std::vector<bgfx::TextureHandle> readbacks;
-                if (captureViews.empty())
-                {
-                    const char* viewSpec = std::getenv("TS_SHOTVIEW");
-                    if (viewSpec == nullptr || *viewSpec == '\0')
-                    {
-                        viewSpec = "30";
-                    }
-
-                    const char* at = viewSpec;
-                    while (at != nullptr && *at != '\0')
-                    {
-                        captureViews.push_back(static_cast<u32>(std::strtoul(at, nullptr, 10)));
-                        const char* comma = std::strchr(at, ',');
-                        at = comma != nullptr ? comma + 1 : nullptr;
-                    }
-                    for (size_t index = 0; index < captureViews.size(); index++)
-                    {
-                        readbacks.push_back(bgfx::createTexture2D(
-                            static_cast<u16>(BgfxWindowWidth), static_cast<u16>(BgfxWindowHeight), false, 1,
-                            bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK));
-                    }
-                }
-
-                for (size_t index = 0; index < captureViews.size(); index++)
-                {
-                    if (bgfx::isValid(readbacks[index]))
-                    {
-                        bgfx::blit(static_cast<bgfx::ViewId>(captureViews[index]), {.handle = readbacks[index]},
-                                   {.handle = scene});
-                    }
-                }
-
-                std::vector<u8> pixels(static_cast<size_t>(BgfxWindowWidth) * BgfxWindowHeight * 4);
-                const size_t rowBytes = static_cast<size_t>(BgfxWindowWidth) * 4;
-                for (size_t index = 0; index < readbacks.size(); index++)
-                {
-                    if (!bgfx::isValid(readbacks[index]))
-                    {
-                        continue;
-                    }
-
-                    const u32 ready = bgfx::read({.handle = readbacks[index]}, pixels.data());
-                    for (u32 spin = 0; spin < 120; spin++)
-                    {
-                        if (bgfx::frame() >= ready)
-                        {
-                            break;
-                        }
-                    }
-                    char path[512];
-                    std::snprintf(path, sizeof(path), "%s%u-v%u.ppm", capturePrefix, frame, captureViews[index]);
-                    FILE* out = std::fopen(path, "wb");
-                    if (out != nullptr)
-                    {
-                        std::fprintf(out, "P6\n%u %u\n255\n", static_cast<u32>(BgfxWindowWidth),
-                                     static_cast<u32>(BgfxWindowHeight));
-                        // The readback's row 0 is the render target's BOTTOM row (GL's own order), so the rows go
-                        // out reversed (last row first) for the file to read the way the window shows the frame
-                        for (size_t row = 0; row < BgfxWindowHeight; row++)
-                        {
-                            const size_t at = (static_cast<size_t>(BgfxWindowHeight) - 1 - row) * rowBytes;
-                            for (u32 x = 0; x < BgfxWindowWidth; x++)
-                            {
-                                std::fwrite(&pixels[at + x * 4], 1, 3, out);
-                            }
-                        }
-                        std::fclose(out);
-                        std::fprintf(stderr, "host: wrote %s (frame %u)\n", path, frame);
-                    }
-                }
-            }
-        }
-    }
-
     if ((frame++ % 300) == 0)
     {
         const bgfx::Stats* stats = bgfx::getStats();
@@ -1120,9 +834,6 @@ u32 Platform::Graphics::HostFrameCounter()
 
 void Platform::Graphics::StartFrame(const FrameStart& frame)
 {
-    // The camera's numbers, if TS_CAMLOG asks for them. The frame start is the one path every frame takes, even when
-    // the level has no sky.
-    HostCameraLog(g_RenderView);
     HostSetScreenSize(static_cast<u32>(frame.width), static_cast<u32>(frame.height));
     // The game's screen coordinates (the particles' shapes and the to-screen matrices) are measured against the
     // display, which the frame start names (the render target's screen size)
@@ -1140,21 +851,6 @@ void Platform::Graphics::StartFrame(const FrameStart& frame)
     // three bytes and opaque alpha (the frame's, the shadow pass copies) in the low one
     const u32 rgba = static_cast<u32>(frame.red) << 24 | static_cast<u32>(frame.green) << 16 |
                      static_cast<u32>(frame.blue) << 8 | 0xFFu;
-    // TS_MESHDUMP: a one-shot log of the frame's clear colour, which a run's dump then records as the game asks it
-    if (const char* dumpPath = std::getenv("TS_MESHDUMP"))
-    {
-        static bool clearLogged = false;
-        if (!clearLogged)
-        {
-            clearLogged = true;
-            if (FILE* clearFile = std::fopen(dumpPath, "a"))
-            {
-                std::fprintf(clearFile, "CLEAR frame red %u green %u blue %u -> 0x%08x (bgfx 0xRRGGBBAA)\n", frame.red,
-                             frame.green, frame.blue, rgba);
-                std::fclose(clearFile);
-            }
-        }
-    }
     // The scene draws into the offscreen target, not the backbuffer: the shadow pass needs the frame's depth and
     // alpha (the PS2 copies both into the half-size buffer, shadows.cpp's StartShadows), which a backbuffer cannot
     // give. FinishFrame composites it back. The clear is unconditional: the target must have a defined colour and a
@@ -1319,24 +1015,7 @@ void Platform::Graphics::DrawPlacedModel(RigidModel* model, ChunkView* view, con
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
         HostSetDrawScroll(subModelMaterial);
         const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-        if (FILE* log = DrawLog())
-        {
-            Ps2RigidMesh mesh;
-            const bool parsed = data->packets[index] != nullptr &&
-                                ParseRigidSubModel(data->packets[index], data->sizes[index], data->vertexCounts[index], &mesh);
-            std::fprintf(log,
-                         "PLACED model %p sub %u packet %p size %u vc %u material %p ty %02x bill %u parsed %d verts %u "
-                         "tris %zu fanmax %zu djoints_none bbox [%.2f %.2f %.2f]-[%.2f %.2f %.2f]\n",
-                         static_cast<const void*>(host), index, static_cast<const void*>(data->packets[index]),
-                         data->sizes[index], data->vertexCounts[index], static_cast<const void*>(subModelMaterial),
-                         subModelMaterial != nullptr ? subModelMaterial->shaderType : 0, billboard ? 1 : 0,
-                         parsed ? 1 : 0, parsed ? mesh.vertexCount : 0, parsed ? mesh.indexes.size() / 3 : 0,
-                         parsed ? FanMax(mesh.indexes, mesh.vertexCount) : 0, parsed ? mesh.boundsMin[0] : 0.0f,
-                         parsed ? mesh.boundsMin[1] : 0.0f, parsed ? mesh.boundsMin[2] : 0.0f,
-                         parsed ? mesh.boundsMax[0] : 0.0f, parsed ? mesh.boundsMax[1] : 0.0f,
-                         parsed ? mesh.boundsMax[2] : 0.0f);
-        }
-        const bgfx::ViewId view = ViewOf(subModelMaterial);
+                const bgfx::ViewId view = ViewOf(subModelMaterial);
         HostSceneSetView(view);
         HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, inChunk,
                             nullptr, HostSubModelTexture(host->materials, index), view, state.state,
@@ -1463,43 +1142,7 @@ void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matr
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
         HostSetDrawScroll(subModelMaterial);
         const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-        if (FILE* log = DrawLog())
-        {
-            Ps2RigidMesh mesh;
-            const bool parsed = data->packets[index] != nullptr &&
-                                ParseRigidSubModel(data->packets[index], data->sizes[index], data->vertexCounts[index], &mesh);
-            std::fprintf(log,
-                         "RIGIDMODEL model %p id %u sub %u packet %p size %u vc %u material %p parsed %d verts %u "
-                         "tris %zu fanmax %zu ty %02x bill %u bbox [%.2f %.2f %.2f]-[%.2f %.2f %.2f] wpos %.1f %.1f %.1f",
-                         static_cast<const void*>(host), host->modelId, index,
-                         static_cast<const void*>(data->packets[index]), data->sizes[index], data->vertexCounts[index],
-                         static_cast<const void*>(subModelMaterial), parsed ? 1 : 0, parsed ? mesh.vertexCount : 0,
-                         parsed ? mesh.indexes.size() / 3 : 0, parsed ? FanMax(mesh.indexes, mesh.vertexCount) : 0,
-                         subModelMaterial != nullptr ? subModelMaterial->shaderType : 0,
-                         subModelMaterial != nullptr && (subModelMaterial->flags & HostMaterialBillboard) != 0 ? 1 : 0,
-                         parsed ? mesh.boundsMin[0] : 0.0f,
-                         parsed ? mesh.boundsMin[1] : 0.0f, parsed ? mesh.boundsMin[2] : 0.0f,
-                         parsed ? mesh.boundsMax[0] : 0.0f, parsed ? mesh.boundsMax[1] : 0.0f,
-                         parsed ? mesh.boundsMax[2] : 0.0f, static_cast<double>(matrix->m[3][0]),
-                         static_cast<double>(matrix->m[3][1]), static_cast<double>(matrix->m[3][2]));
-            if (parsed)
-            {
-                f32 mnX;
-                f32 mxX;
-                f32 mnY;
-                f32 mxY;
-                f32 ratio;
-                DrawExtent(mesh.vertices.data(), mesh.vertices.size(), 28, 0, &mvp, &mnX, &mxX, &mnY, &mxY, &ratio);
-                std::fprintf(log, " ndc [%.2f %.2f]x[%.2f %.2f] ratio %.1f\n", static_cast<double>(mnX),
-                             static_cast<double>(mxX), static_cast<double>(mnY), static_cast<double>(mxY),
-                             static_cast<double>(ratio));
-            }
-            else
-            {
-                std::fprintf(log, "\n");
-            }
-        }
-        // The shadow-caster mark (draws_host.cpp's MarkedForCaster): an OGI's rigid parts are the character too, so
+                // The shadow-caster mark (draws_host.cpp's MarkedForCaster): an OGI's rigid parts are the character too, so
         // their draws leave the frame's alpha at bit 7 = 0 and the shadow volumes skip them. It keeps an opaque part's
         // RGB factors intact -- forcing only the alpha half left them at enum 0, which bgfx/drivers draw black
         const bgfx::ViewId view = ViewOf(subModelMaterial);
@@ -1557,91 +1200,7 @@ void Platform::Graphics::DrawSkin(Skin* skin, const Matrix4x4* joints, u32 joint
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
         HostSetDrawScroll(subModelMaterial);
         const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-        if (FILE* log = DrawLog())
-        {
-            Ps2SkinMesh mesh;
-            const bool parsed =
-                host->packets[index] != nullptr &&
-                ParseSkinSubModel(host->packets[index], host->sizes[index], host->vertexCounts[index], 0, &mesh);
-            std::fprintf(log,
-                         "SKIN skin %p sub %u packet %p size %u vc %u material %p joints %u parsed %d verts %u tris %zu "
-                         "fanmax %zu ty %02x bill %u djoints %u wpos %.1f %.1f %.1f",
-                         static_cast<const void*>(host), index, static_cast<const void*>(host->packets[index]),
-                         host->sizes[index], host->vertexCounts[index], static_cast<const void*>(subModelMaterial),
-                         jointCount, parsed ? 1 : 0, parsed ? mesh.vertexCount : 0,
-                         parsed ? mesh.indexes.size() / 3 : 0, parsed ? FanMax(mesh.indexes, mesh.vertexCount) : 0,
-                         subModelMaterial != nullptr ? subModelMaterial->shaderType : 0,
-                         subModelMaterial != nullptr && (subModelMaterial->flags & HostMaterialBillboard) != 0 ? 1 : 0,
-                         parsed ? mesh.jointCount : 0, static_cast<double>(matrix->m[3][0]),
-                         static_cast<double>(matrix->m[3][1]), static_cast<double>(matrix->m[3][2]));
-            // The skinned extent: the same weights/joint matrices the vertex shader applies, projected on the CPU, so
-            // a skin whose weights or joint indices blow the mesh up is told from one that is merely misplaced
-            if (parsed && joints != nullptr && jointCount != 0 && mesh.vertices.size() % sizeof(Ps2SkinVertex) == 0)
-            {
-                const Ps2SkinVertex* skinVertices = reinterpret_cast<const Ps2SkinVertex*>(mesh.vertices.data());
-                size_t skinCountVerts = mesh.vertices.size() / sizeof(Ps2SkinVertex);
-                f32 mnX = 1.0e30f;
-                f32 mxX = -1.0e30f;
-                f32 mnY = 1.0e30f;
-                f32 mxY = -1.0e30f;
-                f32 spread = 0.0f;
-                u32 badIndex = 0;
-                for (size_t vertex = 0; vertex < skinCountVerts; vertex++)
-                {
-                    const Ps2SkinVertex& v = skinVertices[vertex];
-                    f32 w0 = v.jointWeight[0];
-                    f32 w1 = v.jointWeight[1];
-                    f32 w2 = v.jointWeight[2];
-                    f32 total = w0 + w1 + w2;
-                    if (!(total > 0.0f))
-                    {
-                        w0 = 1.0f;
-                        w1 = 0.0f;
-                        w2 = 0.0f;
-                        total = 1.0f;
-                    }
-                    const u8 indices[3] = {static_cast<u8>(v.jointIdx[0]), static_cast<u8>(v.jointIdx[1]), static_cast<u8>(v.jointIdx[2])};
-                    const f32 weights[3] = {w0 / total, w1 / total, w2 / total};
-                    f32 world[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                    for (u32 joint = 0; joint < 3; joint++)
-                    {
-                        if (indices[joint] >= jointCount || indices[joint] >= SkinMaxJoints)
-                        {
-                            badIndex++;
-                            continue;
-                        }
-
-                        const Matrix4x4& jm = joints[indices[joint]];
-                        world[0] += weights[joint] * (v.x * jm.m[0][0] + v.y * jm.m[1][0] + v.z * jm.m[2][0] + jm.m[3][0]);
-                        world[1] += weights[joint] * (v.x * jm.m[0][1] + v.y * jm.m[1][1] + v.z * jm.m[2][1] + jm.m[3][1]);
-                        world[2] += weights[joint] * (v.x * jm.m[0][2] + v.y * jm.m[1][2] + v.z * jm.m[2][2] + jm.m[3][2]);
-                    }
-                    f32 clip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                    for (u32 column = 0; column < 4; column++)
-                    {
-                        clip[column] = world[0] * mvp.m[0][column] + world[1] * mvp.m[1][column] +
-                                       world[2] * mvp.m[2][column] + mvp.m[3][column];
-                    }
-                    f32 w = clip[3] != 0.0f ? clip[3] : 1.0e-9f;
-                    mnX = clip[0] / w < mnX ? clip[0] / w : mnX;
-                    mxX = clip[0] / w > mxX ? clip[0] / w : mxX;
-                    mnY = clip[1] / w < mnY ? clip[1] / w : mnY;
-                    mxY = clip[1] / w > mxY ? clip[1] / w : mxY;
-                    f32 ax = clip[0] < 0.0f ? -clip[0] : clip[0];
-                    f32 ay = clip[1] < 0.0f ? -clip[1] : clip[1];
-                    f32 aw = w < 0.0f ? -w : w;
-                    spread = (ax + ay) / aw > spread ? (ax + ay) / aw : spread;
-                }
-                std::fprintf(log, " skinned_ndc [%.2f %.2f]x[%.2f %.2f] ratio %.1f badidx %u\n",
-                             static_cast<double>(mnX), static_cast<double>(mxX), static_cast<double>(mnY),
-                             static_cast<double>(mxY), static_cast<double>(spread), badIndex);
-            }
-            else
-            {
-                std::fprintf(log, "\n");
-            }
-        }
-        const bgfx::ViewId view = ViewOf(subModelMaterial);
+                const bgfx::ViewId view = ViewOf(subModelMaterial);
         HostSceneSetView(view);
         const bgfx::TextureHandle subModelTexture = HostSubModelTexture(host->materials, index);
         HostDrawSkinPacket(host->packets[index], host->sizes[index], host->vertexCounts[index], 0, &mvp, matrix,
@@ -1711,22 +1270,7 @@ void Platform::Graphics::DrawBlendSkin(BlendSkin* skin, const Matrix4x4* joints,
                 continue;
             }
 
-            if (FILE* log = DrawLog())
-            {
-                Ps2SkinMesh mesh;
-                const bool parsed =
-                    blendPart->packet != nullptr &&
-                    ParseSkinSubModel(blendPart->packet, blendPart->packetSize, 0, host->shapeCount, &mesh);
-                std::fprintf(log,
-                             "BLENDSKIN skin %p sub %u part %u packet %p size %u material %p shapes %u parsed %d "
-                             "verts %u tris %zu djoints %u\n",
-                             static_cast<const void*>(host), sub, part,
-                             static_cast<const void*>(blendPart->packet), blendPart->packetSize,
-                             static_cast<const void*>(subModelMaterial), host->shapeCount, parsed ? 1 : 0,
-                             parsed ? mesh.vertexCount : 0, parsed ? mesh.indexes.size() / 3 : 0,
-                             parsed ? mesh.jointCount : 0);
-            }
-            const bgfx::ViewId view = ViewOf(subModelMaterial);
+                        const bgfx::ViewId view = ViewOf(subModelMaterial);
             HostSceneSetView(view);
             HostDrawSkinPacket(blendPart->packet, blendPart->packetSize, 0, host->shapeCount, &mvp, matrix, &lights,
                                joints, jointCount, weights, blends, texture, view, state.state,
@@ -2082,26 +1626,6 @@ void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream
                 static_cast<u8>((passSettings[Platform::Graphics::HostShaderSettingNoDepthWrites] != 0 ? 1 : 0) |
                                 (passSettings[Platform::Graphics::HostShaderSettingAlphaTest] != 0 ? 2 : 0));
         }
-    }
-    // TS_DIAG=1: each material's render bucket and the view its draws land in, so a surface that draws in the wrong
-    // order (a waterfall in front of the rock it falls behind, say) can be told from one drawn correctly. The type,
-    // the blending and the depth test come straight from the read: hostMaterial->shaderType, ->blends and
-    // ->depthTest are only stored further down, so reading those fields here printed 0 for every material
-    if (std::getenv("TS_DIAG") != nullptr)
-    {
-        std::fprintf(stderr, "material bucket %u view %u type %u blends %u depth %u\n", hostMaterial->bucket,
-                     Platform::Graphics::HostViewForBucket(hostMaterial->bucket), static_cast<u32>(shaderType),
-                     static_cast<u32>(hostMaterial->shaderSettings[HostShaderSettingBlends]),
-                     static_cast<u32>(hostMaterial->shaderSettings[HostShaderSettingDepthTest]));
-    }
-    // TS_SHADERLOG=<path>: material id, shader count and each shader's texture id, telling a multi-shader material
-    // whose draw should use a later shader's texture from the single-shader ones
-    if (FILE* shaderFile = ShaderLog())
-    {
-        const u32 id = material != nullptr ? reinterpret_cast<const u32*>(material)[1] : 0;
-        std::fprintf(shaderFile, "MATSHADER id %u ptr %p shaders %u tex0 %u tex1 %u tex2 %u tex3 %u first\n", id,
-                     static_cast<const void*>(material), shaderCount, shaderTextureIds[0], shaderTextureIds[1],
-                     shaderTextureIds[2], shaderTextureIds[3]);
     }
     std::memcpy(hostMaterial->scrollPhases, scroll.phases, sizeof(scroll.phases));
     std::memcpy(hostMaterial->scrollSpeeds, scroll.speeds, sizeof(scroll.speeds));

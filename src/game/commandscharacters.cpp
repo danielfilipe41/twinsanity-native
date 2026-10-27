@@ -8,8 +8,6 @@
 #include "game/chunkloading.h"
 #include "game/clock.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include "game/collision.h"
 #include "game/colour.h"
 #include "game/events.h"
@@ -976,28 +974,6 @@ void SetPlayerInputCommand::Execute(TimeClock*, BehaviourRunner* runner, Behavio
     }
 
     auto* controlsNode = static_cast<ControlsNode*>(GetGameNode(&instance->nodes, NodeControls));
-
-    // TS_SPEED=1: the drive bit as this command sets it, and whose body it is being set on. A character meant to run
-    // along his animation but left pad-driven walks by his property and by the PLAYER's stick instead (SpeedFor takes
-    // the stick for a driven body and the property for an undriven one), which looks exactly like a runaway. The
-    // fallback above is logged too: it puts the player's own body in place when the runner has no character
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 400)
-        {
-            std::FILE* file = std::fopen("drive.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "SetPlayerInput body %p kind %d motionDriven %u settings %04X/%04X node %s\n",
-                             static_cast<const void*>(instance),
-                             static_cast<int>(character->properties->GetInt(CharacterKindProperty)),
-                             controls.motionDriven, settings.given, settings.values,
-                             controlsNode != nullptr ? "found" : "MISSING");
-                std::fclose(file);
-            }
-        }
-    }
 
     if (controlsNode != nullptr)
     {

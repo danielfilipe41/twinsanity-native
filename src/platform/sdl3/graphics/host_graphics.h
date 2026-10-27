@@ -10,50 +10,10 @@
 
 #include <bgfx/bgfx.h>
 
-#include <cstdlib>
-#include <cstring>
 #include <vector>
 
 namespace Platform::Graphics
 {
-// Debug switch: TS_NO=<name>[,<name>...] disables the named 3D stages, so a broken one can be isolated. Names:
-//   mesh       every rigid submodel draw (chunk scenery, OGIs, the sky's meshes, shadow volumes)
-//   skin       every skinned submodel draw (characters, blend parts)
-//   sky        the whole sky pass (the meshes and the copy over the frame)
-//   skycopy    the sky buffer copied over the frame
-//   shadow     the shadow passes (the volume mesh and the resolve)
-//   particle   the particle quads
-//   decal      the decals
-//   distortion the distortion hexagons
-//   screenfx   the colour filter's fullscreen pass
-//   fog        the scene fog's fullscreen pass
-//   composite  the scene copied over the back buffer (the whole 3D picture)
-//   draw2d     the 2D sprites/strips/glyphs
-//   movie      the movie quads
-// With TS_NO unset, nothing is disabled.
-inline bool HostStageDisabled(const char* name)
-{
-    static const char* list = std::getenv("TS_NO");
-    if (list == nullptr || list[0] == '\0' || name == nullptr || name[0] == '\0')
-    {
-        return false;
-    }
-
-    const size_t length = std::strlen(name);
-    for (const char* at = list; at != nullptr && *at != '\0';)
-    {
-        const char* comma = std::strchr(at, ',');
-        const size_t span = comma != nullptr ? static_cast<size_t>(comma - at) : std::strlen(at);
-        if (span == length && std::strncmp(at, name, length) == 0)
-        {
-            return true;
-        }
-
-        at = comma != nullptr ? comma + 1 : nullptr;
-    }
-
-    return false;
-}
 // How many of a shader's setting bytes the host keeps (the file's base shader: the reading's 30 fields, the same
 // bytes shaderclasses.cpp's ReadShader reads into ShaderSettings)
 constexpr u32 HostShaderSettings = 30;

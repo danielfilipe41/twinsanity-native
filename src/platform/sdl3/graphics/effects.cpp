@@ -13,8 +13,6 @@
 #include "shaders/vs_stq.bin.h"
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -389,41 +387,11 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
 {
     // The frame copy this draws from is ready when the hexagons draw: EnsureFrameCopyFromScene below queues the scene
     // copied into g_frameCopy in this same view (HostDistortionCopyView), and bgfx runs a view's blits before its
-    // draws, so the still holds every pass that drew before the distortion. TS_NODIST and TS_NO=distortion keep the
-    // switch to turn the effect off while it is looked at
-    // TS_NODIST: the distortion hexagons are skipped, telling the screen-warping effect from the other effects
-    if (std::getenv("TS_NODIST") != nullptr || HostStageDisabled("distortion"))
-    {
-        return;
-    }
-
+    // draws, so the still holds every pass that drew before the distortion
     const HostParticleTable* host = TableOf(table);
     if (host == nullptr || HeadOf(block) == nullptr || matrix == nullptr)
     {
         return;
-    }
-
-    // TS_FXLOG=<frame>:<path>: every hexagon's place, clip w, radius and colour for that frame, so a wrong radius or
-    // colour can be read
-    static FILE* fxFile = nullptr;
-    static u32 fxFrame = 0;
-    static bool fxRead = false;
-    static u32 fxLines = 0;
-    if (!fxRead)
-    {
-        fxRead = true;
-        const char* spec = std::getenv("TS_FXLOG");
-        if (spec != nullptr && spec[0] != '\0')
-        {
-            const char* colon = std::strchr(spec, ':');
-            fxFrame = static_cast<u32>(std::strtoul(spec, nullptr, 10));
-            const char* path = colon != nullptr ? colon + 1 : "/tmp/fx.log";
-            fxFile = std::fopen(path, "w");
-            if (fxFile != nullptr)
-            {
-                std::setvbuf(fxFile, nullptr, _IONBF, 0);
-            }
-        }
     }
 
     // The system's distortion as the PS2 hands it to VU1 (the across and down in the frame copy's texture units)
@@ -480,33 +448,6 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
             if (!(centreClip[3] >= ParticleNearClip))
             {
                 continue;
-            }
-
-            if (fxFile != nullptr && Platform::Graphics::HostFrameCounter() >= fxFrame &&
-                Platform::Graphics::HostFrameCounter() < fxFrame + 1 && fxLines < 4000)
-            {
-                fxLines++;
-                f32 maxCorner = 0.0f;
-                for (u32 corner = 0; corner < HexagonCorners; corner++)
-                {
-                    f32 cx = std::fabs(offsets[corner * 2]);
-                    f32 cy = std::fabs(offsets[corner * 2 + 1]);
-                    maxCorner = cx > maxCorner ? cx : maxCorner;
-                    maxCorner = cy > maxCorner ? cy : maxCorner;
-                }
-                std::fprintf(fxFile,
-                             "DIST block %p record %u w %.4f fade %.3f colour %.3f %.3f %.3f %.3f corner %.4f "
-                             "spawn %.2f %.2f %.2f vel %.2f %.2f %.2f\n",
-                             static_cast<void*>(block), record, static_cast<double>(centreClip[3]),
-                             static_cast<double>(fade), static_cast<double>(colour[0]),
-                             static_cast<double>(colour[1]), static_cast<double>(colour[2]),
-                             static_cast<double>(colour[3]), static_cast<double>(maxCorner),
-                             static_cast<double>(records[record].start[0]),
-                             static_cast<double>(records[record].start[1]),
-                             static_cast<double>(records[record].start[2]),
-                             static_cast<double>(records[record].velocity[0]),
-                             static_cast<double>(records[record].velocity[1]),
-                             static_cast<double>(records[record].velocity[2]));
             }
 
             const f32 baseNdcX = (centreClip[0] / centreClip[3] - GsScreenMiddleUnits) * scaleX;

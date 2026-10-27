@@ -14,9 +14,6 @@
 #include "shaders/vs_scenefog.bin.h"
 #include "shaders/vs_screenfx.bin.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 extern "C"
 {
     // The retail filter palettes (ps2/renderer/effects.cpp's g_FilterPalettes / g_FilterPaletteColours): eight
@@ -92,21 +89,6 @@ void MakeFogPalette(u32 paletteId)
         u32 a = FogAlpha(static_cast<u8>((word >> 24) & 0xFF));
         // bgfx's RGBA8 memory is R lowest, the same order the CLUT's word holds
         colours[entry] = r | g << 8 | b << 16 | a << 24;
-    }
-    // TS_DIAG=1: which palette the live chunk selected and how its far/near ends converted, so a flat or white filter
-    // can be told from a wrong palette or a wrong channel convention without a debugger. The ramp's far end is the
-    // pixel at the far plane and its near end the one at the copy's z test (about 26 units), so these six entries are
-    // what the distance sweep passes through
-    if (std::getenv("TS_DIAG") != nullptr)
-    {
-        std::fprintf(stderr,
-                     "fog: palette %u entry 0 %08X -> %08X, entry 255 %08X -> %08X (alpha doubled, rgb kept); "
-                     "ramp alphas 0/32/64/128/192/255 = %u/%u/%u/%u/%u/%u, packed=%d\n",
-                     paletteId, source[0], colours[0], source[255], colours[255],
-                     static_cast<u8>(colours[0] >> 24), static_cast<u8>(colours[32] >> 24),
-                     static_cast<u8>(colours[64] >> 24), static_cast<u8>(colours[128] >> 24),
-                     static_cast<u8>(colours[192] >> 24), static_cast<u8>(colours[255] >> 24),
-                     std::getenv("TS_FOGPACKED") != nullptr ? 1 : 0);
     }
     if (bgfx::isValid(g_fogPalette))
     {
@@ -254,12 +236,6 @@ void ScreenFxUploadDepth(u32 width, u32 height, const f32* depths)
 
 void ScreenFxDrawFilter()
 {
-    // The TS_NO switch: the colour filter's pass off
-    if (Platform::Graphics::HostStageDisabled("screenfx"))
-    {
-        return;
-    }
-
     MakeShared();
     if (!g_depthLive || !bgfx::isValid(g_depth) || !bgfx::isValid(g_palette) || !bgfx::isValid(g_output))
     {
@@ -317,12 +293,6 @@ bool ScreenFxReadOutput(u32 width, u32 height, u8* out)
 
 void DrawSceneFog()
 {
-    // The TS_NO switch: the scene fog's pass off
-    if (Platform::Graphics::HostStageDisabled("fog"))
-    {
-        return;
-    }
-
     // The retail screen effects' colour filter (effects.cpp's DrawScreenEffects -> FilterColours): the chunk's
     // colourFilterPalette -- scenery.h calls it the fog colour -- read as a CLUT by the frame's depth, drawn over
     // the finished frame. g_ColourFilterEffect is the start-up flag that switches the whole effect on (gamecontext
@@ -380,10 +350,7 @@ void DrawSceneFog()
                                                                 BGFX_STATE_BLEND_SRC_ALPHA));
     bgfx::setTexture(0, g_fogDepthSampler, depth);
     bgfx::setTexture(1, g_fogPaletteSampler, g_fogPalette);
-    // TS_FOGPACKED=1: the packed leading byte (255 * (1 - depth), the flat wash this pass drew before), so the two
-    // indexings can be compared in one build without a rebuild
-    static const f32 packed = std::getenv("TS_FOGPACKED") != nullptr ? 1.0f : 0.0f;
-    const f32 fogMode[4] = {packed, 0.0f, 0.0f, 0.0f};
+    const f32 fogMode[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     bgfx::setUniform(g_fogUniform, fogMode);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostSceneFogView, g_fogProgram);

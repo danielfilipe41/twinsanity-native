@@ -3,9 +3,6 @@
 #include "game/gamecontroller.h"
 #include "retail/libc.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 extern "C"
 {
     volatile u32 g_DebugStep = 0;
@@ -49,14 +46,6 @@ volatile u32* StatesHigh()
 
 void DebugFrameRendered()
 {
-    // A crash-log test (TS_CRASH_TEST): the frame hook dereferences a null pointer a few frames in, so a run can show that a
-    // crash inside the game's own code is written out with its frames. Debug-only: unset, nothing here runs
-    static const bool crashTest = std::getenv("TS_CRASH_TEST") != nullptr;
-    if (crashTest && g_DebugFrame == 600)
-    {
-        *reinterpret_cast<volatile int*>(0) = 1;
-    }
-
     u32 frame = g_DebugFrame + 1;
     g_DebugFrame = frame;
     g_DebugRandom[frame % DebugRandomFrames] = *reinterpret_cast<volatile u32*>(&g_Impure->randomNext);
@@ -71,14 +60,6 @@ void DebugFrameRendered()
             if (logged < DebugStateCount)
             {
                 g_DebugStates[logged++] = frame << LoggedFrameShift | state;
-            }
-
-            // A run driven at the host's own frame rate tells a script where the menus are: TS_STATELOG prints each
-            // game controller state transition with the frame it happened on
-            static const bool stateLog = std::getenv("TS_STATELOG") != nullptr;
-            if (stateLog)
-            {
-                std::fprintf(stderr, "host state: frame %u -> %u\n", frame, state);
             }
         }
     }

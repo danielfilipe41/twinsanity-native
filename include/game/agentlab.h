@@ -321,13 +321,6 @@ struct ControlPacket
     u32 GetVector(u32 index, class PropertyHolder* properties, struct Vector4* vector) RETAIL(GetVector4FromByteIndexInScriptSupport1);
     u32 GetAngles(u32 index, class PropertyHolder* properties, s32* angles) RETAIL(FUN_00207530);
 
-    // TS_SPEED=1: the raw slot byte of a value index, so a log can say whether a packet's value was a literal or a
-    // property lookup (bit 7) and which index it named (low 7 bits)
-    u32 RawSlot(u32 index) const
-    {
-        return SlotOf(index).value;
-    }
-
     ValueSlot SlotOf(u32 index) const
     {
         if (index >= slotCount)

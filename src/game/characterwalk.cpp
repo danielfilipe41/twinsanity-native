@@ -1,8 +1,5 @@
 #include "game/characters.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/agentparts.h"
 #include "game/agents.h"
 #include "game/clock.h"
@@ -352,23 +349,6 @@ void WalkController::AskTurn(f32 turn, TimeClock* clock, const s32* rate)
 
 void WalkController::AskMove(u32 straight)
 {
-    // TS_MOVE=1: only the two shapes that matter — an ask while the crouch bit is set, or a zero-speed ask that will steal
-    // the frame's forward request before the crouch frame can make its own
-    if (std::getenv("TS_MOVE") != nullptr)
-    {
-        static u32 noted = 0;
-        CharacterPart* part = PartOf(agent);
-        if ((part->moveBits.crouching != 0 || speed == 0.0f) && noted++ < 2000)
-        {
-            std::FILE* file = std::fopen("askmove.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "AskMove straight=%u state=%u crouching=%u crawling=%u speed=%g\n", straight, bits.state,
-                             part->moveBits.crouching, part->moveBits.crawling, static_cast<double>(speed));
-                std::fclose(file);
-            }
-        }
-    }
     if (straight != 0)
     {
         CharacterPart* part = PartOf(agent);
@@ -556,21 +536,6 @@ u32 WalkController::Frame(f32 strafe, f32 turn, TimeClock* clock, const Vector4*
     {
         PropertyHolder* properties = agent->properties;
         speed = SpeedFor(this, stickSize, 0.0f);
-        // TS_MOVE=1: what the walk asks with — a zero stickSize here wins the frame before the crouch frame can ask 1.75
-        if (std::getenv("TS_MOVE") != nullptr)
-        {
-            static u32 noted = 0;
-            if (noted++ < 200)
-            {
-                std::FILE* file = std::fopen("walk.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "StateIdle stickSize=%g topSpeed=%g speed=%g\n", static_cast<double>(stickSize),
-                                 static_cast<double>(TopSpeed()), static_cast<double>(speed));
-                    std::fclose(file);
-                }
-            }
-        }
         TaggedValue rate;
         PropertyHolder::GetTagged(&rate, properties, TaggedIdleTurn);
         AskTurn(turn, clock, &rate.raw);

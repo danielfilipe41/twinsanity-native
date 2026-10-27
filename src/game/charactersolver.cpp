@@ -21,9 +21,6 @@
 #include "game/reference.h"
 #include "game/vehicles.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include <cstddef>
 #include <cstdint>
 
@@ -184,9 +181,6 @@ bool MoveInstanceBy(InstanceContext* instance, const Vector4* move)
 
     ObjectPlace* place = instance->place;
     place->SyncPosition();
-    // TS_PLACE=1: this writes the position straight, so it is invisible to the place's own move methods and needs its own
-    // line. It is the one write in the character frame that is not the walk's own solved move
-    TracePlaceWrite(place, "MoveInstanceBy", __builtin_return_address(0), move);
     place->MarkMoved();
     place->position.x += move->x;
     place->position.y += move->y;
@@ -1054,30 +1048,6 @@ void CharacterAgent::Solve(f32 lift, f32 seconds, const Vector4* move, const f32
 
     if (StepUp(contacts, &end, &motion, &step, onGround) != 0)
     {
-        // TS_SPEED=1: the step up fired, and on what. This moves the place a second time in the frame, past where the
-        // walk solved for, and a motion driven body's speed is read back off its own place - so the step becomes speed on
-        // the next frame. Logged here rather than in StepUp because only the caller knows which body it is
-        if (std::getenv("TS_SPEED") != nullptr)
-        {
-            static u32 noted = 0;
-            if (noted++ < 20000)
-            {
-                std::FILE* file = std::fopen("stepup.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file,
-                                 "frame %u inst %p step %g %g %g motion %g %g %g end %g %g %g\n",
-                                 static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(instance),
-                                 static_cast<double>(step.x), static_cast<double>(step.y),
-                                 static_cast<double>(step.z), static_cast<double>(motion.x),
-                                 static_cast<double>(motion.y), static_cast<double>(motion.z),
-                                 static_cast<double>(end.x), static_cast<double>(end.y),
-                                 static_cast<double>(end.z));
-                    std::fclose(file);
-                }
-            }
-        }
-
         MoveInstanceBy(instance, &step);
     }
 

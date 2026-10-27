@@ -23,8 +23,6 @@
 #include "shaders/vs_stq.bin.h"
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -190,18 +188,6 @@ void BindUiParticlePicture()
 
     // ParticlePageMaterial is the page's own mode material (its host storage), not a MaterialResource
     const auto* source = reinterpret_cast<const HostMaterial*>(ParticlePageMaterial(0));
-    if (std::getenv("TS_DIAG") != nullptr)
-    {
-        // Whether the sparkle's picture was ever found: its material, page 0's mode material, the handle the page carries
-        // and the game texture it resolves through. A white handle with no game texture here means the page was not read yet
-        // (or carries no texture), and the sparkle draws as a flat square
-        std::fprintf(stderr,
-                     "2d: ui particle material %p page0 material %p page texture %u white %d game texture %p\n",
-                     static_cast<void*>(g_uiParticleMaterial), static_cast<const void*>(source),
-                     source != nullptr ? source->texture : 0u,
-                     source != nullptr && source->texture == HostWhiteTexture().idx ? 1 : 0,
-                     source != nullptr ? static_cast<void*>(source->gameTexture) : nullptr);
-    }
     if (source == nullptr)
     {
         return;
@@ -386,44 +372,6 @@ bool ParticleAt(const ParticleRecord& record, const HostParticleTable& table, co
     f32 down = 0.0f;
     ParticleScreenScale(&across, &down);
     const f32 aspectFix = ShapeScreenRatio(across, down);
-    // TS_DIAG=1: the numbers this quad is built from, once a frame, in a file of its own (the size of a quad cannot be
-    // read off the picture: the shape's numbers, the display's aspect and the screen's scale all go into it)
-    if (std::getenv("TS_DIAG") != nullptr)
-    {
-        static bool logged = false;
-        if (!logged)
-        {
-            logged = true;
-            std::FILE* file = std::fopen("particlesize.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file,
-                             "display %u %u  screen %d %d  tv %d  aspectfix %.4f\n"
-                             "across %.2f down %.2f  step %u  life %.3f\n"
-                             "shape %.2f %.2f %.2f %.2f %.2f %.2f\n"
-                             "block row0 %.2f %.2f %.2f  row1 %.2f %.2f %.2f  row3 %.2f %.2f %.2f %.2f\n"
-                             "scene %u %u  display %u %u\n"
-                             "projection %.6f %.6f %.6f %.6f  lens %.4f\n",
-                             g_DisplayWidth, g_DisplayHeight, g_ScreenWidth, g_ScreenHeight,
-                             static_cast<int>(g_WidescreenTv), static_cast<double>(aspectFix),
-                             static_cast<double>(across), static_cast<double>(down), step, static_cast<double>(life),
-                             static_cast<double>(shape[0]), static_cast<double>(shape[1]), static_cast<double>(shape[2]),
-                             static_cast<double>(shape[3]), static_cast<double>(shape[4]), static_cast<double>(shape[5]),
-                             static_cast<double>(matrix.m[0][0]), static_cast<double>(matrix.m[0][1]),
-                             static_cast<double>(matrix.m[0][2]), static_cast<double>(matrix.m[1][0]),
-                             static_cast<double>(matrix.m[1][1]), static_cast<double>(matrix.m[1][2]),
-                             static_cast<double>(matrix.m[3][0]), static_cast<double>(matrix.m[3][1]),
-                             static_cast<double>(matrix.m[3][2]), static_cast<double>(matrix.m[3][3]),
-                             Platform::Graphics::HostSceneWidth(), Platform::Graphics::HostSceneHeight(),
-                             Platform::Graphics::HostDisplayWidth(), Platform::Graphics::HostDisplayHeight(),
-                             static_cast<double>(HostParticleToScreen().m[0][0]), static_cast<double>(HostParticleToScreen().m[1][1]),
-                             static_cast<double>(HostParticleToScreen().m[2][2]),
-                             static_cast<double>(HostParticleToScreen().m[3][3]),
-                             static_cast<double>(Platform::Graphics::HostParticleInverseAspect()));
-                std::fclose(file);
-            }
-        }
-    }
     f32* corners[4] = {out->clip00, out->clip01, out->clip11, out->clip10};
     for (u32 corner = 0; corner < 4; corner++)
     {
@@ -479,29 +427,6 @@ void TableUv(const HostParticleTable& table, u32 textureWidth, u32 textureHeight
     uv[1] = CornerTexel(table.texture[1]) / height;
     uv[2] = CornerTexel(table.texture[2]) / width;
     uv[3] = CornerTexel(table.texture[3]) / height;
-
-    // TS_DIAG=1: the rectangle the table holds over the page's own size, once, so a puff that samples the wrong part
-    // of the page can be read off the numbers instead of guessed at
-    if (std::getenv("TS_DIAG") != nullptr)
-    {
-        static bool logged = false;
-        if (!logged)
-        {
-            logged = true;
-            std::FILE* file = std::fopen("particlesize.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "table uv %.6f %.6f %.6f %.6f  page %u x %u  rect texel %.2f %.2f %.2f %.2f\n",
-                             static_cast<double>(uv[0]), static_cast<double>(uv[1]), static_cast<double>(uv[2]),
-                             static_cast<double>(uv[3]), textureWidth, textureHeight,
-                             static_cast<double>(CornerTexel(table.texture[0])),
-                             static_cast<double>(CornerTexel(table.texture[1])),
-                             static_cast<double>(CornerTexel(table.texture[2])),
-                             static_cast<double>(CornerTexel(table.texture[3])));
-                std::fclose(file);
-            }
-        }
-    }
 }
 
 // Where the block's records are (ParticleBlockHeader, src/game/particles.h)
@@ -663,10 +588,6 @@ void* MakeParticleMaterial(Material* material)
     if (!g_inPageMaterials)
     {
         g_uiParticleMaterial = host;
-        if (std::getenv("TS_DIAG") != nullptr)
-        {
-            std::fprintf(stderr, "2d: oleg's particle material made %p\n", static_cast<void*>(host));
-        }
         BindUiParticlePicture();
     }
     return material;
@@ -738,11 +659,6 @@ void MakePageModeMaterials(ParticlePage* page)
         // the draws go through HostParticlesView, so this keeps a page material that reaches the 2D path in its own bucket
         host->bucket = 22;
         page->materials[mode] = material;
-        if (mode == 0 && std::getenv("TS_DIAG") != nullptr)
-        {
-            std::fprintf(stderr, "particles: page material %p texture size %ux%u bound=%d\n",
-                         static_cast<void*>(page->material), pageWidth, pageHeight, bgfx::isValid(pageTexture) ? 1 : 0);
-        }
     }
     g_inPageMaterials = false;
 
@@ -756,50 +672,10 @@ void MakePageModeMaterials(ParticlePage* page)
 
 void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* material, f32 time)
 {
-    // TS_NOPART: the particles are skipped, telling an effect that is a particle system from one that is not
-    // TS_DIAG=1: why a particle draw did or did not reach the GPU - the guest counts the blocks it hands over, so a
-    // draw this side declines (no table, no records, no program, no instance buffer) is invisible in every other log
-    static const bool particleDiag = std::getenv("TS_DIAG") != nullptr;
-    static u32 drawCounts[8];
-    static u32 drawTicks;
-    auto drawNote = [](u32 reason) {
-        drawCounts[reason]++;
-        if (++drawTicks % 2048 != 0)
-        {
-            return;
-        }
-
-        std::FILE* file = std::fopen("particledrawhost.log", "ab");
-        if (file == nullptr)
-        {
-            return;
-        }
-
-        std::fprintf(file, "host particle draws calls=%u submitted=%u noTable=%u noHead=%u noMatrix=%u noInstances=%u "
-                           "noMaterial=%u noProgram=%u noBuffer=%u\n",
-                     drawCounts[0], drawCounts[1], drawCounts[2], drawCounts[3], drawCounts[4], drawCounts[5], drawCounts[6],
-                     drawCounts[7], 0u);
-        std::fclose(file);
-    };
-
-    if (particleDiag)
-    {
-        drawNote(0);
-    }
-
-    if (std::getenv("TS_NOPART") != nullptr || HostStageDisabled("particle"))
-    {
-        return;
-    }
-
     const HostParticleTable* host = TableOf(table);
     if (host == nullptr || HeadOf(block) == nullptr || matrix == nullptr)
     {
-        if (particleDiag)
-        {
-            drawNote(host == nullptr ? 2 : 3);
-        }
-
+        
         return;
     }
 
@@ -821,31 +697,11 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
     // Every block of the chain the game handed in, every record of each (the PS2's DMA NEXT tags walked them)
     std::vector<HostParticleInstance> instances;
     instances.reserve(BlockParticles);
-    // TS_DIAG=1: the first record of the first block of each draw, its own place next to the block matrix's fourth
-    // row: a particle's place is its start turned by the emitter's emission frame, so for an emission that keeps its
-    // translation the start already holds the emitter's place and the matrix's row must not hold it as well
-    static u32 placeLines;
-    const bool logPlace = particleDiag && placeLines < 2000;
     for (u8* at = block; at != nullptr; at = NextBlock(HeadOf(at)))
     {
         const HostParticleBlockHead* blockHead = HeadOf(at);
         ParticleRecord* records = RecordsOf(at);
         const u32 count = blockHead->count < BlockParticles ? blockHead->count : BlockParticles;
-        if (logPlace && count != 0)
-        {
-            placeLines++;
-            std::FILE* file = std::fopen("particleview.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "particle record start %.2f %.2f %.2f velocity %.2f %.2f %.2f row %.2f %.2f %.2f w %.3f\n",
-                             static_cast<double>(records[0].start[0]), static_cast<double>(records[0].start[1]),
-                             static_cast<double>(records[0].start[2]), static_cast<double>(records[0].velocity[0]),
-                             static_cast<double>(records[0].velocity[1]), static_cast<double>(records[0].velocity[2]),
-                             static_cast<double>(matrix->m[3][0]), static_cast<double>(matrix->m[3][1]),
-                             static_cast<double>(matrix->m[3][2]), static_cast<double>(matrix->m[3][3]));
-                std::fclose(file);
-            }
-        }
         for (u32 record = 0; record < count; record++)
         {
             HostParticleInstance instance;
@@ -853,23 +709,6 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
             {
                 instances.push_back(instance);
             }
-        }
-    }
-
-    // TS_FIXPART=1: every particle forced to opaque white sampling the whole texture, geometry untouched. Particles
-    // that then appear mean the colour or the UVs hid them; nothing means the geometry or its placement
-    if (std::getenv("TS_FIXPART") != nullptr)
-    {
-        for (HostParticleInstance& at : instances)
-        {
-            at.colour[0] = 1.0f;
-            at.colour[1] = 1.0f;
-            at.colour[2] = 1.0f;
-            at.colour[3] = 1.0f;
-            at.uv[0] = 0.0f;
-            at.uv[1] = 0.0f;
-            at.uv[2] = 1.0f;
-            at.uv[3] = 1.0f;
         }
     }
 
@@ -883,77 +722,6 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
         const HostParticleInstance& first = instances.front();
         g_particleDebugPlace = {first.clip00[0], first.clip00[1], first.clip00[2], first.clip00[3]};
         g_particleDebugColour = {first.colour[0], first.colour[1], first.colour[2], first.colour[3]};
-        // TS_DIAG=1: the first particle's quad on the screen, in pixels: the four corners' clip coordinates divided by
-        // their w are the game's screen coordinates (1/16th of a pixel), so the quad's size there is what the player sees
-        if (particleDiag)
-        {
-            // Once per system, not once per run: the systems are told apart by the texture's rectangle they draw
-            // (their own table's) and the mode they draw with, so every system's own quad is in the log
-            struct LoggedSystem
-            {
-                s32 rect[4];
-                u32 mode;
-            };
-            static LoggedSystem logged[64];
-            static u32 loggedCount = 0;
-            LoggedSystem key = {static_cast<s32>(host->texture[0]), static_cast<s32>(host->texture[1]),
-                                static_cast<s32>(host->texture[2]), static_cast<s32>(host->texture[3]),
-                                hostMaterial->blend};
-            bool seen = false;
-            for (u32 index = 0; index < loggedCount; index++)
-            {
-                if (logged[index].rect[0] == key.rect[0] && logged[index].rect[1] == key.rect[1] &&
-                    logged[index].rect[2] == key.rect[2] && logged[index].rect[3] == key.rect[3] &&
-                    logged[index].mode == key.mode)
-                {
-                    seen = true;
-                    break;
-                }
-            }
-
-            if (!seen && loggedCount < 64)
-            {
-                logged[loggedCount++] = key;
-                const f32* corners[4] = {first.clip00, first.clip01, first.clip11, first.clip10};
-                f32 lowX = 1e30f;
-                f32 highX = -1e30f;
-                f32 lowY = 1e30f;
-                f32 highY = -1e30f;
-                for (u32 corner = 0; corner < 4; corner++)
-                {
-                    const f32 w = corners[corner][3];
-                    const f32 x = corners[corner][0] / w / 16.0f;
-                    const f32 y = corners[corner][1] / w / 16.0f;
-                    lowX = x < lowX ? x : lowX;
-                    highX = x > highX ? x : highX;
-                    lowY = y < lowY ? y : lowY;
-                    highY = y > highY ? y : highY;
-                }
-
-                std::FILE* file = std::fopen("particlesize.log", "ab");
-                if (file != nullptr)
-                {
-                    const f32* shape = host->steps[0].shape;
-                    std::fprintf(file,
-                                 "particle quad: %.2f x %.2f px (x %.1f..%.1f y %.1f..%.1f) w %.2f\n"
-                                 "  system rect %.2f %.2f %.2f %.2f mode %u instances %u uv %.4f %.4f %.4f %.4f\n"
-                                 "  colour %.3f %.3f %.3f %.3f  shape %.1f %.1f %.1f %.1f %.1f %.1f\n",
-                                 static_cast<double>(highX - lowX), static_cast<double>(highY - lowY),
-                                 static_cast<double>(lowX), static_cast<double>(highX), static_cast<double>(lowY),
-                                 static_cast<double>(highY), static_cast<double>(first.clip00[3]),
-                                 static_cast<double>(CornerTexel(key.rect[0])), static_cast<double>(CornerTexel(key.rect[1])),
-                                 static_cast<double>(CornerTexel(key.rect[2])), static_cast<double>(CornerTexel(key.rect[3])),
-                                 key.mode, static_cast<u32>(instances.size()),
-                                 static_cast<double>(uv[0]), static_cast<double>(uv[1]), static_cast<double>(uv[2]),
-                                 static_cast<double>(uv[3]), static_cast<double>(first.colour[0]),
-                                 static_cast<double>(first.colour[1]), static_cast<double>(first.colour[2]),
-                                 static_cast<double>(first.colour[3]), static_cast<double>(shape[0]), static_cast<double>(shape[1]),
-                                 static_cast<double>(shape[2]), static_cast<double>(shape[3]), static_cast<double>(shape[4]),
-                                 static_cast<double>(shape[5]));
-                    std::fclose(file);
-                }
-            }
-        }
     }
     else
     {
@@ -961,11 +729,6 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
     }
     if (instances.empty() || hostMaterial == nullptr || hostMaterial->program == HostInvalidHandle)
     {
-        if (particleDiag)
-        {
-            drawNote(instances.empty() ? 4 : (hostMaterial == nullptr ? 6 : 7));
-        }
-
         return;
     }
 
@@ -974,67 +737,7 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
     const u32 available = bgfx::getAvailInstanceDataBuffer(static_cast<u32>(instances.size()), sizeof(HostParticleInstance));
     if (!quadValid || available == 0)
     {
-        if (particleDiag)
-        {
-            drawNote(7); // no instance data for the draw (or no quad buffer at all)
-            static u32 noted = 0;
-            if (noted++ < 8)
-            {
-                std::fprintf(stderr, "particles: host draw declined quad=%d want=%u avail=%u stride=%u\n", quadValid ? 1 : 0,
-                             static_cast<u32>(instances.size()), available, static_cast<u32>(sizeof(HostParticleInstance)));
-            }
-        }
-
         return;
-    }
-
-    if (particleDiag)
-    {
-        drawNote(1); // submitted
-
-        // The geometry itself, for the first draws and then sparsely (a later effect is a different system): a quad whose clip
-        // coords are all equal or zero is degenerate, and one whose colour is black/zero-alpha draws nothing whatever else is right
-        static u32 dumped;
-        const bool early = drawCounts[0] <= 4;
-        if ((early || drawCounts[0] % 100000 == 0) && dumped < 12 && !instances.empty())
-        {
-            dumped++;
-            const HostParticleInstance& at = instances[0];
-            std::fprintf(stderr,
-                         "particles: call=%u inst=%u c00 %.3f %.3f %.3f %.3f c11 %.3f %.3f %.3f %.3f colour %.3f "
-                         "%.3f %.3f %.3f uv %.3f %.3f %.3f %.3f\n",
-                         drawCounts[0], static_cast<u32>(instances.size()), static_cast<double>(at.clip00[0]),
-                         static_cast<double>(at.clip00[1]), static_cast<double>(at.clip00[2]),
-                         static_cast<double>(at.clip00[3]), static_cast<double>(at.clip11[0]),
-                         static_cast<double>(at.clip11[1]), static_cast<double>(at.clip11[2]),
-                         static_cast<double>(at.clip11[3]), static_cast<double>(at.colour[0]),
-                         static_cast<double>(at.colour[1]), static_cast<double>(at.colour[2]),
-                         static_cast<double>(at.colour[3]), static_cast<double>(at.uv[0]),
-                         static_cast<double>(at.uv[1]), static_cast<double>(at.uv[2]),
-                         static_cast<double>(at.uv[3]));
-
-            // The inputs the position was worked from: a matrix or record that is not what the frame drew with shows
-            // up here (the emitter's place is the matrix's fourth row, the particle's own start and velocity the
-            // record's)
-            const ParticleRecord& first = RecordsOf(block)[0];
-            std::fprintf(stderr,
-                         "particles: matrix |%.3f %.3f %.3f %.3f| |%.3f %.3f %.3f %.3f| |%.3f %.3f %.3f %.3f| "
-                         "|%.3f %.3f %.3f %.3f| rec %.3f %.3f %.3f vel %.3f %.3f %.3f spawn %.3f life %.4f "
-                         "time %.3f gravity %.3f\n",
-                         static_cast<double>(matrix->m[0][0]), static_cast<double>(matrix->m[0][1]),
-                         static_cast<double>(matrix->m[0][2]), static_cast<double>(matrix->m[0][3]),
-                         static_cast<double>(matrix->m[1][0]), static_cast<double>(matrix->m[1][1]),
-                         static_cast<double>(matrix->m[1][2]), static_cast<double>(matrix->m[1][3]),
-                         static_cast<double>(matrix->m[2][0]), static_cast<double>(matrix->m[2][1]),
-                         static_cast<double>(matrix->m[2][2]), static_cast<double>(matrix->m[2][3]),
-                         static_cast<double>(matrix->m[3][0]), static_cast<double>(matrix->m[3][1]),
-                         static_cast<double>(matrix->m[3][2]), static_cast<double>(matrix->m[3][3]),
-                         static_cast<double>(first.start[0]), static_cast<double>(first.start[1]),
-                         static_cast<double>(first.start[2]), static_cast<double>(first.velocity[0]),
-                         static_cast<double>(first.velocity[1]), static_cast<double>(first.velocity[2]),
-                         static_cast<double>(first.spawnTime), static_cast<double>(first.lifeScale),
-                         static_cast<double>(time), static_cast<double>(host->gravity));
-        }
     }
 
     bgfx::InstanceDataBuffer buffer;
@@ -1077,94 +780,9 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
 
 // The decals (LoadDecalView, LoadDecalType, AgeDecal, DrawDecals)
 
-// TS_DIAG=1: the decals' own log (decals.log), so a run says which of the four ways a decal can go missing it went:
-// none spawned (the game's count stays 0, so no block is ever aged or drawn), spawned but never aged (LoadDecalView
-// never called), aged but refused by the draw (a key's material, program or transient buffer), or drawn and invisible
-// (the quads' screen places, their colours and the page's texture say which). The counters go out every
-// DecalDiagInterval DrawDecals calls and the readings once a second; a run's file is appended to, so clear it first
-struct DecalDiag
-{
-    u32 drawCalls;
-    u32 noDecals;
-    u32 withDecals;
-    u32 agedViews;
-    u32 keys;
-    u32 blocks;
-    u32 quads;
-    u32 submitted;
-    u32 noMaterial;
-    u32 noProgram;
-    u32 noBuffer;
-    u32 clipped;
-    u32 onScreen;
-    f32 minW;
-    u32 logged;
-    u32 readings;
-    u32 firstOnScreen;
-};
-
-DecalDiag g_decalDiag = {};
-
-// TS_DIAG=1: the decals a run follows from spawn to death. The readings above are capped, so a ripple's last frames --
-// where its quad turns over -- never reached the file; these carry one decal's whole life instead, the raw state the
-// quad is built from: the life it has left, the aging's two packed vectors, the frame's six half words and the colour
-struct DecalLifeTrace
-{
-    static constexpr u32 Most = 6;
-    static constexpr u32 MostLines = 320;
-
-    f32 place[Most][3];
-    u32 lines[Most];
-    u32 count;
-};
-
-DecalLifeTrace g_decalTrace = {};
-
-// The trace slot for a decal's place, made on first sight (none once every slot is taken)
-s32 DecalTraceSlot(const DecalPlace& place)
-{
-    for (u32 slot = 0; slot < g_decalTrace.count; slot++)
-    {
-        const f32* at = g_decalTrace.place[slot];
-        if (at[0] == place.x && at[1] == place.y && at[2] == place.z)
-        {
-            return static_cast<s32>(slot);
-        }
-    }
-
-    if (g_decalTrace.count >= DecalLifeTrace::Most)
-    {
-        return -1;
-    }
-
-    f32* at = g_decalTrace.place[g_decalTrace.count];
-    at[0] = place.x;
-    at[1] = place.y;
-    at[2] = place.z;
-    g_decalTrace.lines[g_decalTrace.count] = 0;
-    return static_cast<s32>(g_decalTrace.count++);
-}
-constexpr u32 DecalDiagInterval = 120;
-constexpr u32 DecalDiagReadings = 600;
-
-bool DecalDiagOn()
-{
-    static const bool on = std::getenv("TS_DIAG") != nullptr;
-    return on;
-}
-
-std::FILE* DecalDiagFile()
-{
-    return std::fopen("decals.log", "ab");
-}
-
 void LoadDecalView(const Matrix4x4* chunkMatrices, const Matrix4x4* fromChunk)
 {
     g_decalViewSet = true;
-    if (DecalDiagOn())
-    {
-        g_decalDiag.agedViews++;
-    }
     if (chunkMatrices != nullptr)
     {
         g_decalChunkMatrix = *chunkMatrices;
@@ -1328,20 +946,17 @@ bool SubmitDecals(DecalData* decals, u32 key, const StqVertex* vertices, u32 cou
     auto* hostMaterial = reinterpret_cast<HostMaterial*>(decals->page.materials[key]);
     if (hostMaterial == nullptr)
     {
-        g_decalDiag.noMaterial++;
         return false;
     }
 
     if (hostMaterial->program == HostInvalidHandle)
     {
-        g_decalDiag.noProgram++;
         return false;
     }
 
     MakeShared();
     if (!bgfx::getAvailTransientVertexBuffer(count, StqLayout()))
     {
-        g_decalDiag.noBuffer++;
         return false;
     }
 
@@ -1363,91 +978,11 @@ bool SubmitDecals(DecalData* decals, u32 key, const StqVertex* vertices, u32 cou
                      BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | HostMaterialFilter(hostMaterial));
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostDecalsView, g_stqProgram);
-    g_decalDiag.submitted++;
     return true;
 }
 
 void DrawDecals(DecalData* decals)
 {
-    // TS_NODECAL: the decals are skipped
-    if (std::getenv("TS_NODECAL") != nullptr || HostStageDisabled("decal"))
-    {
-        return;
-    }
-
-    // TS_DIAG=1: the counters this draw adds to go out every DecalDiagInterval calls: decals=0 with age=0 says the game
-    // never spawned one (the wake's ScatterDecal or the collision's TouchedWater), decals=0 with age>0 that they all
-    // left before their first draw, and decals>0 with keys=0 that the aging never put a block in a key's list
-    const bool decalDiag = DecalDiagOn();
-    if (decalDiag)
-    {
-        if (g_decalDiag.minW == 0.0f)
-        {
-            g_decalDiag.minW = 1.0e9f;
-        }
-
-        g_decalDiag.drawCalls++;
-        if (decals == nullptr || decals->count == 0)
-        {
-            g_decalDiag.noDecals++;
-        }
-        else
-        {
-            g_decalDiag.withDecals++;
-        }
-
-        if (g_decalDiag.drawCalls % DecalDiagInterval == 0)
-        {
-            std::FILE* file = DecalDiagFile();
-            if (file != nullptr)
-            {
-                // The eye's place in the space the decal places are in: toCamera maps that space to the camera's, so
-                // the eye is the point it sends to zero -- -(t * R^T) for its rigid part. A wake spawned at a
-                // character's feet must sit a few units from it, never on it
-                Vector4 eye = {0.0f, 0.0f, 0.0f, 1.0f};
-                if (G_RendRel != nullptr)
-                {
-                    auto* view = *reinterpret_cast<RenderView**>(G_RendRel);
-                    if (view != nullptr)
-                    {
-                        for (u32 column = 0; column < 3; column++)
-                        {
-                            f32 sum = 0.0f;
-                            for (u32 row = 0; row < 3; row++)
-                            {
-                                sum += view->toCamera.m[3][row] * view->toCamera.m[column][row];
-                            }
-
-                            if (column == 0)
-                            {
-                                eye.x = -sum;
-                            }
-                            else if (column == 1)
-                            {
-                                eye.y = -sum;
-                            }
-                            else
-                            {
-                                eye.z = -sum;
-                            }
-                        }
-                    }
-                }
-                std::fprintf(file,
-                             "decal draws=%u noDecals=%u withDecals=%u age=%u keys=%u blocks=%u quads=%u submitted=%u "
-                             "noMaterial=%u noProgram=%u noBuffer=%u clipped=%u onScreen=%u minW=%.2f eye=(%.2f,%.2f,%.2f) "
-                             "count=%d\n",
-                             g_decalDiag.drawCalls, g_decalDiag.noDecals, g_decalDiag.withDecals, g_decalDiag.agedViews,
-                             g_decalDiag.keys, g_decalDiag.blocks, g_decalDiag.quads, g_decalDiag.submitted,
-                             g_decalDiag.noMaterial, g_decalDiag.noProgram, g_decalDiag.noBuffer, g_decalDiag.clipped,
-                             g_decalDiag.onScreen, static_cast<double>(g_decalDiag.minW),
-                             static_cast<double>(eye.x), static_cast<double>(eye.y), static_cast<double>(eye.z),
-                             decals != nullptr ? decals->count : 0);
-                std::fclose(file);
-            }
-        }
-    }
-
     if (decals == nullptr || decals->count == 0)
     {
         if (decals != nullptr)
@@ -1458,42 +993,6 @@ void DrawDecals(DecalData* decals)
         g_decalDebug.vertices = 0;
         g_decalDebug.checksum = 0;
         return;
-    }
-
-    // TS_DIAG=1: what the game's decal data holds the first time a decal is drawn: no type (so AddDecal could not have
-    // placed one at all), no variant, no page material or no page texture each make every decal invisible on their own
-    if (decalDiag && g_decalDiag.logged <= DecalDiagReadings)
-    {
-        g_decalDiag.logged++;
-        std::FILE* file = DecalDiagFile();
-        if (file != nullptr)
-        {
-            const DecalType* type = decals->types[0];
-            auto* pageMaterial = reinterpret_cast<HostMaterial*>(decals->page.materials[0]);
-            bgfx::TextureHandle pageTexture = BGFX_INVALID_HANDLE;
-            if (pageMaterial != nullptr)
-            {
-                pageTexture = HostMaterialBoundTexture(pageMaterial);
-            }
-
-            std::fprintf(file,
-                         "decal data count=%d types=%u type0=%d variants=%d page=%p pageMaterial=%p texture=%d size=%ux%u "
-                         "uvType0=(%.2f,%.2f)(%.2f,%.2f) uvType1=(%.2f,%.2f)(%.2f,%.2f)\n",
-                         decals->count, decals->typeCount, type != nullptr ? 1 : 0,
-                         type != nullptr ? type->variantCount : 0, static_cast<void*>(decals->page.material),
-                         static_cast<void*>(pageMaterial), bgfx::isValid(pageTexture) ? 1 : 0,
-                         pageMaterial != nullptr ? pageMaterial->textureWidth : 0,
-                         pageMaterial != nullptr ? pageMaterial->textureHeight : 0,
-                         static_cast<double>(decals->uvPacket.rectangles[0].x),
-                         static_cast<double>(decals->uvPacket.rectangles[0].y),
-                         static_cast<double>(decals->uvPacket.rectangles[0].z),
-                         static_cast<double>(decals->uvPacket.rectangles[0].w),
-                         static_cast<double>(decals->uvPacket.rectangles[1].x),
-                         static_cast<double>(decals->uvPacket.rectangles[1].y),
-                         static_cast<double>(decals->uvPacket.rectangles[1].z),
-                         static_cast<double>(decals->uvPacket.rectangles[1].w));
-            std::fclose(file);
-        }
     }
 
     // The world to screen matrix the PS2's DrawDecals hands VU1 (the view's own; the identity when no view stands,
@@ -1521,11 +1020,6 @@ void DrawDecals(DecalData* decals)
     {
         DecalBlock* block = decals->drawLists[key];
         decals->drawLists[key] = nullptr;
-        if (decalDiag && block != nullptr)
-        {
-            g_decalDiag.keys++;
-        }
-
         for (; block != nullptr; block = block->drawNext)
         {
             const u32 type = DecalTypeOf(decals, block);
@@ -1537,11 +1031,6 @@ void DrawDecals(DecalData* decals)
             const Vector4* edges = decals->uvPacket.rectangles + type * 2;
             const u32 blockFirst = static_cast<u32>(vertices.size());
             const s32 count = block->count;
-            if (decalDiag)
-            {
-                g_decalDiag.blocks++;
-                g_decalDiag.quads += static_cast<u32>(count);
-            }
             for (s32 slot = 0; slot < count; slot++)
             {
                 const DecalPlace& place = block->places[slot];
@@ -1553,10 +1042,6 @@ void DrawDecals(DecalData* decals)
                 const s16* size = block->sizes[slot];
                 const s16* more = block->moreSizes[slot];
                 const u32 colour = block->colours[slot];
-                // TS_FIXDECAL=1: every decal forced opaque white over the whole page, the geometry untouched. Ripples
-                // that then appear mean the aging's colour or the page's UVs hid them (the wake's own alphas start at
-                // 0 and only reach 133 of 255); nothing means the quads or the page itself
-                const bool fixDecal = std::getenv("TS_FIXDECAL") != nullptr;
                 // The aging packs two linear combinations of the surface's own axes (AgeDecalKeys, mirroring the VU0
                 // program): sizes = -0.5N + 3D and moreSizes = 0.5N + 0.5D, N the surface normal times the variant's
                 // first size key and D its direction times the second. The second recovers both extents on its own, by
@@ -1583,42 +1068,6 @@ void DrawDecals(DecalData* decals)
                 const f32 extentZ = 2.0f * (moreUnits[0] * frameDirection[0] + moreUnits[1] * frameDirection[1] +
                                             moreUnits[2] * frameDirection[2]);
 
-                // TS_DIAG=1: the whole life of the first few decals, one line a frame
-                if (decalDiag && !fixDecal)
-                {
-                    const s32 trace = DecalTraceSlot(place);
-                    if (trace >= 0 && g_decalTrace.lines[trace] < DecalLifeTrace::MostLines)
-                    {
-                        g_decalTrace.lines[trace]++;
-                        const DecalLife life = block->places[slot].life;
-                        if (std::FILE* file = DecalDiagFile())
-                        {
-                            // The step the decal took since its last line: zero is the stall, and the raw sizes are
-                            // what overflows the s16 field the aging writes them into (12.4 fixed point, +-8 units)
-                            static s32 lastFrames[DecalLifeTrace::Most] = {0, 0, 0, 0, 0, 0};
-                            const s32 stepped = lastFrames[trace] == 0 && g_decalTrace.lines[trace] == 1
-                                                    ? 0
-                                                    : life.frames - lastFrames[trace];
-                            lastFrames[trace] = life.frames;
-                            const f32 widest = static_cast<f32>(size[0] < 0 ? -size[0] : size[0]);
-                            const f32 widestMore = static_cast<f32>(more[0] < 0 ? -more[0] : more[0]);
-                            const f32 deepest = static_cast<f32>(size[2] < 0 ? -size[2] : size[2]);
-                            std::fprintf(file,
-                                         "decal life slot=%d frames=%d stepped=%d variant=%d sizes=(%d,%d,%d) "
-                                         "more=(%d,%d,%d) units=(%.2f,%.2f) frame=(%d,%d,%d|%d,%d,%d) "
-                                         "extents=(%.2f,%.2f) colour=%08x\n",
-                                         trace, life.frames, stepped, static_cast<s32>(block->variants[slot]), size[0],
-                                         size[1], size[2], more[0], more[1], more[2],
-                                         static_cast<double>(deepest / 4096.0f),
-                                         static_cast<double>((widest > widestMore ? widest : widestMore) / 4096.0f),
-                                         frame.normal[0], frame.normal[1], frame.normal[2], frame.direction[0],
-                                         frame.direction[1], frame.direction[2], static_cast<double>(extentX),
-                                         static_cast<double>(extentZ), colour);
-                            std::fclose(file);
-                        }
-                    }
-                }
-
                 // Half an edge each way along the frame itself, so the quad is a rectangle of the surface's own axes
                 // whatever the two extents are (a ripple's are equal; a footprint's need not be)
                 const f32 alongU[3] = {frameNormal[0] * extentX * 0.5f, frameNormal[1] * extentX * 0.5f,
@@ -1629,13 +1078,7 @@ void DrawDecals(DecalData* decals)
                 // in the chunk's space), so its quad is a projection of four points, and the GS's STQ coordinates
                 // are what kept its texture on them (the texture fractions are scaled by the clip w the divide by Q
                 // in the shader undoes)
-                if (decalDiag)
-                {
-                    // The nearest decal the run draws: a wake spawned at the player's feet must come out within a few
-                    // units of the camera, so a minimum that stays in the tens or hundreds says the places are not
-                    // where the player is, not that the projection is wrong
-                }
-
+                //
                 // The square's corners, round its perimeter: place (-N -D), (+N -D), (+N +D), (-N +D), each held half
                 // an edge from the place. The quad is centred on the place (retail's program adds and subtracts an
                 // edge either way, source/vu1 0x13's ADD/SUB pair), which is what puts a ripple on the water the
@@ -1660,7 +1103,6 @@ void DrawDecals(DecalData* decals)
                     visible = clip[3] >= ParticleNearClip;
                     if (!visible)
                     {
-                        g_decalDiag.clipped++;
                         break;
                     }
 
@@ -1682,99 +1124,17 @@ void DrawDecals(DecalData* decals)
                     f32 u = corner == 1 || corner == 2 ? s1 : s0;
                     f32 v = corner >= 2 ? t1 : t0;
 
-                    if (fixDecal)
-                    {
-                        // The whole page: the four corners of the texture at the four corners of the rhombus
-                        u = corner == 1 || corner == 2 ? 1.0f : 0.0f;
-                        v = corner >= 2 ? 1.0f : 0.0f;
-                    }
-
                     // The corner's depth. toScreen's z row is the GS's own (frame.cpp's clipToScreen puts -GsDepthRange
                     // on the diagonal and +GsDepthRange in the translation), so clip[2] is a GS depth in the millions
                     // and not a clip z at all. The particle shader inverts that same transform (vs_particle.sc:
                     // depth = w - gsZ / range), which is its own exact inverse: w - range*(w - z)/range = z
                     const f32 clipDepth = clip[3] - clip[2] / GsDepthRange;
-                    quad[corner] = {x, y, clipDepth, u * clip[3], v * clip[3], clip[3],
-                                    fixDecal ? 0xFFFFFFFFu : colour};
+                    quad[corner] = {x, y, clipDepth, u * clip[3], v * clip[3], clip[3], colour};
                 }
 
                 if (!visible)
                 {
                     continue;
-                }
-
-                if (decalDiag && quad[0].q < g_decalDiag.minW)
-                {
-                    g_decalDiag.minW = quad[0].q;
-                }
-
-                // TS_DIAG=1: whether the quad actually lands in the view at all. A decal that is spawned, aged, sized
-                // and submitted but whose four corners all sit outside [-1, 1] is a projection fault (the wrong view
-                // matrix, or the decals' places in the wrong space); one inside the view that still cannot be seen is
-                // its colour, its page or its blend
-                // The quad's bounding box overlapping the view: the rhombus' corners are its two diagonals, so no
-                // single pair of them is the quad's extent (testing 0 and 2 alone read zero for every ripple)
-                f32 minX = quad[0].x;
-                f32 maxX = quad[0].x;
-                f32 minY = quad[0].y;
-                f32 maxY = quad[0].y;
-                for (u32 corner = 1; corner < 4; corner++)
-                {
-                    minX = quad[corner].x < minX ? quad[corner].x : minX;
-                    maxX = quad[corner].x > maxX ? quad[corner].x : maxX;
-                    minY = quad[corner].y < minY ? quad[corner].y : minY;
-                    maxY = quad[corner].y > maxY ? quad[corner].y : maxY;
-                }
-
-                const bool onScreen = maxX >= -1.0f && minX <= 1.0f && maxY >= -1.0f && minY <= 1.0f;
-                if (decalDiag && onScreen)
-                {
-                    g_decalDiag.onScreen++;
-                    if (g_decalDiag.firstOnScreen < 20)
-                    {
-                        g_decalDiag.firstOnScreen++;
-                        if (std::FILE* file = DecalDiagFile())
-                        {
-                            std::fprintf(file,
-                                         "decal on screen key=%u type=%u decal=%d place=(%.2f,%.2f,%.2f) colour=%08x "
-                                         "quad=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f) w=%.2f\n",
-                                         key, type, slot, static_cast<double>(place.x), static_cast<double>(place.y),
-                                         static_cast<double>(place.z), fixDecal ? 0xFFFFFFFFu : colour,
-                                         static_cast<double>(quad[0].x), static_cast<double>(quad[0].y),
-                                         static_cast<double>(quad[1].x), static_cast<double>(quad[1].y),
-                                         static_cast<double>(quad[2].x), static_cast<double>(quad[2].y),
-                                         static_cast<double>(quad[3].x), static_cast<double>(quad[3].y),
-                                         static_cast<double>(quad[0].q));
-                            std::fclose(file);
-                        }
-                    }
-                }
-
-                // TS_DIAG=1: the decal's own reading, the first ones of a run a window's worth: where its quad lands in
-                // bgfx's clip space (-1 to 1, y up), its two edges in the chunk's units, and its colour. A quad off the
-                // screen, of no size, or with a zero alpha is invisible however faithfully it is drawn
-                if (decalDiag && g_decalDiag.readings < DecalDiagReadings)
-                {
-                    g_decalDiag.readings++;
-                    std::FILE* file = DecalDiagFile();
-                    if (file != nullptr)
-                    {
-                        std::fprintf(file,
-                                     "decal key=%u type=%u decal=%d place=(%.2f,%.2f,%.2f) edgeS=(%.2f,%.2f,%.2f) "
-                                     "edgeT=(%.2f,%.2f,%.2f) colour=%08x quad=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f) "
-                                     "w=%.2f\n",
-                                     key, type, slot, static_cast<double>(place.x), static_cast<double>(place.y),
-                                     static_cast<double>(place.z), static_cast<double>(alongU[0]),
-                                     static_cast<double>(alongU[1]), static_cast<double>(alongU[2]),
-                                     static_cast<double>(alongV[0]), static_cast<double>(alongV[1]),
-                                     static_cast<double>(alongV[2]), fixDecal ? 0xFFFFFFFFu : colour,
-                                     static_cast<double>(quad[0].x), static_cast<double>(quad[0].y),
-                                     static_cast<double>(quad[1].x), static_cast<double>(quad[1].y),
-                                     static_cast<double>(quad[2].x), static_cast<double>(quad[2].y),
-                                     static_cast<double>(quad[3].x), static_cast<double>(quad[3].y),
-                                     static_cast<double>(quad[0].q));
-                        std::fclose(file);
-                    }
                 }
 
                 // The quad's two triangles (0, 1, 2) and (0, 2, 3), the order its corners are in (so neighbouring

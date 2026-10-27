@@ -2,8 +2,6 @@
 #include "mesh_builder.h"
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -77,43 +75,29 @@ u8 ScaleChannel(u8 channel, u32 full)
     return static_cast<u8>(scaled > 255 ? 255 : scaled);
 }
 
-// What the vertex colours' red, green and blue are full at. 192 matches the packets, but scaling it to 255 lifts
-// every lit surface by about 1.33 over what the console modulates. TS_VERTEXFULL=<n> overrides it (255 leaves the
-// bytes alone).
-u32 VertexColourFull()
-{
-    static const u32 full = [] {
-        const char* set = std::getenv("TS_VERTEXFULL");
-        if (set != nullptr)
-        {
-            const s32 value = std::atoi(set);
-            if (value > 0 && value <= 255)
-            {
-                return static_cast<u32>(value);
-            }
-        }
-
-        return 255u;
-    }();
-
-    return full;
 }
 
-// A debug switch (TS_NOCOLOR): leaves every rigid/skin vertex white, so a frame can be told a textured draw whose
-// colour the material's own bytes carry from one whose vertex colours the packet packs. Debug-only, off in a normal run
-bool NoVertexColour()
+// The components one UNPACK kind's element takes (V4Bytes, one packed word, is a single component)
+u32 UnpackComponents(u32 command)
 {
-    static const bool noColour = std::getenv("TS_NOCOLOR") != nullptr;
-    return noColour;
+    if (command == 0x6E)
+    {
+        return 1;
+    }
+
+    return ((command >> 2) & 3) + 1;
 }
 
-// A debug switch (TS_FAN): the retail VU1 programs start their GIF packets from a triangle-FAN prim (vuprograms.cpp's
-// TriangleFanTemplate), so a strip may be fan-ordered; with this set each strip emits the fan window (first, i-1, i)
-// instead of the strip window (i-2, i-1, i), letting the two topologies be told apart. Debug-only, off in a normal run
-bool FanTopology()
+// A UNPACK's element size in words: V4Bytes one packed word; the S/V2/V3/V4 kinds one word a component, or (their low bit
+// set) one halfword a component
+u32 UnpackElementSize(u32 command, u32 components)
 {
-    static const bool fan = std::getenv("TS_FAN") != nullptr;
-    return fan;
+    if (command == 0x6E)
+    {
+        return 1;
+    }
+
+    return (command & 1) != 0 ? (components * 2 + 3) / 4 : components;
 }
 
 // A normal component in [-1, 1] as the host's packed byte: the shader decodes `a_normal * 2 - 1` from the byte's
@@ -148,74 +132,6 @@ u32 Crc32(const u8* bytes, size_t size)
     return crc ^ 0xFFFFFFFF;
 }
 
-// A one-shot packet dump for the first walked rigid and skin submodel (TS_MESHDUMP=<path>): the raw packet words
-// plus, per UNPACK row, the command's decode and the branch it took, plus the first decoded vertices. Writes to the
-// env var's file; a no-op when it is unset. Debug-only, off in a normal run
-FILE* MeshDumpFile()
-{
-    static bool tried = false;
-    static FILE* file = nullptr;
-    if (!tried)
-    {
-        tried = true;
-        const char* path = std::getenv("TS_MESHDUMP");
-        if (path != nullptr && path[0] != '\0')
-        {
-            file = std::fopen(path, "a");
-            if (file != nullptr)
-            {
-                std::setvbuf(file, nullptr, _IONBF, 0);
-            }
-        }
-    }
-
-    return file;
-}
-
-bool MeshDumpWanted(const char* which)
-{
-    FILE* file = MeshDumpFile();
-    if (file == nullptr)
-    {
-        return false;
-    }
-
-    static bool rigidDone = false;
-    static bool skinDone = false;
-    bool* done = std::strcmp(which, "skin") == 0 ? &skinDone : &rigidDone;
-    if (*done)
-    {
-        return false;
-    }
-
-    *done = true;
-    return true;
-}
-}
-
-// The components one UNPACK kind's element takes (V4Bytes, one packed word, is a single component)
-u32 UnpackComponents(u32 command)
-{
-    if (command == 0x6E)
-    {
-        return 1;
-    }
-
-    return ((command >> 2) & 3) + 1;
-}
-
-// A UNPACK's element size in words: V4Bytes one packed word; the S/V2/V3/V4 kinds one word a component, or (their low bit
-// set) one halfword a component
-u32 UnpackElementSize(u32 command, u32 components)
-{
-    if (command == 0x6E)
-    {
-        return 1;
-    }
-
-    return (command & 1) != 0 ? (components * 2 + 3) / 4 : components;
-}
-
 bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps2RigidMesh* out)
 {
     // The reference decoder's walk (desktop/graphics.cpp's DecodeSubModel): the DMA RET tag, then the VIF row codes. A
@@ -244,18 +160,6 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
         return false;
     }
 
-    const bool dump = MeshDumpWanted("rigid");
-    FILE* dumpFile = dump ? MeshDumpFile() : nullptr;
-    if (dumpFile != nullptr)
-    {
-        std::fprintf(dumpFile, "RIGID packet %p size %zu words %zu vertexCount %u tag %08x end %zu\n",
-                     static_cast<const void*>(packet), packetSize, wordCount, vertexCount, tag, end);
-        for (size_t index = 0; index < wordCount; index++)
-        {
-            std::fprintf(dumpFile, "  w%04zu %08x\n", index, ReadWord(packet, index * sizeof(u32)));
-        }
-    }
-
     std::vector<MeshVertex> vertices;
     if (vertexCount != 0)
     {
@@ -267,10 +171,6 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
     // Whether a vertex's normal came from the packet's own row (address 5) rather than staying the sentinel: the model's
     // faces light the rest
     std::vector<u8> hasNormal;
-    // The colour-branch tally (the dump): how many vertices' colours the address-4 low bytes set and how many the
-    // address-6 packed word overwrote
-    u32 addr4Colours = 0;
-    u32 addr6Colours = 0;
 
     struct Strip
     {
@@ -309,70 +209,9 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
             u32 elementSize = UnpackElementSize(command, components);
             u32 count = (code >> 16) & 0xFF;
             u32 address = code & 0x3FFF;
-            if (out->rowCodeCount < 8)
-            {
-                out->rowCodes[out->rowCodeCount++] = code;
-            }
-            // The address-3 row's element size: 4 words is a V4-32 float row (the layout the host reads), 2 words a
-            // V4-16 halfword row (the skins' layout, which reading as floats would explode); anything else is not the
-            // rigid layout the builder assumes
-            if (address == 3)
-            {
-                if (elementSize == 4)
-                {
-                    out->positionRows32++;
-                }
-                else if (elementSize == 2)
-                {
-                    out->positionRows16++;
-                }
-                else
-                {
-                    out->unknownRow++;
-                }
-            }
             if (pos + 1 + static_cast<size_t>(elementSize) * count > end)
             {
                 return false;
-            }
-
-            if (dumpFile != nullptr)
-            {
-                const char* branch = address == 3 ? "pos" : address == 4 ? "uv/col" : address == 5 ? "normal" :
-                                     address == 6 ? "packed-col" : "other";
-                std::fprintf(dumpFile,
-                             "  UNPACK cmd %02x code %08x addr %u (0x%04x) components %u elementSize %u count %u "
-                             "words [%zu..%zu) branch %s\n",
-                             command, code, address, code & VuAddressMask, components, elementSize, count, pos + 1,
-                             pos + 1 + static_cast<size_t>(elementSize) * count, branch);
-                if (address == 4 && components >= 4)
-                {
-                    for (u32 index = 0; index < count && index < 4; index++)
-                    {
-                        size_t offset = (pos + 1 + index * elementSize) * sizeof(u32);
-                        u32 w0 = ReadWord(packet, offset);
-                        u32 w1 = ReadWord(packet, offset + 4);
-                        u32 w2 = ReadWord(packet, offset + 8);
-                        u32 w3 = ReadWord(packet, offset + 12);
-                        std::fprintf(dumpFile,
-                                     "    addr4 v%u: U=%f(%08x low %02x) V=%f(%08x low %02x) w2=%08x(low %02x) "
-                                     "w3=%08x(low %02x adc %u)\n",
-                                     index, AsFloat(w0), w0, w0 & 0xFF, AsFloat(w1), w1, w1 & 0xFF, w2, w2 & 0xFF, w3,
-                                     w3 & 0xFF, (w3 & 0x8000) != 0 ? 1 : 0);
-                    }
-                }
-                if (address == 1 || address == 2)
-                {
-                    for (u32 index = 0; index < count && index < 4; index++)
-                    {
-                        size_t offset = (pos + 1 + index * elementSize) * sizeof(u32);
-                        u32 w0 = ReadWord(packet, offset);
-                        u32 w1 = ReadWord(packet, offset + 4);
-                        std::fprintf(dumpFile, "    addr%u v%u: %08x %08x -> floats %g %g (ints %u %u)\n", address,
-                                     index, w0, w1, static_cast<double>(AsFloat(w0)), static_cast<double>(AsFloat(w1)),
-                                     w0, w1);
-                    }
-                }
             }
 
             if (address == 3 || address == 4 || address == 5 || address == 6)
@@ -430,29 +269,15 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                     {
                         vertex.u = ReadFloat(packet, offset);
                         vertex.v = ReadFloat(packet, offset + 4);
-                        if (index == 0)
-                        {
-                            out->address4Sample[0] = ReadWord(packet, offset);
-                            out->address4Sample[1] = ReadWord(packet, offset + 4);
-                            out->address4Sample[2] = ReadWord(packet, offset + 8);
-                            out->address4Sample[3] = ReadWord(packet, offset + 12);
-                        }
                         if (components >= 4)
                         {
-                            addr4Colours++;
                             // The UV/colour row's four words each carry a colour channel in their low byte (the reference
                             // decoder's DecodeSubModel: r the first word, then green, blue and alpha). The colour's red,
                             // green and blue are full at 192, its alpha at 128, scaled to the window's 255 (ScaleChannel)
-                            if (!NoVertexColour())
-                            {
-                                const u32 vertexFull = VertexColourFull();
-                                vertex.colour[0] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset) & 0xFF), vertexFull);
-                                vertex.colour[1] =
-                                    ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 4) & 0xFF), vertexFull);
-                                vertex.colour[2] =
-                                    ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 8) & 0xFF), vertexFull);
-                                vertex.colour[3] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 12) & 0xFF), 128);
-                            }
+                            vertex.colour[0] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset) & 0xFF), 255);
+                            vertex.colour[1] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 4) & 0xFF), 255);
+                            vertex.colour[2] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 8) & 0xFF), 255);
+                            vertex.colour[3] = ScaleChannel(static_cast<u8>(ReadWord(packet, offset + 12) & 0xFF), 128);
                             // The fourth word's bit 15 is the ADC/no-draw flag: the triangle ending at this vertex is dropped
                             noDraw[base + index] =
                                 (ReadWord(packet, offset + 12) & 0x8000) != 0 ? 1 : 0;
@@ -475,15 +300,10 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                         // Address 6 (0x6E): one packed RGBA word a vertex, the colour bytes red lowest (the reference
                         // decoder's own order: r the low byte, then green, blue and alpha), scaled like the UV/colour row's
                         u32 packed = ReadWord(packet, offset);
-                        addr6Colours++;
-                        if (!NoVertexColour())
-                        {
-                            const u32 skinFull = VertexColourFull();
-                            vertex.colour[0] = ScaleChannel(static_cast<u8>(packed & 0xFF), skinFull);
-                            vertex.colour[1] = ScaleChannel(static_cast<u8>((packed >> 8) & 0xFF), skinFull);
-                            vertex.colour[2] = ScaleChannel(static_cast<u8>((packed >> 16) & 0xFF), skinFull);
-                            vertex.colour[3] = ScaleChannel(static_cast<u8>((packed >> 24) & 0xFF), 128);
-                        }
+                        vertex.colour[0] = ScaleChannel(static_cast<u8>(packed & 0xFF), 255);
+                        vertex.colour[1] = ScaleChannel(static_cast<u8>((packed >> 8) & 0xFF), 255);
+                        vertex.colour[2] = ScaleChannel(static_cast<u8>((packed >> 16) & 0xFF), 255);
+                        vertex.colour[3] = ScaleChannel(static_cast<u8>((packed >> 24) & 0xFF), 128);
                     }
                 }
             }
@@ -552,8 +372,7 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                     continue;
                 }
 
-                const u32 corners[3] = {FanTopology() ? strip.first : strip.first + index - 2, strip.first + index - 1,
-                                        strip.first + index};
+                const u32 corners[3] = {strip.first + index - 2, strip.first + index - 1, strip.first + index};
                 const MeshVertex& first = vertices[corners[0]];
                 const MeshVertex& second = vertices[corners[1]];
                 const MeshVertex& third = vertices[corners[2]];
@@ -629,14 +448,6 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                 continue;
             }
 
-            if (FanTopology())
-            {
-                out->indexes.push_back(Remap(strip.first));
-                out->indexes.push_back(Remap(strip.first + index - 1));
-                out->indexes.push_back(Remap(strip.first + index));
-                continue;
-            }
-
             // A strip's odd triangles are flipped (the GL strip rule): their first two vertices swap so every triangle winds
             // the same way. Without this the list alternates winding and a culled pass (the shadow volumes') keeps and drops
             // half the faces of every strip-built mesh
@@ -704,70 +515,6 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
     }
 
     out->checksum = Crc32(out->vertices.data(), out->vertices.size());
-    out->address4Colours = addr4Colours;
-    out->address6Colours = addr6Colours;
-    if (dumpFile != nullptr)
-    {
-        std::fprintf(dumpFile, "  RIGID decoded %zu verts %zu indexes bounds [%f %f %f]-[%f %f %f] checksum %08x\n",
-                     compact.size(), out->indexes.size(), out->boundsMin[0], out->boundsMin[1], out->boundsMin[2],
-                     out->boundsMax[0], out->boundsMax[1], out->boundsMax[2], out->checksum);
-        u32 redCount = 0;
-        u32 opaqueWhite = 0;
-        f32 minU = 1.0e30f;
-        f32 maxU = -1.0e30f;
-        f32 minV = 1.0e30f;
-        f32 maxV = -1.0e30f;
-        for (size_t index = 0; index < compact.size(); index++)
-        {
-            const MeshVertex& v = compact[index];
-            minU = v.u < minU ? v.u : minU;
-            maxU = v.u > maxU ? v.u : maxU;
-            minV = v.v < minV ? v.v : minV;
-            maxV = v.v > maxV ? v.v : maxV;
-            if (index < 12)
-            {
-                std::fprintf(dumpFile, "    v%zu pos %f %f %f uv %f %f colour %u %u %u %u normal %u %u %u %u\n", index,
-                             v.x, v.y, v.z, v.u, v.v, v.colour[0], v.colour[1], v.colour[2], v.colour[3], v.normal[0],
-                             v.normal[1], v.normal[2], v.normal[3]);
-            }
-            if (v.colour[0] > 200 && v.colour[1] < 40 && v.colour[2] < 40)
-            {
-                redCount++;
-            }
-            if (v.colour[0] == 255 && v.colour[1] == 255 && v.colour[2] == 255 && v.colour[3] == 255)
-            {
-                opaqueWhite++;
-            }
-        }
-        std::fprintf(dumpFile, "    colours: red-ish %u, opaque white %u of %zu\n", redCount, opaqueWhite,
-                     compact.size());
-        std::fprintf(dumpFile, "    uv range u [%g %g] v [%g %g]\n", static_cast<double>(minU),
-                     static_cast<double>(maxU), static_cast<double>(minV), static_cast<double>(maxV));
-        u8 minC[4] = {255, 255, 255, 255};
-        u8 maxC[4] = {0, 0, 0, 0};
-        for (const MeshVertex& v : compact)
-        {
-            for (u32 channel = 0; channel < 4; channel++)
-            {
-                minC[channel] = v.colour[channel] < minC[channel] ? v.colour[channel] : minC[channel];
-                maxC[channel] = v.colour[channel] > maxC[channel] ? v.colour[channel] : maxC[channel];
-            }
-        }
-        std::fprintf(dumpFile, "    colour bytes min %u %u %u %u max %u %u %u %u (address-4 %u, address-6 %u)\n",
-                     minC[0], minC[1], minC[2], minC[3], maxC[0], maxC[1], maxC[2], maxC[3], addr4Colours,
-                     addr6Colours);
-        if (!compact.empty())
-        {
-            const u8* raw = reinterpret_cast<const u8*>(&compact[0]);
-            std::fprintf(dumpFile, "    v0 raw28:");
-            for (size_t byte = 0; byte < sizeof(MeshVertex); byte++)
-            {
-                std::fprintf(dumpFile, " %02x", raw[byte]);
-            }
-            std::fprintf(dumpFile, "\n");
-        }
-    }
-
     return true;
 }
 
@@ -830,18 +577,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
     // the reference's own decode starts (its `word = 2`)
     size_t pos = 2;
 
-    const bool dump = MeshDumpWanted("skin");
-    FILE* dumpFile = dump ? MeshDumpFile() : nullptr;
-    if (dumpFile != nullptr)
-    {
-        std::fprintf(dumpFile, "SKIN packet %p size %zu words %zu vertexCount %u shapeCount %u\n",
-                     static_cast<const void*>(packet), packetSize, words, vertexCount, shapeCount);
-        for (size_t index = 0; index < words; index++)
-        {
-            std::fprintf(dumpFile, "  w%04zu %08x\n", index, ReadWord(packet, index * sizeof(u32)));
-        }
-    }
-
     // A strip's four rows are collected before they can be assembled, their counts matched
     std::vector<u16> rowA;
     std::vector<u16> rowNormalX;
@@ -859,20 +594,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
     bool uvOffset = false;
 
     auto FlushStrip = [&]() {
-        if (dumpFile != nullptr)
-        {
-            std::fprintf(dumpFile,
-                         "  FLUSH started %d rowCount %u posOffset %d posRow %08x %08x %08x %08x uvOffset %d "
-                         "uvRow %08x %08x %08x %08x scale %g\n",
-                         started ? 1 : 0, rowCount, positionOffset ? 1 : 0, positionRow[0], positionRow[1],
-                         positionRow[2], positionRow[3], uvOffset ? 1 : 0, uvRow[0], uvRow[1], uvRow[2], uvRow[3],
-                         static_cast<double>(positionScale));
-        }
-
-        if (!started || rowCount == 0)
-        {
-            return;
-        }
         if (vertices.size() + rowCount > vertexCount && vertexCount != 0)
         {
             ok = false;
@@ -922,10 +643,9 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
             // channels at draw time (192 for RGB, 128 for alpha), so the decode does the same here
             // and shares the fragment shader's modulation with the rigid path
             const u32 packed = vertex < rowC.size() ? rowC[vertex] : 0xFFFFFFFFu;
-            const u32 blendFull = VertexColourFull();
-            outVertex.colour[0] = ScaleChannel(static_cast<u8>(packed & 0xFF), blendFull);
-            outVertex.colour[1] = ScaleChannel(static_cast<u8>((packed >> 8) & 0xFF), blendFull);
-            outVertex.colour[2] = ScaleChannel(static_cast<u8>((packed >> 16) & 0xFF), blendFull);
+            outVertex.colour[0] = ScaleChannel(static_cast<u8>(packed & 0xFF), 255);
+            outVertex.colour[1] = ScaleChannel(static_cast<u8>((packed >> 8) & 0xFF), 255);
+            outVertex.colour[2] = ScaleChannel(static_cast<u8>((packed >> 16) & 0xFF), 255);
             outVertex.colour[3] = ScaleChannel(static_cast<u8>((packed >> 24) & 0xFF), 128);
 
             const u32 joint0 = rowD[vertex * V4Words + 0];
@@ -976,14 +696,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
                 continue;
             }
 
-            if (FanTopology())
-            {
-                out->indexes.push_back(static_cast<u16>(first));
-                out->indexes.push_back(static_cast<u16>(first + vertex - 1));
-                out->indexes.push_back(static_cast<u16>(first + vertex));
-                continue;
-            }
-
             out->indexes.push_back(static_cast<u16>(first + vertex - 2));
             out->indexes.push_back(static_cast<u16>(first + vertex - 1));
             out->indexes.push_back(static_cast<u16>(first + vertex));
@@ -1006,31 +718,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
                 break;
             }
             const u32* data = reinterpret_cast<const u32*>(packet + (pos + 1) * sizeof(u32));
-            if (dumpFile != nullptr)
-            {
-                const char* branch = address == 0 ? "gif-header" : address == 2 ? "scales" : address == 3 ? "position" :
-                                     address == 4 ? "uv/normal" : address == 5 ? "joints" :
-                                     address == 6 ? "packed-col" : "other";
-                std::fprintf(dumpFile,
-                             "  UNPACK cmd %02x code %08x addr %u (0x%04x) components %u elementSize %u count %u "
-                             "words [%zu..%zu) branch %s\n",
-                             command, code, address, code & VuSkinAddressMask, components, elementSize, count, pos + 1,
-                             pos + 1 + static_cast<size_t>(elementSize) * count, branch);
-                if (address == 5)
-                {
-                    for (u32 vertex = 0; vertex < count && vertex < 4; vertex++)
-                    {
-                        std::fprintf(dumpFile, "    addr5 v%u: j0 %08x j1 %08x j2 %08x flags %08x -> idx %u %u %u "
-                                               "count %u chain %u\n",
-                                     vertex, data[vertex * 4 + 0], data[vertex * 4 + 1], data[vertex * 4 + 2],
-                                     data[vertex * 4 + 3], (data[vertex * 4 + 0] & PackedIndexMask) >> PackedIndexShift,
-                                     (data[vertex * 4 + 1] & PackedIndexMask) >> PackedIndexShift,
-                                     (data[vertex * 4 + 2] & PackedIndexMask) >> PackedIndexShift,
-                                     data[vertex * 4 + 3] & SkinJointCountMask,
-                                     (data[vertex * 4 + 3] & SkinChainFlag) != 0 ? 1 : 0);
-                    }
-                }
-            }
             if (address == 0)
             {
                 // The strip's GIF header: the open strip is done, the next starts here
@@ -1170,64 +857,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
     out->vertices.resize(vertices.size() * sizeof(Ps2SkinVertex));
     std::memcpy(out->vertices.data(), vertices.data(), out->vertices.size());
     out->checksum = Crc32(out->vertices.data(), out->vertices.size());
-    if (dumpFile != nullptr)
-    {
-        std::fprintf(dumpFile, "  SKIN decoded %zu verts %zu indexes joints %u checksum %08x\n", vertices.size(),
-                     out->indexes.size(), out->jointCount, out->checksum);
-        for (size_t index = 0; index < vertices.size() && index < 12; index++)
-        {
-            const Ps2SkinVertex& v = vertices[index];
-            std::fprintf(dumpFile, "    v%zu pos %f %f %f uv %f %f colour %u %u %u %u normal %u %u %u %u "
-                                   "joints %u %u %u weights %f %f %f\n",
-                         index, v.x, v.y, v.z, v.u, v.v, v.colour[0], v.colour[1], v.colour[2], v.colour[3],
-                         v.normal[0], v.normal[1], v.normal[2], v.normal[3], 
-                         static_cast<u32>(v.jointIdx[0]), static_cast<u32>(v.jointIdx[1]), static_cast<u32>(v.jointIdx[2]),
-                         v.jointWeight[0], v.jointWeight[1], v.jointWeight[2]);
-        }
-        f32 minU = 1.0e30f;
-        f32 maxU = -1.0e30f;
-        f32 minV = 1.0e30f;
-        f32 maxV = -1.0e30f;
-        for (const Ps2SkinVertex& v : vertices)
-        {
-            minU = v.u < minU ? v.u : minU;
-            maxU = v.u > maxU ? v.u : maxU;
-            minV = v.v < minV ? v.v : minV;
-            maxV = v.v > maxV ? v.v : maxV;
-        }
-        std::fprintf(dumpFile, "    uv range u [%g %g] v [%g %g]\n", static_cast<double>(minU),
-                     static_cast<double>(maxU), static_cast<double>(minV), static_cast<double>(maxV));
-        u8 minC[4] = {255, 255, 255, 255};
-        u8 maxC[4] = {0, 0, 0, 0};
-        u32 minJoint = 255;
-        u32 maxJoint = 0;
-        for (const Ps2SkinVertex& v : vertices)
-        {
-            for (u32 channel = 0; channel < 4; channel++)
-            {
-                minC[channel] = v.colour[channel] < minC[channel] ? v.colour[channel] : minC[channel];
-                maxC[channel] = v.colour[channel] > maxC[channel] ? v.colour[channel] : maxC[channel];
-            }
-            for (u32 joint = 0; joint < 3; joint++)
-            {
-                minJoint = v.jointIdx[joint] < minJoint ? v.jointIdx[joint] : minJoint;
-                maxJoint = v.jointIdx[joint] > maxJoint ? v.jointIdx[joint] : maxJoint;
-            }
-        }
-        std::fprintf(dumpFile, "    colour bytes min %u %u %u %u max %u %u %u %u joints [%u %u]\n", minC[0], minC[1],
-                     minC[2], minC[3], maxC[0], maxC[1], maxC[2], maxC[3], minJoint, maxJoint);
-        if (!vertices.empty())
-        {
-            const u8* raw = reinterpret_cast<const u8*>(&vertices[0]);
-            std::fprintf(dumpFile, "    v0 raw44:");
-            for (size_t byte = 0; byte < sizeof(Ps2SkinVertex); byte++)
-            {
-                std::fprintf(dumpFile, " %02x", raw[byte]);
-            }
-            std::fprintf(dumpFile, "\n");
-        }
-    }
-
     return true;
 }
 

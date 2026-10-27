@@ -15,7 +15,6 @@
 #include "debug.h"
 
 #include <cstdio>
-#include <cstdlib>
 
 #include <cstddef>
 #include <cstdint>
@@ -136,79 +135,12 @@ void ControlsNode::Step(TimeClock*, u32)
 // pad, the controls in use read it for the instance, and its follow camera reads it
 u32 ControlsNode::Update(TimeClock* clock)
 {
-    // TS_SPEED=1: whether this node's branch is taken at all, written before either is. The chase's runner is the body
-    // whose speed is wrong, and a body driven by its motion takes the first branch and one driven by a pad the second;
-    // a body with neither is asked for nothing, and then its buttons keep whatever the last writer left in them. Opened
-    // and closed per line, because a file held open from a static lands wherever the working directory was at the moment
-    // of the first call and is then invisible from the logs' own directory
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 20000)
-        {
-            std::FILE* file = std::fopen("nodectl.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "frame %u inst %p running %u motionDriven %u pad %p\n",
-                             static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(owner),
-                             static_cast<unsigned>(clock->flags.running), bits.motionDriven,
-                             static_cast<void*>(pad));
-                std::fclose(file);
-            }
-        }
-    }
-
     if (clock->flags.running != 0)
     {
         if (bits.motionDriven != 0)
         {
             Vector4 velocity = *FrameMove(owner);
             f32 inverse = 1.0f / (static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit);
-            // TS_PLACE=1: this body's place is watched, so every write to its position is logged with its caller
-            if (std::getenv("TS_PLACE") != nullptr)
-            {
-                g_PlaceWriteTrace = true;
-                WatchPlaceWrites(owner->place);
-            }
-
-            // TS_SPEED=1: a motion driven body's speed is read back off its own movement - the place's delta last frame
-            // becomes this frame's velocity, and this frame's movement becomes next frame's. Written for every frame
-            // that runs, because the shape is the answer: a ramp adds a little each frame until it saturates at the
-            // property and stays there for the rest of the level; a step means the place jumped or the clip changed over
-            if (std::getenv("TS_SPEED") != nullptr)
-            {
-                static u32 noted = 0;
-                if (noted++ < 24000)
-                {
-                    f32 length = __builtin_sqrtf(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
-                    auto* agentNode = static_cast<AgentNode*>(GetGameNode(&owner->nodes, NodeCharacter));
-                    CharacterAgent* agent = agentNode != nullptr ? static_cast<CharacterAgent*>(agentNode->agent) : nullptr;
-                    f32 top = agent != nullptr ? agent->WalkTopSpeed() : 0.0f;
-                    // Opened and closed per line: a file held open from a static is created wherever the working directory
-                    // was at the first call and is then missing from the logs' own directory, which is how two runs went by
-                    // with no bodymove.log at all
-                    std::FILE* file = std::fopen("bodymove.log", "ab");
-                    if (file != nullptr)
-                    {
-                        std::fprintf(file,
-                                     "frame %u inst %p placeaddr %p kind %d driven %u fm %g %g %g len %g inv %g top %g "
-                                     "stick %g place %g %g %g\n",
-                                     static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(owner),
-                                     static_cast<void*>(owner->place),
-                                     agent != nullptr ? agent->properties->GetInt(CharacterKindProperty) : -1,
-                                     static_cast<unsigned>(agent != nullptr ? agent->Controlled() : 0),
-                                     static_cast<double>(velocity.x), static_cast<double>(velocity.y),
-                                     static_cast<double>(velocity.z), static_cast<double>(length),
-                                     static_cast<double>(inverse), static_cast<double>(top),
-                                     static_cast<double>(length * inverse / (top != 0.0f ? top : 1.0f)),
-                                     static_cast<double>(owner->place->position.x),
-                                     static_cast<double>(owner->place->position.y),
-                                     static_cast<double>(owner->place->position.z));
-                        std::fclose(file);
-                    }
-                }
-            }
-
             velocity.x *= inverse;
             velocity.y *= inverse;
             velocity.z *= inverse;

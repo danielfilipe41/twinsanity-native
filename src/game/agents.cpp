@@ -1,6 +1,3 @@
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/agents.h"
 
 #include "game/attachments.h"
@@ -283,77 +280,15 @@ void SetAgentModel(Agent* agent, GameResources* resources)
 u32 RunAgentEvent(Agent* agent, u32 event, u32 originator, u32 force, u32 runner)
 {
     GameObject* object = agent->object;
-    // TS_DIAG=1: the interesting cases only — an event dropped by a gate, or one that lands on a behaviour slot the object has
-    // no script for. A nitro crate's OnDamage (slot 2) never reaching a starter is exactly "no explosion at all"
-    static const bool eventDiag = std::getenv("TS_DIAG") != nullptr;
     if (object == nullptr || agent->eventFlags.eventsOff != 0 || event >= object->header.behaviourSlots)
     {
-        if (eventDiag)
-        {
-            static u32 noted = 0;
-            if (noted < 3000)
-            {
-                noted++;
-                std::FILE* file = std::fopen("events.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "RunAgentEvent drop agent=%p object=%p event=%u eventsOff=%u slots=%u\n",
-                                 static_cast<void*>(agent), static_cast<void*>(object), event, agent->eventFlags.eventsOff,
-                                 object != nullptr ? object->header.behaviourSlots : 0);
-                    std::fclose(file);
-                }
-            }
-        }
-
         return 0;
     }
 
     u16 starter = object->behaviours.items[event];
-    if (starter == NoScriptId && eventDiag)
-    {
-        static u32 noted = 0;
-        if (noted < 3000)
-        {
-            noted++;
-            std::FILE* file = std::fopen("events.log", "ab");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "RunAgentEvent noScript object=%p name=%s event=%u slots=%u count=%u items=%d,%d,%d,%d\n",
-                             static_cast<void*>(object), object->name.string != nullptr ? object->name.string : "(none)", event,
-                             object->header.behaviourSlots, object->behaviours.count,
-                             object->behaviours.count > 0 ? object->behaviours.items[0] : -1,
-                             object->behaviours.count > 1 ? object->behaviours.items[1] : -1,
-                             object->behaviours.count > 2 ? object->behaviours.items[2] : -1,
-                             object->behaviours.count > 3 ? object->behaviours.items[3] : -1);
-                std::fclose(file);
-            }
-        }
-    }
 
     if (starter != NoScriptId)
     {
-        // TS_HIT=1: every impact event an agent's script lands on, with the object it belongs to and the starter it queued.
-        // A crate that explodes leaves OnDamage -> the explosion's starter here; a crate whose explosion never happens shows
-        // either no line at all (the impact never reached it) or a starter that is not the explosion's
-        static const bool hitLog = std::getenv("TS_HIT") != nullptr;
-        if (hitLog && event >= OnDamage && event <= OnLand)
-        {
-            static u32 noted = 0;
-            if (noted < 8000)
-            {
-                noted++;
-                std::FILE* file = std::fopen("hits.log", "ab");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "RunAgentEvent hit agent=%p object=%p name=%s event=%u starter=%u sender=%p force=%u\n",
-                                 static_cast<void*>(agent), static_cast<void*>(object),
-                                 object->name.string != nullptr ? object->name.string : "(none)", event, starter,
-                                 reinterpret_cast<void*>(originator), force);
-                    std::fclose(file);
-                }
-            }
-        }
-
         QueueStarter(agent, &starter, reinterpret_cast<InstanceContext*>(originator), force, static_cast<u8>(runner));
     }
 

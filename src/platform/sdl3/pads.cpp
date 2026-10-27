@@ -10,9 +10,11 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 
-extern "C" volatile u32 g_TestPadButtons = 0;
+extern "C"
+{
+    volatile u32 g_TestPadButtons = 0;
+}
 
 namespace
 {
@@ -59,138 +61,6 @@ constexpr PressureBit PressureBits[] = {
     {BitTriangle, PressureTriangle}, {BitCircle, PressureCircle}, {BitCross, PressureCross}, {BitSquare, PressureSquare},
     {BitUp, PressureUp},         {BitRight, PressureRight},   {BitDown, PressureDown}, {BitLeft, PressureLeft},
 };
-
-// A run driven without a device (the host's --press): TS_PRESS="FRAME:BUTTONS[:FRAMES],..." holds pad 0's buttons from
-// the frame for so many frames (10 when not given), the frames the game counts (g_DebugFrame, the runner's --press
-// frames are seconds on the PS2; the host's front end goes by frames). The buttons are the names tools/run_pcsx2.py
-// --press takes, joined by "+" (start, select, up, down, left, right, triangle, circle, cross, square, l1, l2, r1, r2).
-extern "C" volatile u32 g_DebugFrame;
-
-struct ScriptPress
-{
-    u32 frame = 0;
-    u32 hold = 10;
-    u32 buttons = 0;
-};
-
-constexpr u32 ScriptPresses = 32;
-ScriptPress g_Script[ScriptPresses];
-u32 g_ScriptCount = 0;
-bool g_ScriptRead = false;
-
-u32 ButtonOfName(const char* name, size_t length)
-{
-    struct Named
-    {
-        const char* name;
-        u32 bit;
-    };
-    static constexpr Named names[] = {
-        {"select", BitSelect},     {"start", BitStart},       {"up", BitUp},         {"right", BitRight},
-        {"down", BitDown},         {"left", BitLeft},         {"triangle", BitTriangle}, {"circle", BitCircle},
-        {"cross", BitCross},       {"square", BitSquare},     {"l1", BitL1},         {"l2", BitL2},
-        {"r1", BitR1},             {"r2", BitR2},             {"l3", BitL3},         {"r3", BitR3},
-    };
-    for (const Named& entry : names)
-    {
-        if (std::strlen(entry.name) == length && std::strncmp(entry.name, name, length) == 0)
-        {
-            return entry.bit;
-        }
-    }
-
-    return 0;
-}
-
-// "FRAME:BUTTONS[:FRAMES]" into a script entry
-void ReadScriptPress(const char* text)
-{
-    const char* colon = std::strchr(text, ':');
-    if (colon == nullptr)
-    {
-        return;
-    }
-
-    ScriptPress press;
-    press.frame = static_cast<u32>(std::atoi(text));
-    const char* buttons = colon + 1;
-    const char* hold = std::strchr(buttons, ':');
-    const char* end = hold != nullptr ? hold : buttons + std::strlen(buttons);
-    if (hold != nullptr)
-    {
-        press.hold = static_cast<u32>(std::atoi(hold + 1));
-    }
-
-    for (const char* at = buttons; at < end;)
-    {
-        const char* plus = at;
-        while (plus < end && *plus != '+')
-        {
-            plus++;
-        }
-
-        press.buttons |= ButtonOfName(at, static_cast<size_t>(plus - at));
-        at = plus + 1;
-    }
-
-    if (g_ScriptCount < ScriptPresses)
-    {
-        g_Script[g_ScriptCount++] = press;
-    }
-}
-
-void ReadScript()
-{
-    if (g_ScriptRead)
-    {
-        return;
-    }
-
-    g_ScriptRead = true;
-    const char* list = std::getenv("TS_PRESS");
-    if (list == nullptr)
-    {
-        return;
-    }
-
-    for (const char* at = list; at != nullptr && *at != '\0';)
-    {
-        const char* comma = std::strchr(at, ',');
-        const size_t span = comma != nullptr ? static_cast<size_t>(comma - at) : std::strlen(at);
-        char part[64];
-        if (span < sizeof(part))
-        {
-            std::memcpy(part, at, span);
-            part[span] = '\0';
-            ReadScriptPress(part);
-        }
-
-        at = comma != nullptr ? comma + 1 : nullptr;
-    }
-}
-
-// The buttons the script holds now
-u32 ScriptButtons()
-{
-    ReadScript();
-    if (g_ScriptCount == 0)
-    {
-        return 0;
-    }
-
-    u32 frame = g_DebugFrame;
-    u32 held = 0;
-    for (u32 index = 0; index < g_ScriptCount; index++)
-    {
-        const ScriptPress& press = g_Script[index];
-        if (press.frame <= frame && frame < press.frame + press.hold)
-        {
-            held |= press.buttons;
-        }
-    }
-
-    return held;
-}
 
 bool g_Opened[PortCount] = {};
 SDL_Gamepad* g_Pads[PortCount] = {};
@@ -451,7 +321,7 @@ s32 Platform::Pads::Read(s32 port, s32 slot, u8* data)
     }
     if (port == 0 && slot == 0)
     {
-        held |= g_TestPadButtons | ScriptButtons();
+        held |= g_TestPadButtons;
     }
 
     u8 leftX = StickReport(pad, SDL_GAMEPAD_AXIS_LEFTX);

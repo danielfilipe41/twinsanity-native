@@ -9,8 +9,6 @@
 // against it.
 #include "host_graphics.h"
 
-#include <cstdlib>
-
 #include "game/resources.h"
 #include "game/shadows.h"
 #include "game/view.h"
@@ -24,10 +22,10 @@ namespace
 {
 // How much of the frame a fully covered pixel loses. Retail's ApplyShadows uses 32/128; this is halved because the
 // coverage saturates at one shell, and the retail amount would make a single capsule as dark as a fully crossed
-// ground. TS_AMOUNT overrides it.
+// ground.
 constexpr f32 ShadowAmount = 16.0f / 128.0f;
 // Value for the resolve's u_shadowAmount.y. One shell is a whole shadow now, so the count is unused; the uniform
-// keeps the field for TS_SHADOWCOUNT compatibility.
+// keeps the field.
 constexpr f32 ShadowCountFull = 1.0f;
 // The target's clear: no coverage, and the depth at the near end. Only the fallback (no scene depth) tests against that
 constexpr u32 ShadowClearColour = 0x00000000;
@@ -63,34 +61,11 @@ u32 g_frameHeight;
 bool g_frameHasDepth = false;
 // The resolve pass's uniform block (x: the amount, the rest unused)
 f32 g_amountValue[4] = {ShadowAmount, ShadowCountFull, 0.0f, 0.0f};
-// TS_SHADOWDEBUG=1: the resolve writes its factors (shader u_shadowDebug) instead of darkening; drawn with the blend
-// replaced, so R/G/B/A land raw for the dump to read
-bgfx::UniformHandle g_shadowDebugU = BGFX_INVALID_HANDLE;
-f32 g_shadowDebugValue[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-// TS_RAMP=<0..1>: forces the ramp to that value, taking the sampled depth out of the picture
-bgfx::UniformHandle g_shadowRampU = BGFX_INVALID_HANDLE;
-f32 g_shadowRampValue[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 // The near and far planes the ramp turns the frame's perspective depth into a distance with (the same object's x and y)
 bgfx::UniformHandle g_shadowLinearU = BGFX_INVALID_HANDLE;
 // w: the resolve's destination-alpha gate (shader u_shadowLinear.w): 1 samples the frame's own alpha per pixel and only
 // opaque pixels take a shadow, retail's TEST{DEST=1}. Was 0 (gate off, everything takes the shadow, casters included)
 f32 g_shadowLinearValue[4] = {0.1f, 1000.0f, 0.0f, 1.0f};
-
-// TS_AMOUNT=<value>: forces the resolve's amount, so a large one blackens any nonzero coverage. A region that then shows
-// means the draw lands and the amount/ramp/gate kept it faint; nothing means the resolve never reaches the frame
-f32 ShadowAmountFor()
-{
-    const char* forced = std::getenv("TS_AMOUNT");
-    return forced != nullptr ? static_cast<f32>(std::atof(forced)) : ShadowAmount;
-}
-
-// TS_SHADOWCOUNT=<shells>: how many shells a crossed ground takes to reach a full shadow (the resolve's u_shadowAmount.y).
-// 1 is a flat shadow; retail's own form is a gradient by the count, which 8 comes close to
-f32 ShadowCountFor()
-{
-    const char* forced = std::getenv("TS_SHADOWCOUNT");
-    return forced != nullptr ? static_cast<f32>(std::atof(forced)) : ShadowCountFull;
-}
 
 // The resolve's fullscreen triangle: clip-space positions only (the shader derives the target's UVs from them)
 struct ResolveVertex
@@ -141,8 +116,6 @@ void MakeShared()
     // The scene colour the resolve samples for the frame's destination alpha (the PS2's destination-alpha gate)
     g_frameSampler = bgfx::createUniform("s_frame", bgfx::UniformType::Sampler);
     g_amount = bgfx::createUniform("u_shadowAmount", bgfx::UniformType::Vec4);
-    g_shadowDebugU = bgfx::createUniform("u_shadowDebug", bgfx::UniformType::Vec4);
-    g_shadowRampU = bgfx::createUniform("u_shadowRamp", bgfx::UniformType::Vec4);
     g_shadowLinearU = bgfx::createUniform("u_shadowLinear", bgfx::UniformType::Vec4);
 }
 
@@ -220,12 +193,6 @@ void SetUpShadowPass()
 
 void BeginShadows()
 {
-    // TS_NO=shadow: the whole pass off
-    if (Platform::Graphics::HostStageDisabled("shadow"))
-    {
-        return;
-    }
-
     MakeShared();
     // The coverage target is the FRAME's size (what the resolve darkens), so the resolve's overdraw and the frame's alpha copy
     // line up with it. Neither the window nor the game's screen size is necessarily it (a harness darkens a target of its own),
@@ -295,18 +262,9 @@ void BeginShadows()
     g_open = true;
 }
 
-namespace
-{
-bool debugReadState()
-{
-    static const bool on = std::getenv("TS_SHADOWDEBUG") != nullptr;
-    return on;
-}
-}
-
 void EndShadows()
 {
-    if (!g_open || Platform::Graphics::HostStageDisabled("shadow"))
+    if (!g_open)
     {
         return;
     }
@@ -341,16 +299,8 @@ void EndShadows()
     bgfx::FrameBufferHandle target = sceneFrame ? HostSceneColourTarget() : g_frame;
 
     bgfx::setViewFrameBuffer(HostShadowView, target);
-    if (debugReadState())
-    {
-        // The readout replaces the frame (no blend, no test): the factors land as they are rather than being subtracted
-        bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-    }
-    else
-    {
-        bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_EQUATION(BGFX_STATE_BLEND_EQUATION_REVSUB) |
-                       BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
-    }
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_BLEND_EQUATION(BGFX_STATE_BLEND_EQUATION_REVSUB) |
+                   BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE));
     // Every lookup in this pass is NEAREST on the console, and that is what keeps a shadow crisp rather than soft: the
     // half-size buffer is copied to the screen at 1:1 with TEX1 unwritten (shadows.cpp's ApplyShadows: no filtering), the
     // frame depth is read as a byte, and that byte indexes a 256-entry palette, an integer lookup filtering can only
@@ -361,34 +311,15 @@ void EndShadows()
     // The ramp indexes the LUT by the SCENE's depth - the frame the volumes were tested against - as retail indexes its palette by
     // the frame-depth copy's top byte. The coverage target's own depth is no use here: the volumes write no depth in the
     // frame-depth path, so it holds only the clear value and the ramp goes constant (the silhouette, not a footprint)
-    static const bool depthFromFrameOverride = std::getenv("TS_DEPTHFROMFRAME") != nullptr;
     const bool useFrameDepth = bgfx::isValid(g_frame) && g_frameHasDepth;
-    bgfx::TextureHandle rampDepth = useFrameDepth || depthFromFrameOverride ? bgfx::getTexture(g_frame, 1)
-                                                                          : bgfx::getTexture(g_half, 1);
+    bgfx::TextureHandle rampDepth = useFrameDepth ? bgfx::getTexture(g_frame, 1) : bgfx::getTexture(g_half, 1);
 
     bgfx::setTexture(1, g_depthSampler, rampDepth, PointClamp);
     bgfx::setTexture(2, g_lutSampler, g_lut, PointClamp);
     // The frame's alpha the coverage is gated on (shader s_frame, the PS2's destination-alpha test). Unbound, the sampler reads
     // black and the gate zeroes every shadow
-    bgfx::setTexture(3, g_frameSampler, std::getenv("TS_GATEOFF") != nullptr ? HostWhiteTexture() : g_frameCopy);
-    g_amountValue[0] = ShadowAmountFor();
-    g_amountValue[1] = ShadowCountFor();
-    static const bool debugRead = std::getenv("TS_SHADOWDEBUG") != nullptr;
-    g_shadowDebugValue[0] = debugRead ? 1.0f : 0.0f;
+    bgfx::setTexture(3, g_frameSampler, g_frameCopy);
     bgfx::setUniform(g_amount, g_amountValue);
-    bgfx::setUniform(g_shadowDebugU, g_shadowDebugValue);
-    static const char* forcedRamp = std::getenv("TS_RAMP");
-    if (forcedRamp != nullptr)
-    {
-        g_shadowRampValue[0] = 1.0f;
-        g_shadowRampValue[1] = static_cast<f32>(std::atof(forcedRamp));
-    }
-    else
-    {
-        g_shadowRampValue[0] = 0.0f;
-    }
-
-    bgfx::setUniform(g_shadowRampU, g_shadowRampValue);
 
     // The ramp indexes the LUT by distance, so it needs the game's near and far planes (view.cpp SetProjection:
     // m[2][2] = (f+n)/(f-n), m[3][2] = -2fn/(f-n)). Raw perspective depth packs the visible world into roughly
@@ -409,10 +340,7 @@ void EndShadows()
     // itself: the frame-depth byte into retail's 256-entry white palette, alpha ramping 255 down to 0. A positive value is a
     // distance in metres the ramp falls from full to none over, which is NOT retail (retail has no such number): it exists only
     // because the host's perspective depth cannot be used as that index directly, packing the whole visible world into its last
-    // few percent. TS_SHADOWFADE=<metres> picks that form
-    static const char* fade = std::getenv("TS_SHADOWFADE");
-    g_shadowLinearValue[2] = fade != nullptr ? static_cast<f32>(std::atof(fade)) : 0.0f;
-
+    // few percent.
     bgfx::setUniform(g_shadowLinearU, g_shadowLinearValue);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostShadowView, g_resolve);
@@ -420,7 +348,7 @@ void EndShadows()
 
 void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4* toCamera, const Matrix4x4* world)
 {
-    if (!g_open || mesh == nullptr || toScreen == nullptr || Platform::Graphics::HostStageDisabled("shadow"))
+    if (!g_open || mesh == nullptr || toScreen == nullptr)
     {
         return;
     }
@@ -438,7 +366,7 @@ void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4
     //
     // bgfx cannot wrap, so away shells count into R and facing shells into G, 8/255 each, and the resolve takes their
     // difference. A surface inside the volume has its away shell behind it and its facing shell in front, counting one;
-    // a surface with the whole volume behind it counts none. TS_SHADOWADD=1 counts away shells alone.
+    // a surface with the whole volume behind it counts none.
     //
     // No depth is written: the target is the frame's own copy, which other buckets still test against.
     constexpr u64 VolumeBlend = BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_FACTOR, BGFX_STATE_BLEND_ONE);
@@ -450,7 +378,6 @@ void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4
     // footprint
     constexpr u64 VolumeStateOwn =
         BGFX_STATE_WRITE_R | BGFX_STATE_DEPTH_TEST_GEQUAL | BGFX_STATE_WRITE_Z | VolumeBlend;
-    static const bool additiveOnly = std::getenv("TS_SHADOWADD") != nullptr;
     constexpr u64 VolumeTakeBack = BGFX_STATE_WRITE_G | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
     for (u32 subModel = 0; subModel < data->subModelCount; subModel++)
     {
@@ -462,13 +389,10 @@ void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4
                             g_volumesOverSceneDepth ? (VolumeStateScene | BGFX_STATE_CULL_CCW)
                                                     : (VolumeStateOwn | BGFX_STATE_CULL_CCW),
                             nullptr, VolumeShellFactor, Platform::Graphics::HostShadowVolumeProgram());
-        if (!additiveOnly)
-        {
-            HostDrawRigidPacket(data->packets[subModel], data->sizes[subModel], data->vertexCounts[subModel], toScreen,
-                                nullptr, nullptr, Platform::Graphics::HostWhiteTexture(), HostShadowVolumeView,
-                                VolumeTakeBack | BGFX_STATE_CULL_CW, nullptr, VolumeShellFactor,
-                                Platform::Graphics::HostShadowVolumeProgram());
-        }
+        HostDrawRigidPacket(data->packets[subModel], data->sizes[subModel], data->vertexCounts[subModel], toScreen,
+                            nullptr, nullptr, Platform::Graphics::HostWhiteTexture(), HostShadowVolumeView,
+                            VolumeTakeBack | BGFX_STATE_CULL_CW, nullptr, VolumeShellFactor,
+                            Platform::Graphics::HostShadowVolumeProgram());
     }
 
     // The camera-space and world matrices the PS2's VU1 program lights and fogs with have no host use here

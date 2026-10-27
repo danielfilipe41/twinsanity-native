@@ -4,8 +4,6 @@
 // SubmitQuad with the white texture standing in until then). The bgfx objects are process singletons made lazily.
 #include "host_graphics.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 #include "shaders/fs_draw2d.bin.h"
@@ -155,37 +153,16 @@ HostTextureUpload HostTextureCache::GetOrUpload(const HostTextureKey& key, const
         return miss;
     }
 
-    // TS_TEXDUMP=<dir>: dumps each new upload as <dir>/tex<handle>_<w>x<h>.pam, for tracing a garbled picture to a
-    // decode or a draw. The alpha is kept (a PPM has no room for it, and whether a cell holds a soft puff or a hard
-    // shape is a question only the alpha can answer)
-    static const char* dumpDir = std::getenv("TS_TEXDUMP");
-    if (dumpDir != nullptr && *dumpDir != '\0')
-    {
-        char path[512];
-        std::snprintf(path, sizeof(path), "%s/tex_%p_%ux%u.pam", dumpDir, key.transfer, decoded.width,
-                      decoded.height);
-        FILE* out = std::fopen(path, "wb");
-        if (out != nullptr)
-        {
-            std::fprintf(out, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", decoded.width,
-                          decoded.height);
-            std::fwrite(decoded.rgba.data(), 1, decoded.rgba.size(), out);
-            std::fclose(out);
-        }
-    }
-
     // The texture's mip chain. The console uploads the file's own levels (the MIPTBP registers and the level's own
     // offsets and widths), so a texture the file gives one level has no mips at all on the console: the particle
     // pages are such textures, and a puff read from a mip is a flat shape where the console's is soft dust. The
     // file's own levels are used as they are now; a chain has to reach 1x1 for bgfx to accept it, so levels past the
-    // ones the file declares are the 2x2 average of the last level it does have (TS_NOMIPS leaves the chain off for
-    // the A/B)
-    static const bool noMips = std::getenv("TS_NOMIPS") != nullptr;
+    // ones the file declares are the 2x2 average of the last level it does have
     std::vector<u8> chain;
     u32 mipCount = 1;
     u32 chainWidth = decoded.width;
     u32 chainHeight = decoded.height;
-    if (!noMips && header->levels > 1)
+    if (header->levels > 1)
     {
         if (!decoded.mips.empty())
         {
@@ -354,34 +331,6 @@ namespace
 // (no depth test at all)
 u64 DepthState(u8 method)
 {
-    // TS_DEPTHFLIP: uses the material's comparison as it is, testing whether the GS's and the host's depth conventions
-    // run the same way rather than opposite (the GS's ZTST 2, GEQUAL, stays GEQUAL)
-    static const bool flipped = std::getenv("TS_DEPTHFLIP") != nullptr;
-    if (flipped)
-    {
-        switch (method)
-        {
-        case 0:
-            return BGFX_STATE_DEPTH_TEST_NEVER;
-        case 1:
-            return BGFX_STATE_DEPTH_TEST_ALWAYS;
-        case 2:
-            return BGFX_STATE_DEPTH_TEST_GEQUAL;
-        case 3:
-            return BGFX_STATE_DEPTH_TEST_GREATER;
-        case 4:
-            return BGFX_STATE_DEPTH_TEST_EQUAL;
-        case 5:
-            return BGFX_STATE_DEPTH_TEST_NOTEQUAL;
-        case 6:
-            return BGFX_STATE_DEPTH_TEST_LESS;
-        case 7:
-            return BGFX_STATE_DEPTH_TEST_LEQUAL;
-        default:
-            return BGFX_STATE_DEPTH_TEST_GEQUAL;
-        }
-    }
-
     switch (method)
     {
     case 0:

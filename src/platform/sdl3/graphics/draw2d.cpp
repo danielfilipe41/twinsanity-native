@@ -94,12 +94,6 @@ bgfx::ViewId ViewOf2D(const Platform::Graphics::HostMaterial* material)
 
 void SubmitQuad(Platform::Graphics::HostMaterial* material, const Draw2DVertex* vertices)
 {
-    // The TS_NO switch: all 2D off
-    if (Platform::Graphics::HostStageDisabled("draw2d"))
-    {
-        return;
-    }
-
     bgfx::TextureHandle texture = Platform::Graphics::HostMaterialBoundTexture(material);
     if (!bgfx::isValid(texture))
     {
@@ -142,11 +136,6 @@ void SubmitQuad(Platform::Graphics::HostMaterial* material, const Draw2DVertex* 
 // sample * colour reduces to the vertex colour)
 void SubmitStrip(Platform::Graphics::HostMaterial* material, const Draw2DVertex* vertices, u32 count)
 {
-    if (Platform::Graphics::HostStageDisabled("draw2d"))
-    {
-        return;
-    }
-
     if (count == 0 || !bgfx::getAvailTransientVertexBuffer(count, Draw2DLayout()))
     {
         return;

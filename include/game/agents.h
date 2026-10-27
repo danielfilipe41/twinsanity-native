@@ -730,8 +730,3 @@ inline void QueueAttack(InstanceContext* target, u32 kind, InstanceContext* atta
     QueueEvent(target, &handle);
 }
 
-// TS_SPEED=1: every write to a playable character's move buttons is named by its writer, with the write site's return
-// address. The walk rebuilds its stick from these two fields and every speed it asks for is that stick times a property,
-// so a unit pair appearing in them is a body running at its property for the rest of the level; this says which code put
-// it there. Declared here because the writers are spread across the frame, the state and the agents' own code
-void TraceButtonMove(const CharacterAgent* character, const char* what, const void* caller);

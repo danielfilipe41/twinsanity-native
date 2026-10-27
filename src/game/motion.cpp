@@ -1,8 +1,5 @@
 #include "game/objectnode.h"
 
-#include <cstdio>
-#include <cstdlib>
-
 #include "game/agentlab.h"
 #include "game/animation.h"
 #include "game/behaviours.h"
@@ -847,35 +844,8 @@ void StartPacketMotion(BehaviourRunner* runner, TimeClock* clock)
                 Physics* physics = node->MakePhysics();
                 // Left as it was in retail when the packet gives no speed
                 f32 speed = 0.0f;
-                u32 given = runner->packet->GetFloat(Packet::MoveSpeed, properties, &speed);
+                runner->packet->GetFloat(Packet::MoveSpeed, properties, &speed);
                 motion->chaseSpeed = speed;
-                // TS_SPEED=1: a chase's speed, the packet it came from, and the raw slot byte that produced it. Bit 7 of
-                // the slot says the value was a property lookup rather than a literal in the packet, and the low seven
-                // bits say which property - so 7 against 8 can be told apart as "different slot" against "same slot,
-                // different holder". chase.log is the record of what the scripted route actually asks for
-                if (std::getenv("TS_CHASE") != nullptr)
-                {
-                    static u32 noted = 0;
-                    if (noted++ < 20000)
-                    {
-                        std::FILE* file = std::fopen("chase.log", "ab");
-                        if (file != nullptr)
-                        {
-                            std::fprintf(file,
-                                         "frame %u inst %p packet %p kind %u given %u slot %02X isProperty %u index %u "
-                                         "speed %g chaseSpeed %g properties %p\n",
-                                         static_cast<unsigned>(g_RenderedFrames),
-                                         static_cast<void*>(node->owner), static_cast<void*>(runner->packet),
-                                         static_cast<unsigned>(runner->packet->settings.motion), given,
-                                         static_cast<unsigned>(runner->packet->RawSlot(Packet::MoveSpeed)),
-                                         static_cast<unsigned>(runner->packet->RawSlot(Packet::MoveSpeed) >> 7),
-                                         static_cast<unsigned>(runner->packet->RawSlot(Packet::MoveSpeed) & 0x7F),
-                                         static_cast<double>(speed), static_cast<double>(motion->chaseSpeed),
-                                         static_cast<void*>(properties));
-                            std::fclose(file);
-                        }
-                    }
-                }
                 motion->speed = runner->packet->HasByte(Packet::Damping) ? 0.0f : speed;
                 Packet* packet = runner->packet;
                 physics->bits.unused2 = Physics::KindChase;
@@ -2276,32 +2246,6 @@ void ChaseMove(ObjectNode* node, const Vector4* move)
 {
     InstanceContext* owner = node->owner;
     ObjectPlace* place = owner->place;
-    // TS_SPEED=1: the delta a chase puts on the place this frame, which the object node records as frameMove and the
-    // motion driven controls then read back as the body's own speed. This write bypasses MoveTo and MoveInstanceBy, so
-    // TS_PLACE cannot see it; the packet's own speed is logged once per packet in chase.log beside it
-    if (std::getenv("TS_SPEED") != nullptr)
-    {
-        static u32 noted = 0;
-        if (noted++ < 40000)
-        {
-            std::FILE* file = std::fopen("chasemove.log", "ab");
-            if (file != nullptr)
-            {
-                const MotionState* motion = node->motion;
-                std::fprintf(file,
-                             "frame %u inst %p chaseSpeed %g speed %g move %g %g %g before %g %g %g moves %u "
-                             "caller %p\n",
-                             static_cast<unsigned>(g_RenderedFrames), static_cast<void*>(owner),
-                             static_cast<double>(motion != nullptr ? motion->chaseSpeed : 0.0f),
-                             static_cast<double>(motion != nullptr ? motion->speed : 0.0f),
-                             static_cast<double>(move->x), static_cast<double>(move->y),
-                             static_cast<double>(move->z), static_cast<double>(place->position.x),
-                             static_cast<double>(place->position.y), static_cast<double>(place->position.z),
-                             static_cast<unsigned>(node->flags.moves), __builtin_return_address(0));
-                std::fclose(file);
-            }
-        }
-    }
 
     if (!(__builtin_fabsf(move->x) <= Epsilon && __builtin_fabsf(move->y) <= Epsilon && __builtin_fabsf(move->z) <= Epsilon))
     {

@@ -3,7 +3,10 @@
 
 // Pad 1's test-held buttons (src/platform/ps2/pads.cpp:27, applied to pad 1's report there; debug.cpp writes them): none
 // held on the null platform, whose pads stay missing.
-extern "C" volatile u32 g_TestPadButtons = 0;
+extern "C"
+{
+    volatile u32 g_TestPadButtons = 0;
+}
 
 s32 Platform::Pads::Initialise()
 {

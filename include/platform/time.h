@@ -15,8 +15,8 @@ u64 Ticks();
 
 // The host's framing (the PS2 side counts its own timer and never calls these). Two rates are kept apart:
 //
-// - the DISPLAY rate is how often the host presents a frame, paced to the monitor's own rate (60 by default, TS_FPS
-//   another). It is the loop's own business and the game's logic never sees it.
+// - the DISPLAY rate is how often the host presents a frame, paced to the monitor's own rate (60 by default). It is
+//   the loop's own business and the game's logic never sees it.
 // - the LOGIC rate is how often the game's frame runs, and it is the disc's: retail's frame IS the vblank, so the PAL
 //   release steps its logic 50 times a second and everything the game counts per frame assumes that step.
 //

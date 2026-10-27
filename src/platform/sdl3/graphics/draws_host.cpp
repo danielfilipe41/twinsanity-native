@@ -26,8 +26,6 @@
 #include "shaders/vs_draw3dskin.bin.h"
 #include "shaders/vs_scenecomposite.bin.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -123,27 +121,6 @@ u8 ScaleScreenModelChannel(u8 channel, u32 full)
     return static_cast<u8>(scaled > 255 ? 255 : scaled);
 }
 
-// What a screen model's red, green and blue are full at, the 3D vertexes' own (mesh_builder.cpp's VertexColourFull:
-// 255 unless TS_VERTEXFULL says otherwise), so the strips and the meshes take the same gain
-u32 ScreenModelFull()
-{
-    static const u32 full = [] {
-        const char* set = std::getenv("TS_VERTEXFULL");
-        if (set != nullptr)
-        {
-            const s32 value = std::atoi(set);
-            if (value > 0 && value <= 255)
-            {
-                return static_cast<u32>(value);
-            }
-        }
-
-        return 255u;
-    }();
-
-    return full;
-}
-
 // The render view's matrix to the screen the view-less draws go through
 // (identity until the culling owner sets it)
 Matrix4x4 g_viewMatrix = {};
@@ -163,16 +140,6 @@ bgfx::VertexLayout SkinLayout()
         .add(bgfx::Attrib::Weight, 3, bgfx::AttribType::Float)
         .end();
     return layout;
-}
-
-// TS_NODEPTH: 3D draws submit with no depth test or write, telling a surface that changes with the depth state from
-// one whose geometry itself moves. TS_DEPTHAB strips depth on odd frames only, for the same geometry with and without it
-u64 DrawDepthState(u64 state)
-{
-    static const bool noDepth = std::getenv("TS_NODEPTH") != nullptr;
-    static const bool depthAb = std::getenv("TS_DEPTHAB") != nullptr;
-    const bool strip = noDepth || (depthAb && (Platform::Graphics::HostFrameCounter() & 1) != 0);
-    return strip ? (state & ~(BGFX_STATE_DEPTH_TEST_MASK | BGFX_STATE_WRITE_Z)) : state;
 }
 
 void MakeShared()
@@ -263,71 +230,6 @@ DrawCacheEntry* TakeEntry()
     return &entry;
 }
 
-// TS_MESHDUMP2=<path>: one-shot dump for the first 3D submits - mvp/world/view matrices plus the first vertices
-// projected on the CPU as the vertex shader does (clip[r] = sum_c p[c]*mvp.m[c][r]), checking upload against decode
-FILE* TransformDumpFile()
-{
-    static bool tried = false;
-    static FILE* file = nullptr;
-    if (!tried)
-    {
-        tried = true;
-        const char* path = std::getenv("TS_MESHDUMP2");
-        if (path != nullptr && path[0] != '\0')
-        {
-            file = std::fopen(path, "a");
-            if (file != nullptr)
-            {
-                std::setvbuf(file, nullptr, _IONBF, 0);
-            }
-        }
-    }
-
-    return file;
-}
-
-void DumpMatrix(FILE* file, const char* name, const Matrix4x4* matrix)
-{
-    if (matrix == nullptr)
-    {
-        std::fprintf(file, "  %s null\n", name);
-        return;
-    }
-
-    std::fprintf(file, "  %s:\n", name);
-    for (u32 row = 0; row < 4; row++)
-    {
-        std::fprintf(file, "    %12.4f %12.4f %12.4f %12.4f\n", matrix->m[row][0], matrix->m[row][1],
-                     matrix->m[row][2], matrix->m[row][3]);
-    }
-}
-
-// The ith MeshVertex of a rigid mesh's byte buffer (position 3xf32, uv 2xf32, normal 4xu8, colour 4xu8 = 28 bytes)
-void DumpRigidVertex(FILE* file, size_t index, const u8* bytes, size_t size, const Matrix4x4* mvp)
-{
-    const size_t stride = 28;
-    if ((index + 1) * stride > size)
-    {
-        return;
-    }
-
-    f32 p[3];
-    f32 uv[2];
-    std::memcpy(p, bytes + index * stride, sizeof(p));
-    std::memcpy(uv, bytes + index * stride + 12, sizeof(uv));
-    const u8* normal = bytes + index * stride + 20;
-    const u8* colour = bytes + index * stride + 24;
-    // The shader's clip position: (p,1) * mvp, the game's row-vector product
-    f32 clip[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    for (u32 column = 0; column < 4; column++)
-    {
-        clip[column] = p[0] * mvp->m[0][column] + p[1] * mvp->m[1][column] + p[2] * mvp->m[2][column] + mvp->m[3][column];
-    }
-    std::fprintf(file, "  v%zu pos %.4f %.4f %.4f uv %.4f %.4f nrm %u %u %u %u col %u %u %u %u clip %.4f %.4f %.4f w %.4f\n",
-                 index, p[0], p[1], p[2], uv[0], uv[1], normal[0], normal[1], normal[2], normal[3], colour[0], colour[1],
-                 colour[2], colour[3], clip[0], clip[1], clip[2], clip[3]);
-}
-
 // The lights as shader vec4s: the model's rotation transposed takes a world light direction into the model's own space, which
 // is what the shader's dot(normal, u_lightDirs) needs; the PS2 does the same in SetRigidModelRenderDMA (VuTransposeRotation
 // then VuRotateVector per light). A draw without lights (the shadow pass, the sky, the proofs) keeps the neutral wash
@@ -358,265 +260,6 @@ void LightUniforms(const Platform::Graphics::ModelLights* lights, const Matrix4x
     }
 
     *ambient = *lights->ambient;
-
-    // TS_DIAG=1: the first draws' lights, so a frame that comes out brighter than the console's can be told from a wrong
-    // light gather, a light that should have been an ambient added to the directional sum, or ambient and the three
-    // directions together summing past 1 (the vertex shader adds them and clamps the product, so a sum past 1 lights
-    // every surface as if nothing were shadowed)
-    static const bool lightDiag = std::getenv("TS_DIAG") != nullptr;
-    static u32 lightLines;
-    if (lightDiag && lightLines < 50)
-    {
-        lightLines++;
-        std::fprintf(stderr,
-                     "light ambient %.3f %.3f %.3f | 0 %.3f %.3f %.3f | 1 %.3f %.3f %.3f | 2 %.3f %.3f %.3f | sum %.3f\n",
-                     static_cast<double>(ambient->x), static_cast<double>(ambient->y), static_cast<double>(ambient->z),
-                     static_cast<double>(colours[0].x), static_cast<double>(colours[0].y),
-                     static_cast<double>(colours[0].z), static_cast<double>(colours[1].x),
-                     static_cast<double>(colours[1].y), static_cast<double>(colours[1].z),
-                     static_cast<double>(colours[2].x), static_cast<double>(colours[2].y),
-                     static_cast<double>(colours[2].z),
-                     static_cast<double>(ambient->x + colours[0].x + colours[1].x + colours[2].x));
-    }
-}
-
-// One vertex's skinned position: the shader's own sum of weight * (joint * (position, 1)) for the vertex's three
-// lanes (vs_draw3dskin.sc's SkinPosition), with the four row-vector products the game's VuTransformPoint does
-void SkinVertexWorld(const Ps2SkinVertex& v, const Matrix4x4* upload, f32* world)
-{
-    const u8 indices[3] = {static_cast<u8>(v.jointIdx[0]), static_cast<u8>(v.jointIdx[1]), static_cast<u8>(v.jointIdx[2])};
-    f32 weights[3] = {v.jointWeight[0], v.jointWeight[1], v.jointWeight[2]};
-    const f32 total = weights[0] + weights[1] + weights[2];
-    if (total > 0.0f)
-    {
-        weights[0] /= total;
-        weights[1] /= total;
-        weights[2] /= total;
-    }
-    else
-    {
-        weights[0] = 1.0f;
-        weights[1] = 0.0f;
-        weights[2] = 0.0f;
-    }
-
-    world[0] = 0.0f;
-    world[1] = 0.0f;
-    world[2] = 0.0f;
-    for (u32 joint = 0; joint < 3; joint++)
-    {
-        const Matrix4x4& m = upload[indices[joint] < SkinMaxJoints ? indices[joint] : 0];
-        world[0] += weights[joint] * (v.x * m.m[0][0] + v.y * m.m[1][0] + v.z * m.m[2][0] + m.m[3][0]);
-        world[1] += weights[joint] * (v.x * m.m[0][1] + v.y * m.m[1][1] + v.z * m.m[2][1] + m.m[3][1]);
-        world[2] += weights[joint] * (v.x * m.m[0][2] + v.y * m.m[1][2] + v.z * m.m[2][2] + m.m[3][2]);
-    }
-}
-
-void SkinClip(const Matrix4x4* mvp, const f32* world, f32* clip)
-{
-    for (u32 column = 0; column < 4; column++)
-    {
-        clip[column] = world[0] * mvp->m[0][column] + world[1] * mvp->m[1][column] + world[2] * mvp->m[2][column] +
-                       mvp->m[3][column];
-    }
-}
-
-// TS_SKINLOG=<frame>:<path>: every skinned submit of that frame - the joints about to be uploaded, each vertex's own
-// joint data and the whole mesh skinned on the CPU as vs_draw3dskin.sc does (world = sum w * M[index] * (v,1),
-// clip = world * mvp). Tells stale/zero joints, weights that blow the mesh up or indices past the uploaded slots
-// from vertex bytes the GPU reads differently
-void SkinProbe(const Matrix4x4* upload, const u8* packet, u32 packetSize, u32 vertexCount, u32 shapeCount,
-               const Matrix4x4* mvp, const Matrix4x4* joints, u32 jointCount)
-{
-    static bool probeRead = false;
-    static FILE* probeFile = nullptr;
-    static u32 probeFrame = 0;
-    static u32 probeLines = 0;
-    if (!probeRead)
-    {
-        probeRead = true;
-        const char* spec = std::getenv("TS_SKINLOG");
-        if (spec != nullptr && spec[0] != '\0')
-        {
-            const char* colon = std::strchr(spec, ':');
-            probeFrame = static_cast<u32>(std::strtoul(spec, nullptr, 10));
-            const char* path = colon != nullptr ? colon + 1 : "/tmp/skin.log";
-            probeFile = std::fopen(path, "w");
-            if (probeFile != nullptr)
-            {
-                std::setvbuf(probeFile, nullptr, _IONBF, 0);
-            }
-        }
-    }
-
-    if (probeFile == nullptr || Platform::Graphics::HostFrameCounter() < probeFrame ||
-        Platform::Graphics::HostFrameCounter() >= probeFrame + 30 || probeLines >= 400)
-    {
-        return;
-    }
-
-    probeLines++;
-    Ps2SkinMesh mesh;
-    const bool parsed = packet != nullptr &&
-                        ParseSkinSubModel(packet, packetSize, vertexCount, shapeCount, &mesh) && !mesh.vertices.empty();
-    // The uploaded array's envelope: the largest element over all 64 slots (a stale or half-written array shows here)
-    f32 maxElement = 0.0f;
-    for (u32 joint = 0; joint < SkinMaxJoints; joint++)
-    {
-        for (u32 row = 0; row < 4; row++)
-        {
-            for (u32 column = 0; column < 4; column++)
-            {
-                const f32 magnitude = upload[joint].m[row][column] < 0.0f ? -upload[joint].m[row][column]
-                                                                         : upload[joint].m[row][column];
-                maxElement = magnitude > maxElement ? magnitude : maxElement;
-            }
-        }
-    }
-    std::fprintf(probeFile,
-                 "SKINDRAW #%u frame %llu packet %p size %u vc %u shape %u parsed %d joints %u addr %p identity %d "
-                 "uploadmax %.4g verts %zu idx %zu",
-                 probeLines, static_cast<unsigned long long>(Platform::Graphics::HostFrameCounter()), static_cast<const void*>(packet),
-                 packetSize, vertexCount, shapeCount, parsed ? 1 : 0, jointCount, static_cast<const void*>(joints),
-                 std::getenv("TS_IDENTITYJOINTS") != nullptr ? 1 : 0, static_cast<double>(maxElement),
-                 mesh.vertices.size() / sizeof(Ps2SkinVertex), mesh.indexes.size());
-    if (!parsed)
-    {
-        std::fprintf(probeFile, "\n");
-        return;
-    }
-
-    const size_t stride = sizeof(Ps2SkinVertex);
-    const size_t count = mesh.vertices.size() / stride;
-    std::fprintf(probeFile, " mvp-trans %.3f %.3f %.3f\n", static_cast<double>(mvp->m[3][0]),
-                 static_cast<double>(mvp->m[3][1]), static_cast<double>(mvp->m[3][2]));
-    // The first four uploaded joint matrices in full, plus the raw joints the upload copied them from: a mismatch
-    // between the two proves the fill, not the shader, is at fault
-    for (u32 joint = 0; joint < 4 && joint < jointCount; joint++)
-    {
-        std::fprintf(probeFile, "  up%u %12.4f %12.4f %12.4f %12.4f | %12.4f %12.4f %12.4f %12.4f |"
-                                " %12.4f %12.4f %12.4f %12.4f | %12.4f %12.4f %12.4f %12.4f\n",
-                     joint, upload[joint].m[0][0], upload[joint].m[0][1], upload[joint].m[0][2], upload[joint].m[0][3],
-                     upload[joint].m[1][0], upload[joint].m[1][1], upload[joint].m[1][2], upload[joint].m[1][3],
-                     upload[joint].m[2][0], upload[joint].m[2][1], upload[joint].m[2][2], upload[joint].m[2][3],
-                     upload[joint].m[3][0], upload[joint].m[3][1], upload[joint].m[3][2], upload[joint].m[3][3]);
-    }
-    for (u32 joint = 0; joint < 4 && joint < jointCount; joint++)
-    {
-        std::fprintf(probeFile, "  rj%u %12.4f %12.4f %12.4f %12.4f | %12.4f %12.4f %12.4f %12.4f |"
-                                " %12.4f %12.4f %12.4f %12.4f | %12.4f %12.4f %12.4f %12.4f\n",
-                     joint, joints[joint].m[0][0], joints[joint].m[0][1], joints[joint].m[0][2], joints[joint].m[0][3],
-                     joints[joint].m[1][0], joints[joint].m[1][1], joints[joint].m[1][2], joints[joint].m[1][3],
-                     joints[joint].m[2][0], joints[joint].m[2][1], joints[joint].m[2][2], joints[joint].m[2][3],
-                     joints[joint].m[3][0], joints[joint].m[3][1], joints[joint].m[3][2], joints[joint].m[3][3]);
-    }
-
-    const Ps2SkinVertex* vertices = reinterpret_cast<const Ps2SkinVertex*>(mesh.vertices.data());
-    for (size_t vertex = 0; vertex < count && vertex < 6; vertex++)
-    {
-        const Ps2SkinVertex& v = vertices[vertex];
-        f32 world[3];
-        f32 clip[4];
-        SkinVertexWorld(v, upload, world);
-        SkinClip(mvp, world, clip);
-        std::fprintf(probeFile,
-                     "  v%zu pos %.4f %.4f %.4f uv %.4f %.4f j %.0f %.0f %.0f w %.4f %.4f %.4f world %.3f %.3f %.3f "
-                     "clip %.3f %.3f %.3f %.3f\n",
-                     vertex, v.x, v.y, v.z, v.u, v.v, v.jointIdx[0], v.jointIdx[1], v.jointIdx[2],
-                     static_cast<double>(v.jointWeight[0]), static_cast<double>(v.jointWeight[1]),
-                     static_cast<double>(v.jointWeight[2]), static_cast<double>(world[0]),
-                     static_cast<double>(world[1]), static_cast<double>(world[2]), static_cast<double>(clip[0]),
-                     static_cast<double>(clip[1]), static_cast<double>(clip[2]), static_cast<double>(clip[3]));
-    }
-
-    // The whole mesh's extents: skinned by the uploaded joints and, for reference, bind-posed (identity joints), both
-    // taken to the window's coordinates with the same mvp the draw submits
-    f32 mn[3] = {1.0e30f, 1.0e30f, 1.0e30f};
-    f32 mx[3] = {-1.0e30f, -1.0e30f, -1.0e30f};
-    f32 mnWorld[3] = {1.0e30f, 1.0e30f, 1.0e30f};
-    f32 mxWorld[3] = {-1.0e30f, -1.0e30f, -1.0e30f};
-    f32 mnIdentity[3] = {1.0e30f, 1.0e30f, 1.0e30f};
-    f32 mxIdentity[3] = {-1.0e30f, -1.0e30f, -1.0e30f};
-    f32 spread = 0.0f;
-    f32 weightMin = 1.0e30f;
-    f32 weightMax = -1.0e30f;
-    u32 zeroWeights = 0;
-    u32 bigWeights = 0;
-    u32 farVertices = 0;
-    u32 badIndices = 0;
-    u32 maxIndex = 0;
-    for (size_t vertex = 0; vertex < count; vertex++)
-    {
-        const Ps2SkinVertex& v = vertices[vertex];
-        for (u32 joint = 0; joint < 3; joint++)
-        {
-            const f32 weight = (&v.jointWeight[0])[joint];
-            const u32 index = v.jointIdx[joint];
-            if (index > maxIndex)
-            {
-                maxIndex = index;
-            }
-            if (index >= jointCount || index >= SkinMaxJoints)
-            {
-                badIndices++;
-            }
-            if (weight < weightMin)
-            {
-                weightMin = weight;
-            }
-            if (weight > weightMax)
-            {
-                weightMax = weight;
-            }
-        }
-        const f32 total = v.jointWeight[0] + v.jointWeight[1] + v.jointWeight[2];
-        zeroWeights += total <= 0.0f ? 1 : 0;
-        bigWeights += total > 4.0f ? 1 : 0;
-        f32 world[3];
-        f32 clip[4];
-        SkinVertexWorld(v, upload, world);
-        SkinClip(mvp, world, clip);
-        for (u32 lane = 0; lane < 3; lane++)
-        {
-            mnWorld[lane] = world[lane] < mnWorld[lane] ? world[lane] : mnWorld[lane];
-            mxWorld[lane] = world[lane] > mxWorld[lane] ? world[lane] : mxWorld[lane];
-        }
-        f32 magnitude = 0.0f;
-        for (u32 lane = 0; lane < 3; lane++)
-        {
-            magnitude += world[lane] * world[lane];
-        }
-        farVertices += magnitude > 1.0e8f ? 1 : 0;
-        for (u32 lane = 0; lane < 3; lane++)
-        {
-            const f32 ndc = clip[lane] / (clip[3] != 0.0f ? clip[3] : 1.0e-9f);
-            mn[lane] = ndc < mn[lane] ? ndc : mn[lane];
-            mx[lane] = ndc > mx[lane] ? ndc : mx[lane];
-        }
-        // The bind pose (identity joints): the same mvp on the vertex's own position
-        const f32 bind[3] = {v.x, v.y, v.z};
-        f32 bindClip[4];
-        SkinClip(mvp, bind, bindClip);
-        for (u32 lane = 0; lane < 3; lane++)
-        {
-            const f32 ndc = bindClip[lane] / (bindClip[3] != 0.0f ? bindClip[3] : 1.0e-9f);
-            mnIdentity[lane] = ndc < mnIdentity[lane] ? ndc : mnIdentity[lane];
-            mxIdentity[lane] = ndc > mxIdentity[lane] ? ndc : mxIdentity[lane];
-        }
-        const f32 absolute = (clip[0] < 0.0f ? -clip[0] : clip[0]) + (clip[1] < 0.0f ? -clip[1] : clip[1]);
-        const f32 divisor = clip[3] < 0.0f ? -clip[3] : clip[3];
-        spread = absolute / (divisor != 0.0f ? divisor : 1.0e-9f) > spread ? absolute / divisor : spread;
-    }
-    std::fprintf(probeFile,
-                 "  extent ndc [%.2f %.2f]x[%.2f %.2f] spread %.1f world [%.1f %.1f %.1f]-[%.1f %.1f %.1f] "
-                 "bindndc [%.2f %.2f]x[%.2f %.2f] w [%.4f %.4f] zero %u big %u far %u badidx %u maxidx %u\n",
-                 static_cast<double>(mn[0]), static_cast<double>(mx[0]), static_cast<double>(mn[1]),
-                 static_cast<double>(mx[1]), static_cast<double>(spread), static_cast<double>(mnWorld[0]),
-                 static_cast<double>(mnWorld[1]), static_cast<double>(mnWorld[2]), static_cast<double>(mxWorld[0]),
-                 static_cast<double>(mxWorld[1]), static_cast<double>(mxWorld[2]), static_cast<double>(mnIdentity[0]),
-                 static_cast<double>(mxIdentity[0]), static_cast<double>(mnIdentity[1]),
-                 static_cast<double>(mxIdentity[1]), static_cast<double>(weightMin), static_cast<double>(weightMax),
-                 zeroWeights, bigWeights, farVertices, badIndices, maxIndex);
 }
 
 // Bakes a blend skin part's active shapes into its parsed vertex positions. Retail's WriteBlendPart
@@ -709,58 +352,6 @@ bgfx::TextureHandle HostSubModelTexture(MaterialResource** materials, u32 index)
 
     const HostMaterial* material = reinterpret_cast<HostMaterial*>(materials[index]->material);
     bgfx::TextureHandle texture = HostMaterialBoundTexture(material);
-    // TS_MATTEXLOG=<frame>:<path>: every HostSubModelTexture call in that frame - material, its first shader's game
-    // texture, the bgfx texture resolved and its pixel size. A wrong run shows the white fallback, an unsized game
-    // texture or one handle shared by materials naming different textures
-    {
-        static bool probeRead = false;
-        static FILE* probeFile = nullptr;
-        static u32 probeFrame = 0;
-        static u32 probeLines = 0;
-        if (!probeRead)
-        {
-            probeRead = true;
-            const char* spec = std::getenv("TS_MATTEXLOG");
-            if (spec != nullptr && spec[0] != '\0')
-            {
-                const char* colon = std::strchr(spec, ':');
-                probeFrame = static_cast<u32>(std::strtoul(spec, nullptr, 10));
-                const char* path = colon != nullptr ? colon + 1 : "/tmp/mattex.log";
-                probeFile = std::fopen(path, "w");
-                if (probeFile != nullptr)
-                {
-                    std::setvbuf(probeFile, nullptr, _IONBF, 0);
-                }
-            }
-        }
-
-        if (probeFile != nullptr && Platform::Graphics::HostFrameCounter() >= probeFrame && Platform::Graphics::HostFrameCounter() < probeFrame + 3 && probeLines < 8000)
-        {
-            probeLines++;
-            u32 width = 0;
-            u32 height = 0;
-            const bool sized = HostTextures().FindSize(material->gameTexture, &width, &height);
-            const bgfx::TextureHandle resolved = bgfx::isValid(texture) ? texture : HostWhiteTexture();
-            std::fprintf(probeFile,
-                         "MATTEX #%u materials %p index %u material %p flags %08x gameTexture %p stored %u bound %u "
-                         "resolved %u %ux%u sized %d set", 
-                         probeLines, static_cast<const void*>(materials), index, static_cast<const void*>(material),
-                         material->flags, static_cast<const void*>(material->gameTexture), material->texture,
-                         texture.idx, resolved.idx, width, height, sized ? 1 : 0);
-            for (u32 field = 0; field < HostShaderSettings; field++)
-            {
-                std::fprintf(probeFile, " %02x", material->shaderSettings[field]);
-            }
-            std::fprintf(probeFile, "\n");
-        }
-    }
-    // TS_NOTEX: every 3D submodel samples the 1x1 white texture, telling a frame coloured by bound textures from one
-    // coloured by vertex colours
-    if (std::getenv("TS_NOTEX") != nullptr)
-    {
-        return HostWhiteTexture();
-    }
-
     return bgfx::isValid(texture) ? texture : HostWhiteTexture();
 }
 
@@ -866,175 +457,19 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
                          bgfx::ViewId view, u64 state, const f32* alphaRef, u32 blendFactor,
                          bgfx::ProgramHandle program, bool minifiesThroughMips)
 {
-    // The TS_NO switch: every rigid submodel draw off (chunk scenery, OGIs, the sky's meshes, shadow volumes)
-    if (HostStageDisabled("mesh"))
-    {
-        return false;
-    }
-
     if (packet == nullptr || packetSize == 0 || mvp == nullptr)
     {
         return false;
     }
 
     MakeShared();
+    MakeEntries();    if (packet == nullptr || packetSize == 0 || mvp == nullptr)
+    {
+        return false;
+    }
+
+    MakeShared();
     MakeEntries();
-    // The bound texture's size against the decoded UVs' range (TS_MESHDUMP2, the first 12 rigid draws): tells a
-    // packet whose UVs are in texel units from one whose UVs are normalised fractions
-    {
-        static u32 probed = 0;
-        FILE* probeFile = probed < 12 ? TransformDumpFile() : nullptr;
-        if (probeFile != nullptr)
-        {
-            probed++;
-            Ps2RigidMesh mesh;
-            const bool ok = ParseRigidSubModel(packet, packetSize, vertexCount, &mesh);
-            f32 minU = 1.0e30f;
-            f32 maxU = -1.0e30f;
-            f32 minV = 1.0e30f;
-            f32 maxV = -1.0e30f;
-            const size_t stride = 28;
-            for (size_t index = 0; ok && (index + 1) * stride <= mesh.vertices.size(); index++)
-            {
-                f32 u;
-                f32 v;
-                std::memcpy(&u, mesh.vertices.data() + index * stride + 12, sizeof(u));
-                std::memcpy(&v, mesh.vertices.data() + index * stride + 16, sizeof(v));
-                minU = u < minU ? u : minU;
-                maxU = u > maxU ? u : maxU;
-                minV = v < minV ? v : minV;
-                maxV = v > maxV ? v : maxV;
-            }
-
-            const bgfx::TextureHandle bound = bgfx::isValid(texture) ? texture : HostWhiteTexture();
-            std::fprintf(probeFile, "RIGIDUV #%u packet %p verts %zu tex %u u [%g %g] v [%g %g]\n", probed,
-                         static_cast<const void*>(packet), mesh.vertices.size() / stride, bound.idx,
-                         static_cast<double>(minU), static_cast<double>(maxU), static_cast<double>(minV),
-                         static_cast<double>(maxV));
-        }
-    }
-    // TS_RIGIDLOG=<frame>:<path>: every rigid submit of that frame - parsed vertex/triangle counts, decoded UV and
-    // vertex-colour ranges - telling flat triangles from varying ones and a colour-constant draw from a
-    // texture-constant one
-    {
-        static bool rigidRead = false;
-        static FILE* rigidFile = nullptr;
-        static u32 rigidFrame = 0;
-        static u32 rigidLines = 0;
-        if (!rigidRead)
-        {
-            rigidRead = true;
-            const char* spec = std::getenv("TS_RIGIDLOG");
-            if (spec != nullptr && spec[0] != '\0')
-            {
-                const char* colon = std::strchr(spec, ':');
-                rigidFrame = static_cast<u32>(std::strtoul(spec, nullptr, 10));
-                const char* path = colon != nullptr ? colon + 1 : "/tmp/rigid.log";
-                rigidFile = std::fopen(path, "w");
-                if (rigidFile != nullptr)
-                {
-                    std::setvbuf(rigidFile, nullptr, _IONBF, 0);
-                }
-            }
-        }
-
-        if (rigidFile != nullptr && Platform::Graphics::HostFrameCounter() >= rigidFrame && Platform::Graphics::HostFrameCounter() < rigidFrame + 3 && rigidLines < 8000)
-        {
-            rigidLines++;
-            Ps2RigidMesh mesh;
-            const bool ok = ParseRigidSubModel(packet, packetSize, vertexCount, &mesh);
-            f32 minU = 1.0e30f;
-            f32 maxU = -1.0e30f;
-            f32 minV = 1.0e30f;
-            f32 maxV = -1.0e30f;
-            u8 minC[4] = {255, 255, 255, 255};
-            u8 maxC[4] = {0, 0, 0, 0};
-            const size_t stride = 28;
-            size_t verts = 0;
-            for (size_t index = 0; ok && (index + 1) * stride <= mesh.vertices.size(); index++)
-            {
-                f32 u;
-                f32 v;
-                std::memcpy(&u, mesh.vertices.data() + index * stride + 12, sizeof(u));
-                std::memcpy(&v, mesh.vertices.data() + index * stride + 16, sizeof(v));
-                minU = u < minU ? u : minU;
-                maxU = u > maxU ? u : maxU;
-                minV = v < minV ? v : minV;
-                maxV = v > maxV ? v : maxV;
-                for (u32 channel = 0; channel < 4; channel++)
-                {
-                    const u8 byte = mesh.vertices.data()[index * stride + 24 + channel];
-                    minC[channel] = byte < minC[channel] ? byte : minC[channel];
-                    maxC[channel] = byte > maxC[channel] ? byte : maxC[channel];
-                }
-                verts++;
-            }
-
-            std::fprintf(rigidFile,
-                         "RIGID #%u packet %p verts %zu tris %zu tex %u uv u[%.4f %.4f] v[%.4f %.4f] col "
-                         "r[%u %u] g[%u %u] b[%u %u] a[%u %u] c4 %u c6 %u bnd [%.1f %.1f %.1f]-[%.1f %.1f %.1f] "
-                         "w4 %08x %08x %08x %08x pos32 %u pos16 %u unk %u rc",
-                         rigidLines, static_cast<const void*>(packet), verts, mesh.indexes.size() / 2, texture.idx,
-                         static_cast<double>(minU), static_cast<double>(maxU), static_cast<double>(minV),
-                         static_cast<double>(maxV), minC[0], maxC[0], minC[1], maxC[1], minC[2], maxC[2], minC[3],
-                         maxC[3], mesh.address4Colours, mesh.address6Colours, static_cast<double>(mesh.boundsMin[0]),
-                         static_cast<double>(mesh.boundsMin[1]), static_cast<double>(mesh.boundsMin[2]),
-                         static_cast<double>(mesh.boundsMax[0]), static_cast<double>(mesh.boundsMax[1]),
-                         static_cast<double>(mesh.boundsMax[2]), mesh.address4Sample[0], mesh.address4Sample[1],
-                         mesh.address4Sample[2], mesh.address4Sample[3], mesh.positionRows32, mesh.positionRows16,
-                         mesh.unknownRow);
-            for (u32 row = 0; row < mesh.rowCodeCount; row++)
-            {
-                std::fprintf(rigidFile, " %08x", mesh.rowCodes[row]);
-            }
-            // The first vertex's clip z and w (the depth the depth test sees)
-            if (!mesh.vertices.empty())
-            {
-                f32 p[3];
-                std::memcpy(p, mesh.vertices.data(), sizeof(p));
-                f32 clip[4] = {0, 0, 0, 0};
-                for (u32 column = 0; column < 4; column++)
-                {
-                    clip[column] = p[0] * mvp->m[0][column] + p[1] * mvp->m[1][column] +
-                                   p[2] * mvp->m[2][column] + mvp->m[3][column];
-                }
-                std::fprintf(rigidFile, " zw %.5f %.5f %.5f st %016llx\n", static_cast<double>(clip[2]),
-                             static_cast<double>(clip[3]),
-                             clip[3] != 0.0f ? static_cast<double>(clip[2] / clip[3]) : 0.0,
-                             static_cast<unsigned long long>(state));
-            }
-            else
-            {
-                std::fprintf(rigidFile, "\n");
-            }
-        }
-    }
-
-    // The first few rigid submits' transform state (TS_MESHDUMP2)
-    {
-        static u32 called = 0;
-        const bool want = (called < 60000 && (called % 2000) == 0);
-        called++;
-        FILE* dumpFile = want ? TransformDumpFile() : nullptr;
-        if (dumpFile != nullptr)
-        {
-            Ps2RigidMesh mesh;
-            const bool ok = ParseRigidSubModel(packet, packetSize, vertexCount, &mesh);
-            std::fprintf(dumpFile, "RIGIDDRAW #%u packet %p size %u vertexCount %u parsed %d verts %zu idx %zu\n",
-                         g_counters.rigidDraws, static_cast<const void*>(packet), packetSize, vertexCount, ok ? 1 : 0,
-                         mesh.vertices.size(), mesh.indexes.size());
-            DumpMatrix(dumpFile, "mvp", mvp);
-            DumpMatrix(dumpFile, "world", world);
-            DumpMatrix(dumpFile, "view", HostViewMatrix());
-            if (ok)
-            {
-                for (size_t index = 0; index < 8; index++)
-                {
-                    DumpRigidVertex(dumpFile, index, mesh.vertices.data(), mesh.vertices.size(), mvp);
-                }
-            }
-        }
-    }
     DrawCacheEntry* entry = FindEntry(packet, packetSize, false);
     if (entry == nullptr)
     {
@@ -1071,7 +506,7 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     LightUniforms(lights, world, dirs, colours, &ambient);
     // The material's own texture when it has one (the PS2 uploads each material's shader texture before its packet),
     // else the 1x1 white texture the fragment shader reduces to the vertex colour
-    bgfx::setState(DrawDepthState(state), blendFactor);
+    bgfx::setState(state, blendFactor);
     if (minifiesThroughMips)
     {
         bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
@@ -1105,13 +540,10 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
                         const f32* blendWeights, u32 blendCount, bgfx::TextureHandle texture, bgfx::ViewId view,
                         u64 state, const f32* alphaRef, const HostBlendPart* blendPart, const s32* blendShapeIds)
 {
-    // The TS_NO switch: every skinned submodel draw off
-    if (HostStageDisabled("skin"))
+    if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
     {
         return false;
-    }
-
-    if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
+    }    if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
     {
         return false;
     }
@@ -1166,34 +598,15 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
         BakeBlendShapes(blendPart, blendShapeIds, blendWeights, blendCount, &mesh);
     }
 
-    // TS_IDENTITYJOINTS: every uploaded joint matrix is the identity, so a coherent bind pose faults the joint data
-    // or its mapping and a shattered one faults the vertex data or the shader's attribute use
-    static const bool identityJoints = std::getenv("TS_IDENTITYJOINTS") != nullptr;
     // The joint matrices upload as-is (same row-vector convention as the
     // mvp); past SkinMaxJoints the tail is dropped (the retail skins' indices
     // stop at 61), short of it the rest is identity
     static Matrix4x4 jointUniforms[SkinMaxJoints];
     for (u32 joint = 0; joint < SkinMaxJoints; joint++)
     {
-        if (identityJoints)
-        {
-            std::memset(&jointUniforms[joint], 0, sizeof(Matrix4x4));
-            jointUniforms[joint].m[0][0] = 1.0f;
-            jointUniforms[joint].m[1][1] = 1.0f;
-            jointUniforms[joint].m[2][2] = 1.0f;
-            jointUniforms[joint].m[3][3] = 1.0f;
-        }
-        else if (joint < jointCount)
+        if (joint < jointCount)
         {
             jointUniforms[joint] = joints[joint];
-        }
-        else if (joint == 0)
-        {
-            std::memset(&jointUniforms[joint], 0, sizeof(Matrix4x4));
-            jointUniforms[joint].m[0][0] = 1.0f;
-            jointUniforms[joint].m[1][1] = 1.0f;
-            jointUniforms[joint].m[2][2] = 1.0f;
-            jointUniforms[joint].m[3][3] = 1.0f;
         }
         else
         {
@@ -1206,11 +619,6 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
             jointUniforms[joint].m[3][3] = 1.0f;
         }
     }
-
-    // TS_SKINLOG=<frame>:<path>: every skinned submit of one frame - the joints about to be uploaded and each
-    // vertex's joint data projected on the CPU as the shader applies it - telling stale/zero joints, weights that
-    // blow the mesh up or indices past the uploaded slots from vertex bytes the GPU reads differently
-    SkinProbe(jointUniforms, packet, packetSize, vertexCount, shapeCount, mvp, joints, jointCount);
 
     Vector4 blendUniforms[4] = {};
     for (u32 blend = 0; blend < 4 && blend < blendCount && blendWeights != nullptr; blend++)
@@ -1229,7 +637,7 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     // a caster out of its own shadow. The RGB is unchanged; only the written alpha is forced to zero. Opaque draws
     // need the full mark (identity RGB, alpha ZERO/ZERO), since forcing only the alpha half leaves the RGB factors at
     // enum 0 and the driver draws black.
-    bgfx::setState(DrawDepthState(MarkedForCaster(state)));
+    bgfx::setState(MarkedForCaster(state));
     bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
     if (shaped)
     {
@@ -1309,10 +717,9 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
         vertex->normal[3] = 255;
         // The colour's bytes made the window's full range as every 3D vertex the host draws has them (the helper above:
         // the game's red, green and blue full at 192, its alpha at 128)
-        const u32 full = ScreenModelFull();
-        vertex->colour[0] = ScaleScreenModelChannel(static_cast<u8>(source.colour), full);
-        vertex->colour[1] = ScaleScreenModelChannel(static_cast<u8>(source.colour >> 8), full);
-        vertex->colour[2] = ScaleScreenModelChannel(static_cast<u8>(source.colour >> 16), full);
+        vertex->colour[0] = ScaleScreenModelChannel(static_cast<u8>(source.colour), 255);
+        vertex->colour[1] = ScaleScreenModelChannel(static_cast<u8>(source.colour >> 8), 255);
+        vertex->colour[2] = ScaleScreenModelChannel(static_cast<u8>(source.colour >> 16), 255);
         vertex->colour[3] = ScaleScreenModelChannel(static_cast<u8>(source.colour >> 24), 128);
     }
 
@@ -1326,7 +733,7 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     // a scrolling 3D draw), then the fragment shader's alpha test the caller mapped from the material
     HostSetDrawScroll(material);
     const bgfx::TextureHandle texture = HostMaterialBoundTexture(material);
-    bgfx::setState(DrawDepthState(state | BGFX_STATE_PT_TRISTRIP));
+    bgfx::setState(state | BGFX_STATE_PT_TRISTRIP);
     bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::setUniform(g_mvp, mvp, 1);
@@ -1376,23 +783,6 @@ void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material)
     g_drawScroll[1] = material->scroll[1];
     g_drawScroll[2] = 0.0f;
     g_drawScroll[3] = 0.0f;
-    // The scroll probe (TS_MESHDUMP2, the first 10 materials with a non-zero scroll): the values the vertex shaders
-    // add to the UVs, which the shaders read as texture fractions (retail's VU1 adds them to texel-space ST)
-    {
-        static u32 probed = 0;
-        FILE* probeFile = (probed < 10 && (material->scroll[0] != 0.0f || material->scroll[1] != 0.0f))
-                              ? TransformDumpFile()
-                              : nullptr;
-        if (probeFile != nullptr)
-        {
-            probed++;
-            std::fprintf(probeFile, "SCROLL #%u material %p scroll %g %g phases %g %g speeds %g %g\n", probed,
-                         static_cast<const void*>(material), static_cast<double>(material->scroll[0]),
-                         static_cast<double>(material->scroll[1]), static_cast<double>(material->scrollPhases[0]),
-                         static_cast<double>(material->scrollPhases[1]), static_cast<double>(material->scrollSpeeds[0]),
-                         static_cast<double>(material->scrollSpeeds[1]));
-        }
-    }
 }
 
 // The scene's offscreen target and its composite over the backbuffer
@@ -1669,12 +1059,6 @@ void HostSetDisplayOffset(f32 across, f32 down)
 
 void HostCompositeScene()
 {
-    // The TS_NO switch: the whole 3D picture kept off the back buffer
-    if (HostStageDisabled("composite"))
-    {
-        return;
-    }
-
     EnsureSceneTarget();
     EnsureComposite();
     // The display's offset (Platform::Graphics::MoveDisplay, kept here), as pixels of the window the picture is shown
