@@ -24,17 +24,13 @@ Known issues:
 - Minor audio cutting issues
 - Sometimes the level image goes white when entering a new chunk or boss battle
 - Music goes silent sometimes in a boss battle 
-- Background on cavern catastrophe is green and sometimes does render correctly and seems to depend on the angle of the camera
-- ligthing on cavern catastrophe inside the lamp post seems to be pointing the wrong direction?
 - Gear sounds seem too loud for some reason?
 - After a fmv custscene sometimes music stops playing 
 - Audio issues get worse the more i play in one session without reopening the game
 - Hogs or whatever they are sounds straight up like noise polution
-- The area behind tiki boss fight has some brown thing stretching the whole left portion of the sky (its supposed to be a billboard of iceberg lab i think atleast it is iceberg lab not sure if its a billboard)
 - Sounds sometimes get stuck and keep repeating forever
 - After dying sometimes music doesnt start playing again
 - The wrong music plays after a death on Slip Slide Icecapades
-- Dingodille flamethrower particles for some reason go up instead of straight???
 
 ## Getting the game
 
