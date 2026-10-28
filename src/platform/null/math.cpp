@@ -378,15 +378,18 @@ bool Platform::Math::ParticleBlockView(s32 view, bool keepsTranslation, const f3
         pulled[2] = place[2] - z * along;
     }
 
-    // The block's matrix: identity in rows 0 to 2, the place the block's particles are born at in row 3.
+    // The block's matrix: the emitter's gravity axes as rows 0 to 2 (retail's 0xA08 writes vf29/vf28/vf27 from the
+    // gravity the EE loaded into vf3/vf4/vf5), the place its particles are born at in row 3.
     //
-    // Rows 0 to 2 are the identity, not the gravity's axes. The generators already turn each particle's start and
-    // velocity by the emission frame (SetEmitterEmission's emitMatrix), so using the gravity rows here turns the spread
-    // and flight twice. Leaving the columns alone also keeps the quads facing the camera: the draw takes the quad's
-    // size from the first two columns. The gravity's axes are still used for the culling box below.
-    *RowOf(matrix, 0) = {1.0f, 0.0f, 0.0f, 0.0f};
-    *RowOf(matrix, 1) = {0.0f, 1.0f, 0.0f, 0.0f};
-    *RowOf(matrix, 2) = {0.0f, 0.0f, 1.0f, 0.0f};
+    // These rows are the emitter's frame and the quad is built from them, so a flamethrower's puffs lie along the
+    // emitter's own up axis. Leaving them the identity dropped every emission that does not transform its own starts
+    // (GenParticle_Ranges and the rest write start and velocity straight from the data, with no emitMatrix) onto the
+    // world's axes, which stood the flame up instead of pointing it where the weapon does. Only the generators that do
+    // apply the emission frame themselves -- GenParticle_Box's BoxStart/BoxVelocity -- would see it twice, and retail
+    // applies it there as well
+    *RowOf(matrix, 0) = *RowOf(gravity, 0);
+    *RowOf(matrix, 1) = *RowOf(gravity, 1);
+    *RowOf(matrix, 2) = *RowOf(gravity, 2);
     // Row 3 holds the pulled place, but only for an emission that does not keep its translation. Those emissions have
     // their emitMatrix's translation cleared, so each particle's start is the spread alone and the place must come from
     // this row (retail 0xA08). An emission that keeps its translation (StartEmitterKeepingTranslation) already has the

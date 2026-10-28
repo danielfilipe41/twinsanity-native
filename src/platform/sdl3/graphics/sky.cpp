@@ -4,6 +4,9 @@
 // copied point-sampled over the screen (view 1). It is unlit and colour-only. Each part uses its material's GS
 // state, so blended sun/glow/haze and alpha-masked clouds stay as retail draws them, and the texture is sampled
 // from its largest level alone (shader type 0x0A never minifies through mips).
+#include <algorithm>
+#include <vector>
+
 #include "host_graphics.h"
 #include "draws_host.h"
 
@@ -324,6 +327,17 @@ void DrawChunkSky(Sky* sky, RenderView* view)
     // is where the header's "colour only" comes from). A material the host read no settings for keeps this state,
     // which is what the whole sky drew with before
     constexpr u64 SkyPassState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
+    // The parts draw in their materials' bucket order, as retail's do: DrawSkyModel writes each part's packet into
+    // g_FrameBuckets.buckets[material->bucket], so a blended part (bucket 5 to 19) is drawn after an opaque one (2 to 4)
+    // whatever order the model lists them in. Submitting them in model order let an opaque dome cover the clouds and the
+    // moon on a sky whose dome is listed last
+    struct SkyPart
+    {
+        u32 bucket;
+        u32 index;
+        u32 subModel;
+    };
+    std::vector<SkyPart> parts;
     for (u32 index = 0; index < host->count; index++)
     {
         Platform::Graphics::HostRigidModel* model = host->models[index];
@@ -334,6 +348,26 @@ void DrawChunkSky(Sky* sky, RenderView* view)
         u32 count = model->model->subModelCount < model->count ? model->model->subModelCount : model->count;
         for (u32 subModel = 0; subModel < count; subModel++)
         {
+            const HostMaterial* partMaterial = SubModelMaterial(model->materials, subModel);
+            const u32 bucket = partMaterial != nullptr ? partMaterial->bucket : 0u;
+            parts.push_back({bucket, index, subModel});
+        }
+    }
+
+    std::stable_sort(parts.begin(), parts.end(), [](const SkyPart& first, const SkyPart& second) {
+        return first.bucket < second.bucket;
+    });
+
+    {
+        for (const SkyPart& part : parts)
+        {
+            Platform::Graphics::HostRigidModel* model = host->models[part.index];
+            if (model == nullptr || model->model == nullptr)
+            {
+                continue;
+            }
+            const u32 subModel = part.subModel;
+            {
             const u8* packet = model->model->packets[subModel];
             u32 size = model->model->sizes[subModel];
             u32 vertexCount = model->model->vertexCounts[subModel];
@@ -350,6 +384,7 @@ void DrawChunkSky(Sky* sky, RenderView* view)
             DrawSkyPacket(packet, size, vertexCount, &skyToCamera,
                           HostSubModelTexture(model->materials, subModel), partState.state,
                           partState.alphaReference);
+            }
         }
     }
     // FinishSky: the buffer over the screen, depth not written. The copy covers the scene target (the window's

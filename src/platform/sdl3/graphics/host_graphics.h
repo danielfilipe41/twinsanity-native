@@ -147,9 +147,14 @@ struct HostMaterial
     // 2 ZB_ONLY, 3 RGB_ONLY). The fragment shader drops a failing sample, which is KEEP; FB_ONLY instead writes its
     // colour and leaves the depth, so the draws issue a second pass for it
     u8 alphaFail;
+    // The first shader's own colour (renderer.h's Shader::shaderColour, the file's four floats) as bytes: the tint a
+    // type-0x1F material multiplies its lit vertex colour by (that type's VU1 program loads the colour words, ITOF0's
+    // them, multiplies them in and clamps). White for a file that names none, and unused by every other type
+    u8 colour[4];
     // The 4-aligned fields end at the scroll block; the bytes after it are these and the tail
     static constexpr u32 HostFixedBytes = 6 * sizeof(u32) + 2 * sizeof(u16) + sizeof(GameTexture*) +
-                                          sizeof(f32) * 6 + HostShaderSettings + 4 + 1 + 4 * (HostMaterialPasses - 1) + 1;
+                                          sizeof(f32) * 6 + HostShaderSettings + 4 + 1 + 4 * (HostMaterialPasses - 1) + 1 +
+                                          sizeof(u8) * 4;
     u8 reserved[MaterialStorage - HostFixedBytes];
 };
 static_assert(sizeof(HostMaterial) == MaterialStorage, "a host material fills the game's material storage");

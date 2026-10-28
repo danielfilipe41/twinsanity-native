@@ -29,6 +29,8 @@ constexpr u32 NearPlane = 0;
 constexpr u32 FirstSidePlane = 1;
 constexpr u32 SidePlaneCount = 4;
 constexpr u32 FarPlane = 5;
+// The near and far set holds those two planes only
+constexpr u32 NearAndFarPlanes = 2;
 constexpr u32 FrustumPlaneCount = 6;
 constexpr f32 FarSidesScale = 5.0f;
 // The programs test four planes at once, a plane a field of VU0's registers: the near and far planes go in the first two
@@ -143,7 +145,9 @@ Matrix4x4 Product(const Matrix4x4& a, const Matrix4x4& b)
 // A point's clip judgment: which of its x, y and z are past its |w| either way, the six bits the CLIP instruction leaves
 u32 Judge(const Vector4& point)
 {
-    f32 w = __builtin_fabsf(point.w);
+    // The w the instruction compares against, not its magnitude (a corner behind the camera then fails both sides at
+    // once, as it does on VU0 and in ChunkView::TestPoint's own C++): VU0 has no absolute value to take
+    f32 w = point.w;
     u32 bits = 0;
     bits |= point.x > w ? 1u << 0 : 0u;
     bits |= point.x < -w ? 1u << 1 : 0u;
@@ -393,38 +397,69 @@ void CullLoadModel(const Matrix4x4* model)
     g_Distance = CameraDistance(model);
 }
 
-// A box's eight corners through a matrix to the clip space, judged the way VU0's CLIP instruction judges them: a box wholly
-// past one plane is out of the view, one past a plane at some corners crosses it
-void JudgeCorners(const Matrix4x4* matrix, const Vector4* min, const Vector4* max, u32* anyBits, u32* everyBits)
+// The middle's distance along each of a plane set's four planes and how far past it the box's half extents reach (the
+// planes' normals' absolute values weighed by the half sizes): a plane the microcode keeps a field of the columns
+void PlaneDistances(const PlaneColumns& columns, const Vector4& middle, const Vector4& half, Vector4* distances,
+                    Vector4* reaches)
 {
-    u32 any = 0;
-    u32 every = 0x3F;
-    for (u32 corner = 0; corner < 8; corner++)
+    Vector4 distance = columns.offsets;
+    Vector4 reach = {};
+    for (u32 axis = 0; axis < 3; axis++)
     {
-        Vector4 point = *min;
-        for (u32 axis = 0; axis < 3; axis++)
-        {
-            (&point.x)[axis] = (corner >> axis) % 2 != 0 ? (&max->x)[axis] : (&min->x)[axis];
-        }
-
-        u32 judgment = Judge(Through(matrix, &point, 1.0f));
-        any |= judgment;
-        every &= judgment;
+        distance = Sum(distance, Scaled(columns.normals[axis], (&middle.x)[axis]));
+        reach = Sum(reach, Scaled(columns.absoluteNormals[axis], (&half.x)[axis]));
     }
 
-    *anyBits = any;
-    *everyBits = every;
+    *distances = distance;
+    *reaches = reach;
 }
 
-// The verdict from a box judged through a matrix the view holds: wholly out when every corner is past one plane, crossing when
-// some corner is past some plane, inside otherwise
-void JudgeBoxThrough(const Matrix4x4* matrix, const Vector4& min, const Vector4& max)
+// The planes point into the view, so a box is wholly behind one when even its farthest point along the normal is before it,
+// and crosses one when its nearest point is
+bool WholeBoxBehind(const Vector4& distances, const Vector4& reaches, u32 planes)
 {
-    u32 any = 0;
-    u32 every = 0;
-    JudgeCorners(matrix, &min, &max, &any, &every);
-    g_Outside = every != 0 ? 1 : 0;
-    g_Clipped = any != 0 ? 1 : 0;
+    for (u32 plane = 0; plane < planes; plane++)
+    {
+        if ((&distances.x)[plane] + (&reaches.x)[plane] < 0.0f)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool AnyCornerBehind(const Vector4& distances, const Vector4& reaches, u32 planes)
+{
+    for (u32 plane = 0; plane < planes; plane++)
+    {
+        if ((&distances.x)[plane] - (&reaches.x)[plane] < 0.0f)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The box against the frustum's planes in the chunk's space, the test 0x1C0 and 0x500 both make, its verdict in g_Outside
+// and g_Clipped
+void JudgeAgainstPlanes(const Vector4& middle, const Vector4& half)
+{
+    Vector4 distances;
+    Vector4 reaches;
+    PlaneDistances(g_NearAndFarPlanes, middle, half, &distances, &reaches);
+    bool outside = WholeBoxBehind(distances, reaches, NearAndFarPlanes);
+    bool crossing = AnyCornerBehind(distances, reaches, NearAndFarPlanes);
+
+    PlaneDistances(g_SidePlanes, middle, half, &distances, &reaches);
+    crossing = crossing || AnyCornerBehind(distances, reaches, SidePlaneCount);
+
+    PlaneDistances(g_FarSidePlanes, middle, half, &distances, &reaches);
+    outside = outside || WholeBoxBehind(distances, reaches, SidePlaneCount);
+
+    g_Outside = outside ? 1 : 0;
+    g_Clipped = crossing ? 1 : 0;
 }
 
 // 0x1C0: out of the view when wholly behind a side, the near or the far plane, partly when crossing any. The distance is the
@@ -436,18 +471,49 @@ void CullTestBox(const Vector4* corners)
     BoxMiddle(corners[0], corners[1], &middle, &half);
     Vector4 apart = Difference(g_LinkCamera, middle);
     g_Distance = FloatToInt(apart.x * apart.x + apart.y * apart.y + apart.z * apart.z);
-    JudgeBoxThrough(&g_LinkToClip, corners[0], corners[1]);
+    JudgeAgainstPlanes(middle, half);
 }
 
-// 0x500: the planes taken into the model's space, with the matrices to the screen and, partly, to the clip space. The box is
-// the model's own, so it is judged through the model's matrix to the clip space, which carries the link's: a load wall's portal
-// once a linked chunk's view loaded one
+// 0x500: the planes taken into the model's space, with the matrices to the screen and, partly, to the clip space, the box the
+// model's own. The planes are the frustum's in the chunk's space, so the box goes through the model's matrix instead and the
+// same test judges it: the verdict is the same and no plane has to be carried into a space the model may scale
 void CullTestBoxAt(const Box* box, const Matrix4x4* model)
 {
     g_Distance = CameraDistance(model);
     g_Screen = Product(*model, g_LinkToScreen);
     g_Clip = Product(*model, g_LinkToClip);
-    JudgeBoxThrough(&g_Clip, box->min, box->max);
+    // The box's corners through the model's place, so the frustum's planes in the chunk's space judge the box itself rather
+    // than the eight points the model's clip matrix would report (0x500 takes the planes into the model's space and tests the
+    // box against them, so a box the strict clip test rejects at one corner is not dropped)
+    Vector4 min = {};
+    Vector4 max = {};
+    for (u32 corner = 0; corner < 8; corner++)
+    {
+        Vector4 point = box->min;
+        for (u32 axis = 0; axis < 3; axis++)
+        {
+            (&point.x)[axis] = (corner >> axis) % 2 != 0 ? (&box->max.x)[axis] : (&box->min.x)[axis];
+        }
+
+        Vector4 through = Through(model, &point, 1.0f);
+        for (u32 axis = 0; axis < 3; axis++)
+        {
+            if (corner == 0 || (&through.x)[axis] < (&min.x)[axis])
+            {
+                (&min.x)[axis] = (&through.x)[axis];
+            }
+
+            if (corner == 0 || (&through.x)[axis] > (&max.x)[axis])
+            {
+                (&max.x)[axis] = (&through.x)[axis];
+            }
+        }
+    }
+
+    Vector4 middle;
+    Vector4 half;
+    BoxMiddle(min, max, &middle, &half);
+    JudgeAgainstPlanes(middle, half);
 }
 
 CullOutcome CullResult()
@@ -470,7 +536,8 @@ namespace
 // A box's eight corners clipped through a matrix (the view's, or the view's through a model's), two tests a corner: the
 // scaled one takes the matrix's first row as a guard-band scale. Every corner's outside bits are OR'd (the scaled ones in
 // the low six, clip flags 0-5), and the bits every corner shares are AND'd (the unscaled ones in bits 6-11). The game's
-// ChunkView::BoxVisibility reads flags[1]'s low six as "wholly out" and flags[0]'s low six as "partly out"
+// ChunkView::BoxVisibility reads the bits every corner shares in the high six as "wholly out" and the bits any corner has
+// in the low six as "partly out"
 void ClipCorners(const Matrix4x4* matrix, const Vector4* scale, const Box* box, u32* flags)
 {
     Vector4 corners[8];
@@ -490,7 +557,10 @@ void ClipCorners(const Matrix4x4* matrix, const Vector4* scale, const Box* box, 
     {
         Vector4 clipped = Through(matrix, &corners[corner], 1.0f);
         Vector4 scaled = {clipped.x * scale->x, clipped.y * scale->y, clipped.z * scale->z, clipped.w * scale->w};
-        u32 judgment = Judge(clipped) | (Judge(scaled) << 6);
+        // The guard-band test is the low six and the plain one the high six (ChunkView::BoxClipFlags' own order): the
+        // game reads "wholly out" from the high six, so the verdict that hides a box has to come from the plain clip
+        // test, not from whatever scale the quadword after the matrix happens to hold
+        u32 judgment = Judge(scaled) | (Judge(clipped) << 6);
         if (corner == 0)
         {
             any = judgment;

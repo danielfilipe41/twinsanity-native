@@ -15,6 +15,9 @@ uniform vec4 u_lightCols[3];
 uniform vec4 u_ambient;
 // The material's texture scroll (renderer.h's Shader::scroll): the offset every UV takes
 uniform vec4 u_scroll;
+// The material's own colour, which only the type whose VU1 program loads it (0x1F) tints with. Its fourth lane is the
+// "written" flag: a submit that leaves the uniform alone gives zero, which reads as no tint rather than black
+uniform vec4 u_materialColour;
 
 void main()
 {
@@ -28,5 +31,12 @@ void main()
     // The lit vertex colour, saturated: the GS takes the vertex colour's bytes times the light
     // and keeps what fits, and TT-Lab's own shader clamps the same product; without it a
     // full light over a full ambient runs past white and only the target clamps
-    v_color0 = vec4(min(a_color0.rgb * light, vec3(1.0)), a_color0.a);
+    // The material's colour scales the lit colour for the one type whose program does that (0x1F) and not at all for
+    // every other material, whose draws leave the uniform's flag lane zero
+    vec3 lit = min(a_color0.rgb * light, vec3(1.0));
+    if (u_materialColour.w != 0.0)
+    {
+        lit = min(lit * u_materialColour.rgb, vec3(1.0));
+    }
+    v_color0 = vec4(lit, a_color0.a);
 }

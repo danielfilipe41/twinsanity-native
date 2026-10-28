@@ -153,6 +153,84 @@ struct HostMaterialAnimation
 
 std::vector<HostMaterialAnimation> g_MaterialAnimations;
 
+// A material's later shaders' textures: the console uploads each shader's own texture before its packet (materials.cpp's
+// WriteShaders, TextureOf(shader)), so pass k samples shader k's image and not the first's. The game's material storage is
+// a fixed 0x70 bytes with no room for the handles, so they live here, beside it, from ReadMaterial until DeleteMaterial
+struct HostMaterialPassTexture
+{
+    const Platform::Graphics::HostMaterial* material;
+    GameTexture* textures[Platform::Graphics::HostMaterialPasses];
+};
+
+std::vector<HostMaterialPassTexture> g_MaterialPassTextures;
+
+HostMaterialPassTexture* FindMaterialPassTexture(const Platform::Graphics::HostMaterial* material)
+{
+    for (HostMaterialPassTexture& entry : g_MaterialPassTextures)
+    {
+        if (entry.material == material)
+        {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+// The material's later passes' textures (pass 0 is the material's own gameTexture, and null here)
+void AddMaterialPassTextures(Platform::Graphics::HostMaterial* material, GameTexture* const* textures, u32 count)
+{
+    bool any = false;
+    HostMaterialPassTexture entry = {};
+    entry.material = material;
+    for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+    {
+        entry.textures[pass] = pass < count ? textures[pass] : nullptr;
+        any = any || entry.textures[pass] != nullptr;
+    }
+
+    if (any)
+    {
+        g_MaterialPassTextures.push_back(entry);
+    }
+}
+
+// A later pass's texture, null when the material has none for it
+GameTexture* MaterialPassTexture(const Platform::Graphics::HostMaterial* material, u32 pass)
+{
+    HostMaterialPassTexture* entry = FindMaterialPassTexture(material);
+    if (entry == nullptr || pass >= Platform::Graphics::HostMaterialPasses)
+    {
+        return nullptr;
+    }
+
+    return entry->textures[pass];
+}
+
+// The references those textures took go with the material
+void RemoveMaterialPassTextures(const Platform::Graphics::HostMaterial* material)
+{
+    for (size_t index = 0; index < g_MaterialPassTextures.size(); index++)
+    {
+        if (g_MaterialPassTextures[index].material != material)
+        {
+            continue;
+        }
+
+        for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+        {
+            if (g_MaterialPassTextures[index].textures[pass] != nullptr)
+            {
+                ReleaseTexture(g_MaterialPassTextures[index].textures[pass]);
+            }
+        }
+
+        g_MaterialPassTextures.erase(g_MaterialPassTextures.begin() + static_cast<long>(index));
+        return;
+    }
+}
+
+
 HostMaterialAnimation* FindMaterialAnimation(const Platform::Graphics::HostMaterial* material)
 {
     for (HostMaterialAnimation& entry : g_MaterialAnimations)
@@ -208,7 +286,7 @@ void RemoveMaterialAnimation(const Platform::Graphics::HostMaterial* material)
 // scroll phases and speeds to *scroll (also when it isn't nullptr), and the animation the settings name to
 // *animation (again when it isn't nullptr): ReadMaterialShaders asks for the first shader's only, the rest skipped
 u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShaderScroll* scroll,
-               ShaderAnimation** animation)
+               ShaderAnimation** animation, u8* colour = nullptr)
 {
     switch (type)
     {
@@ -242,7 +320,28 @@ u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShade
     }
     stream->Skip(2 * sizeof(s16));   // lodK and lodL
     stream->Skip(4 * sizeof(f32));   // the leftover floats
-    stream->Skip(4 * sizeof(f32));   // the shader's colour (the animation's own colour overrides it when it has one)
+    // The shader's colour (renderer.h's Shader::shaderColour): the tint a type-0x1F material multiplies its vertex colour
+    // by (the animation's own colour overrides it while it has one). The tools leave it zero on a material with no colour
+    // of its own, which tints nothing
+    {
+        f32 floats[4];
+        stream->Read(floats, sizeof(floats), 1);
+        if (colour != nullptr)
+        {
+            const bool tinted = floats[0] != 0.0f || floats[1] != 0.0f || floats[2] != 0.0f;
+            for (u32 channel = 0; channel < 4; channel++)
+            {
+                if (!tinted)
+                {
+                    colour[channel] = 255;
+                    continue;
+                }
+
+                const f32 value = floats[channel] < 0.0f ? 0.0f : (floats[channel] > 1.0f ? 1.0f : floats[channel]);
+                colour[channel] = static_cast<u8>(value * 255.0f + 0.5f);
+            }
+        }
+    }
     if (scroll != nullptr)
     {
         // The phases U and V, then the speeds U and V (renderer.h's Shader: scrollPhases[2], scrollSpeeds[2])
@@ -291,7 +390,7 @@ u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShade
 u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShaderScroll* scroll,
                         u32* shaderTextureIds, u32* shaderCountOut, bool* makesBillboard, s32* firstShaderType,
                         ShaderAnimation** animations, u32 animationSlots, u32* bucketOut,
-                        u8 (*laterSettings)[Platform::Graphics::HostShaderSettings] = nullptr)
+                        u8 (*laterSettings)[Platform::Graphics::HostShaderSettings] = nullptr, u8* colourOut = nullptr)
 {
     s64 activatedShaders;
     stream->ReadS64(&activatedShaders);
@@ -333,7 +432,8 @@ u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShader
             animations != nullptr && static_cast<u32>(index) < animationSlots ? &animations[index] : nullptr;
         u32 shaderTextureId =
             SkipShader(stream, type, &shaderTextured, settings != nullptr ? shaderSettings : nullptr,
-                       scroll != nullptr ? &shaderScroll : nullptr, animationOut);
+                       scroll != nullptr ? &shaderScroll : nullptr, animationOut,
+                       index == 0 ? colourOut : nullptr);
         if (shaderTextureIds != nullptr && index < 4)
         {
             shaderTextureIds[index] = shaderTextureId;
@@ -680,6 +780,15 @@ void StepMaterialScroll(Platform::Graphics::HostMaterial* material, f32 seconds)
             state->shaderColour[1] = animation->colour.y * HostAnimationColourScale;
             state->shaderColour[2] = animation->colour.z * HostAnimationColourScale;
             state->shaderColour[3] = animation->colour.w * HostAnimationAlphaScale;
+            // The colour the draw tints with (renderer.h's Shader::colour): the animation's own, over the file's static
+            // one. Three materials whose every other byte is equal -- one model drawn in several colours -- differ only
+            // here, so leaving it unused drew them all in the file's default colour
+            for (u32 channel = 0; channel < 3; channel++)
+            {
+                f32 value = state->shaderColour[channel];
+                value = value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value);
+                material->colour[channel] = static_cast<u8>(value + 0.5f);
+            }
         }
     }
 }
@@ -936,7 +1045,10 @@ bool HostBillboardTurn(const Matrix4x4* worldInChunk, const Matrix4x4* chunkDraw
     back.z *= scale;
 
     InitIdentityMatrix(turn);
-    for (u32 column = 0; column < 4; column++)
+    // Only the x, y and z of each row, which is what retail's SetRow copies: the fourth column stays the identity's zero.
+    // Copying side/up/back's own w (1) into it made every vertex's w the sum of its x, y and z plus one, so the quad's
+    // perspective divide ran away with it and each billboard stretched out of its place and across the sky
+    for (u32 column = 0; column < 3; column++)
     {
         turn->m[0][column] = (&side.x)[column];
         turn->m[1][column] = (&up.x)[column];
@@ -992,10 +1104,13 @@ void Platform::Graphics::DrawPlacedModel(RigidModel* model, ChunkView* view, con
 
     Matrix4x4 mvp = {};
     Matrix4x4 turned = {};
-    Matrix4x4 placed = {};
     if (billboard && view->matrices != nullptr &&
         HostBillboardTurn(inChunk, &view->matrices[ChunkView::DrawInverseMatrix], view->view, &turned))
     {
+        // The turn in the model's own space first, then the placement: retail's Billboard works the camera into the
+        // model's space and hands the turn to the VU1 in place of the model's rotation, so the quad stays where the model
+        // stands. Dropping the placement put every billboard on the level in one spot
+        Matrix4x4 placed = {};
         VuMultiplyMatrices(&turned, inChunk, &placed);
         HostModelClipMatrix(&placed, &view->toClip, &mvp);
     }
@@ -1151,14 +1266,27 @@ void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matr
         HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, matrix,
                             &lights, subModelTexture, view,
                             Platform::Graphics::MarkedForCaster(state.state), state.alphaReference);
-        // The material's later shaders: the console draws each of them over the same geometry, sampling the first
-        // shader's texture (materials.cpp's FlushMaterial -> WriteShaders). A two-shader material's second pass is
-        // typically additive and leaves the depth alone, so dropping it lost its contribution to the surface
+        // The material's later shaders: the console draws each of them over the same geometry, each with its OWN
+        // texture (materials.cpp's WriteShaders uploads TextureOf(shader) before that shader's packet, so pass k samples
+        // shader k). A two-shader material's second pass is typically additive and leaves the depth alone, so dropping it
+        // lost its contribution to the surface
         for (u32 pass = 0; subModelMaterial != nullptr && pass + 1 < subModelMaterial->passCount; pass++)
         {
             const HostMaterialState passState = LaterPassStateOf(subModelMaterial, pass, PassState);
+            GameTexture* passTexture = MaterialPassTexture(subModelMaterial, pass + 1);
+            bgfx::TextureHandle passHandle = BGFX_INVALID_HANDLE;
+            if (passTexture != nullptr)
+            {
+                passHandle = Platform::Graphics::HostTextures().Find(passTexture);
+            }
+
+            if (!bgfx::isValid(passHandle))
+            {
+                passHandle = subModelTexture;
+            }
+
             HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, matrix,
-                                &lights, subModelTexture, view,
+                                &lights, passHandle, view,
                                 Platform::Graphics::MarkedForCaster(passState.state), passState.alphaReference);
         }
         // The alpha test's failure action: the shader drops a failing sample, which is the GS's KEEP. The other three
@@ -1584,8 +1712,10 @@ void Platform::Graphics::DeleteMaterial(MaterialResource* material)
         {
             ReleaseTexture(host->gameTexture);
         }
-        // The shader animation goes with it (its frames and its disk node, DestroyShaderAnimation)
+        // The shader animation goes with it (its frames and its disk node, DestroyShaderAnimation), and so do the later
+        // shaders' textures
         RemoveMaterialAnimation(host);
+        RemoveMaterialPassTextures(host);
     }
     std::free(material->material);
     std::free(material);
@@ -1610,7 +1740,7 @@ void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream
     u8 laterSettings[HostMaterialPasses - 1][HostShaderSettings] = {};
     u32 textureId = ReadMaterialShaders(stream, &textured, hostMaterial->shaderSettings, &scroll, shaderTextureIds,
                                         &shaderCount, &makesBillboard, &shaderType, animations, HostMaterialShaderSlots,
-                                        &hostMaterial->bucket, laterSettings);
+                                        &hostMaterial->bucket, laterSettings, hostMaterial->colour);
     // The console draws a material's every shader, each pass sampling the first one's texture; keep what tells the
     // later passes apart so the draws can submit them (host_graphics.h's HostMaterial::passCount)
     {
@@ -1643,6 +1773,24 @@ void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream
     if (textured && textureId != 0)
     {
         hostMaterial->gameTexture = g_TextureTable.Acquire(&textureId, nullptr);
+    }
+
+    // The later shaders' textures, which the console uploads before each of their packets (materials.cpp's WriteShaders):
+    // pass k samples shader k's image, and shader k+1's need not be the first's
+    {
+        GameTexture* passTextures[HostMaterialPasses] = {nullptr, nullptr, nullptr, nullptr};
+        for (u32 pass = 1; pass < HostMaterialPasses && pass < shaderCount; pass++)
+        {
+            if (shaderTextureIds[pass] == 0)
+            {
+                continue;
+            }
+
+            u32 id = shaderTextureIds[pass];
+            passTextures[pass] = g_TextureTable.Acquire(&id, nullptr);
+        }
+
+        AddMaterialPassTextures(hostMaterial, passTextures, HostMaterialPasses);
     }
 
     // The shaders' animations kept for the frame steps (StepMaterialScroll): their UV offsets and colours, the

@@ -355,7 +355,8 @@ bool ParticleAt(const ParticleRecord& record, const HostParticleTable& table, co
 
     // The quad's corners are the particle's screen-space place plus the table's shape along the screen's axes, as the
     // console's VU1 builds them. The offsets go into screen coordinates rather than the particle's own place, so the
-    // quad faces the camera whatever the emitter's axes are (see particle_billboard.h).
+    // quad faces the camera whatever the emitter's axes are (see particle_billboard.h); the emitter's own frame reaches
+    // the particle through the block matrix, which is where a flamethrower's puffs take their direction.
     const f32* shape = table.steps[step].shape;
     // The corners in the order of corners[] below: clip00 = A, clip01 = B (the other corner, D - up), clip11 = D (the
     // opposite corner), clip10 = A + up. The console's VU1 builds the same four (vf12 = A, vf21 = B, vf22 = A + up,

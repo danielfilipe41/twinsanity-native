@@ -507,6 +507,11 @@ void ConstructMaterial(Material* material)
     host->program = InvalidHandle;
     host->sampler = InvalidHandle;
     host->texture = InvalidHandle;
+    // A material made here tints with nothing (white)
+    host->colour[0] = 255;
+    host->colour[1] = 255;
+    host->colour[2] = 255;
+    host->colour[3] = 255;
 }
 
 void DestroyMaterial(Material* material)

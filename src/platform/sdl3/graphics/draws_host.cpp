@@ -46,6 +46,7 @@ bgfx::UniformHandle g_joints = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_blendWeights = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_alpha = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_scroll = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_materialColour = BGFX_INVALID_HANDLE;
 bool g_made = false;
 
 // The alpha test a draw with no material state uses: the fragment shader's u_materialAlpha set to ALWAYS, so a pass
@@ -56,6 +57,11 @@ const f32 g_noAlphaTest[4] = {static_cast<f32>(Platform::Graphics::HostAlphaAlwa
 // The texture scroll the next 3D draw takes (the current submodel's material: HostSetDrawScroll sets it before each
 // one). A material with no scrolling shader leaves it zero, so every other draw's UVs are unmoved
 f32 g_drawScroll[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+// The colour a type-0x1F material's draw tints its lit vertex colour with (renderer.h's Shader::shaderColour, which that
+// type's VU1 program loads and multiplies in). The fourth lane is the "set" flag: a draw whose submit leaves the uniform
+// unwritten has it at zero, which the shader reads as no tint, so no draw can be blacked out by a missing value
+f32 g_drawColour[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 
 // A cached upload: the packet bytes' identity plus the parsed kind, with the
 // bgfx buffers the draws bind
@@ -168,6 +174,7 @@ void MakeShared()
     g_blendWeights = bgfx::createUniform("u_blendWeights", bgfx::UniformType::Vec4, 4);
     g_alpha = bgfx::createUniform("u_materialAlpha", bgfx::UniformType::Vec4);
     g_scroll = bgfx::createUniform("u_scroll", bgfx::UniformType::Vec4);
+    g_materialColour = bgfx::createUniform("u_materialColour", bgfx::UniformType::Vec4);
 }
 
 void MakeEntries()
@@ -529,6 +536,7 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     bgfx::setUniform(g_lightColours, colours, 3);
     bgfx::setUniform(g_ambient, &ambient, 1);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
+    bgfx::setUniform(g_materialColour, g_drawColour, 1);
     bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
     bgfx::submit(view, bgfx::isValid(program) ? program : g_rigidProgram);
     g_counters.rigidDraws++;
@@ -667,6 +675,7 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     bgfx::setUniform(g_joints, jointUniforms, SkinMaxJoints);
     bgfx::setUniform(g_blendWeights, blendUniforms, 4);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
+    bgfx::setUniform(g_materialColour, g_drawColour, 1);
     bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
     bgfx::submit(view, g_skinProgram);
     g_counters.skinDraws++;
@@ -741,6 +750,7 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::setUniform(g_lightColours, noLightColours, 3);
     bgfx::setUniform(g_ambient, &ambient, 1);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
+    bgfx::setUniform(g_materialColour, g_drawColour, 1);
     bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
     bgfx::submit(view, g_rigidProgram);
     return true;
@@ -776,6 +786,10 @@ void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material)
         g_drawScroll[1] = 0.0f;
         g_drawScroll[2] = 0.0f;
         g_drawScroll[3] = 0.0f;
+        g_drawColour[0] = 1.0f;
+        g_drawColour[1] = 1.0f;
+        g_drawColour[2] = 1.0f;
+        g_drawColour[3] = 1.0f;
         return;
     }
 
@@ -783,6 +797,14 @@ void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material)
     g_drawScroll[1] = material->scroll[1];
     g_drawScroll[2] = 0.0f;
     g_drawScroll[3] = 0.0f;
+    // The material's colour reaches the vertex shader for the one type whose program reads it (0x1F); anything else tints
+    // with nothing, which is the white the flag lane marks as set
+    constexpr u32 ShaderTypeMaterialColour = 0x1F;
+    const bool tints = material->shaderType == ShaderTypeMaterialColour;
+    g_drawColour[0] = tints ? static_cast<f32>(material->colour[0]) * (1.0f / 255.0f) : 1.0f;
+    g_drawColour[1] = tints ? static_cast<f32>(material->colour[1]) * (1.0f / 255.0f) : 1.0f;
+    g_drawColour[2] = tints ? static_cast<f32>(material->colour[2]) * (1.0f / 255.0f) : 1.0f;
+    g_drawColour[3] = 1.0f;
 }
 
 // The scene's offscreen target and its composite over the backbuffer
