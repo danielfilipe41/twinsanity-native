@@ -31,6 +31,7 @@ Known issues:
 - Sounds sometimes get stuck and keep repeating forever
 - After dying sometimes music doesnt start playing again
 - The wrong music plays after a death on Slip Slide Icecapades
+- Sometimes characters get stuck on an animation (i dont know if this is retail behaviour tho)
 
 ## Getting the game
 

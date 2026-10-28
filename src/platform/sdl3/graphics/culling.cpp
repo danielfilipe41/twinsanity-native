@@ -448,15 +448,16 @@ void JudgeAgainstPlanes(const Vector4& middle, const Vector4& half)
 {
     Vector4 distances;
     Vector4 reaches;
+    // The near plane only: the far plane's set also carries the far side of the depth range, which is the view's own and
+    // can put an area beyond it behind a plane that its chunk still needs drawn (a boss arena seen from across the level)
     PlaneDistances(g_NearAndFarPlanes, middle, half, &distances, &reaches);
-    bool outside = WholeBoxBehind(distances, reaches, NearAndFarPlanes);
-    bool crossing = AnyCornerBehind(distances, reaches, NearAndFarPlanes);
+    bool outside = WholeBoxBehind(distances, reaches, 1);
+    bool crossing = AnyCornerBehind(distances, reaches, 1);
 
+    // The four sides of the frustum, which is where a box is really out of the view
     PlaneDistances(g_SidePlanes, middle, half, &distances, &reaches);
-    crossing = crossing || AnyCornerBehind(distances, reaches, SidePlaneCount);
-
-    PlaneDistances(g_FarSidePlanes, middle, half, &distances, &reaches);
     outside = outside || WholeBoxBehind(distances, reaches, SidePlaneCount);
+    crossing = crossing || AnyCornerBehind(distances, reaches, SidePlaneCount);
 
     g_Outside = outside ? 1 : 0;
     g_Clipped = crossing ? 1 : 0;
