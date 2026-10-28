@@ -474,19 +474,20 @@ void CullTestBox(const Vector4* corners)
     JudgeAgainstPlanes(middle, half);
 }
 
-// 0x500: the planes taken into the model's space, with the matrices to the screen and, partly, to the clip space, the box the
-// model's own. The planes are the frustum's in the chunk's space, so the box goes through the model's matrix instead and the
-// same test judges it: the verdict is the same and no plane has to be carried into a space the model may scale
+// 0x500: the box the model's own, judged through the model's matrix to the clip space, which carries the link's
+//
+// The frustum's planes in the chunk's space are a global set by the last chunk that drew, and a model's box can be tested
+// after another chunk replaced them (the instances of a chunk are drawn once the frame's cells are done), so this test
+// carries its own matrix instead: the box's eight corners through g_Clip, which the model's own link made and no other
+// chunk can have overwritten
 void CullTestBoxAt(const Box* box, const Matrix4x4* model)
 {
     g_Distance = CameraDistance(model);
     g_Screen = Product(*model, g_LinkToScreen);
     g_Clip = Product(*model, g_LinkToClip);
-    // The box's corners through the model's place, so the frustum's planes in the chunk's space judge the box itself rather
-    // than the eight points the model's clip matrix would report (0x500 takes the planes into the model's space and tests the
-    // box against them, so a box the strict clip test rejects at one corner is not dropped)
-    Vector4 min = {};
-    Vector4 max = {};
+
+    u32 any = 0;
+    u32 every = 0x3F;
     for (u32 corner = 0; corner < 8; corner++)
     {
         Vector4 point = box->min;
@@ -495,25 +496,13 @@ void CullTestBoxAt(const Box* box, const Matrix4x4* model)
             (&point.x)[axis] = (corner >> axis) % 2 != 0 ? (&box->max.x)[axis] : (&box->min.x)[axis];
         }
 
-        Vector4 through = Through(model, &point, 1.0f);
-        for (u32 axis = 0; axis < 3; axis++)
-        {
-            if (corner == 0 || (&through.x)[axis] < (&min.x)[axis])
-            {
-                (&min.x)[axis] = (&through.x)[axis];
-            }
-
-            if (corner == 0 || (&through.x)[axis] > (&max.x)[axis])
-            {
-                (&max.x)[axis] = (&through.x)[axis];
-            }
-        }
+        u32 judgment = Judge(Through(&g_Clip, &point, 1.0f));
+        any |= judgment;
+        every &= judgment;
     }
 
-    Vector4 middle;
-    Vector4 half;
-    BoxMiddle(min, max, &middle, &half);
-    JudgeAgainstPlanes(middle, half);
+    g_Outside = every != 0 ? 1 : 0;
+    g_Clipped = any != 0 ? 1 : 0;
 }
 
 CullOutcome CullResult()
