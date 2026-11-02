@@ -188,6 +188,10 @@ struct ChunkShadows
 };
 CHECK_SIZE(ChunkShadows, 0x1C);
 
+// The entries Draw draws: the current list, or on a display frame between two game steps the one the step's own frame
+// drew (that frame's draw swapped the lists, leaving its list the other one)
+u32 ShadowDrawCount(const ChunkShadows* shadows);
+
 extern "C"
 {
     // An entry made (its kind byte's word cleared)

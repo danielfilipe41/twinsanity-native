@@ -1027,7 +1027,8 @@ void DrawDecals(DecalData* decals)
     for (u32 key = 0; key < DecalData::KeyCount; key++)
     {
         DecalBlock* block = decals->drawLists[key];
-        decals->drawLists[key] = nullptr;
+        // The lists are not emptied here, as the console's draw does: the display frames between steps draw the step's
+        // lists again, and the step's own update (UpdateDecalsVU0) empties them before it re-lists the blocks
         for (; block != nullptr; block = block->drawNext)
         {
             const u32 type = DecalTypeOf(decals, block);
@@ -1047,7 +1048,6 @@ void DrawDecals(DecalData* decals)
                 // halfword keeps what fits), so they are 1/4096 of the chunk's units: the first runs along the
                 // texture's S, the second along its T. Reading them as 12.4 (a multiple of 16, as this did) drew every
                 // decal 256 times its size -- the water's wake as a 400 unit sheet that the near clip threw away
-                const s16* size = block->sizes[slot];
                 const s16* more = block->moreSizes[slot];
                 const u32 colour = block->colours[slot];
                 // The aging packs two linear combinations of the surface's own axes (AgeDecalKeys, mirroring the VU0

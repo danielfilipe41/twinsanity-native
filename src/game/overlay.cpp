@@ -1,7 +1,6 @@
 #include "game/overlay.h"
 
 #include "game/colour.h"
-#include "game/interpolation.h"
 #include "game/memory.h"
 #include "game/renderer.h"
 #include "game/shapes.h"
@@ -338,23 +337,11 @@ extern "C"
             return;
         }
 
-        bool keep = false;
-#ifndef __mips__
-        // An extra display frame redraws the overlay queued at the end of the step's own frame (nothing queues between the
-        // steps, so it is that frame's picture); the step's own frame drew and cleared the queue before, and the next step
-        // draws this one once more before clearing it
-        keep = HostFrame::IsRedraw();
-#endif
         for (u32 layer = 0; layer < Renderer::OverlayLayers; layer++)
         {
             for (QueuedShape* queued = renderer->layers[layer]; queued != nullptr; queued = queued->next)
             {
                 QueuedShapeDraw(queued);
-            }
-
-            if (keep)
-            {
-                continue;
             }
 
             if (renderer->layers[layer] != nullptr)
@@ -371,10 +358,7 @@ extern "C"
             DrawFontTexts(renderer->controller, renderer->texts.data[i]);
         }
 
-        if (!keep)
-        {
-            TextQueueClear(&renderer->texts);
-        }
+        TextQueueClear(&renderer->texts);
     }
 }
 

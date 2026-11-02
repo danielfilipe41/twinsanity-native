@@ -3,6 +3,7 @@
 #include "game/animation.h"
 #include "game/chunkdata.h"
 #include "game/graphicstables.h"
+#include "game/interpolation.h"
 #include "game/lights.h"
 #include "game/memory.h"
 #include "game/place.h"
@@ -634,13 +635,36 @@ void ChunkShadows::Swap()
     firstCount = 0;
 }
 
+u32 ShadowDrawCount(const ChunkShadows* shadows)
+{
+#ifndef __mips__
+    if (HostFrame::IsRedraw())
+    {
+        return shadows->current == shadows->first ? shadows->secondCount : shadows->firstCount;
+    }
+#endif
+    return *shadows->currentCount;
+}
+
 void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4* view)
 {
     Matrix4x4 frame;
     InitIdentityMatrix(&frame);
-    for (u32 index = 0; index < *currentCount; index++)
+    // A display frame between two game steps redraws the list the step's own frame drew (its draw swapped to an empty one)
+    // and leaves the lists alone: swapping again would empty that step's shadows for the next one
+    ShadowEntry* list = current;
+    u32 count = *currentCount;
+#ifndef __mips__
+    bool redraw = HostFrame::IsRedraw();
+    if (redraw)
     {
-        ShadowEntry* entry = &current[index];
+        list = current == first ? second : first;
+        count = current == first ? secondCount : firstCount;
+    }
+#endif
+    for (u32 index = 0; index < count; index++)
+    {
+        ShadowEntry* entry = &list[index];
         Vector4 up = {0.0f, 1.0f, 0.0f, 1.0f};
         Vector4 axis = *RowOf(&entry->frame, 2);
         f32 inverse = InverseLength(&axis, LengthEpsilon);
@@ -681,27 +705,34 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
         *RowOf(&frame, 2) = axis;
         *RowOf(&frame, 3) = *RowOf(&entry->frame, 3);
         // Down from the shape's offset by its size, clipped to the view planes only: no surface is tested here (retail's
-        // Draw calls no collision either), so what is left after the clip is the length the volume is drawn with
-        Vector4 start = g_DefaultBox.min;
-        start.w = 1.0f;
-        Vector4 down = {entry->size[0], entry->size[1], entry->size[2], 1.0f};
-        down.x = -down.x;
-        down.y = -down.y;
-        down.z = -down.z;
-        Vector4 segment[2];
-        VuTransformPoint(&frame, &start, &segment[0]);
-        VuTransformPoint(&frame, &down, &segment[1]);
-        Vector4 clipped[2];
-        if (ClipSegmentToPlanes(planes, segment, clipped) == 0)
+        // Draw calls no collision either), so what is left after the clip is the length the volume is drawn with. A redraw
+        // reuses the length the step's own frame clipped it to: clipping that again would shorten the volume every pass
+#ifndef __mips__
+        if (!redraw)
+#endif
         {
-            continue;
+            Vector4 start = g_DefaultBox.min;
+            start.w = 1.0f;
+            Vector4 down = {entry->size[0], entry->size[1], entry->size[2], 1.0f};
+            down.x = -down.x;
+            down.y = -down.y;
+            down.z = -down.z;
+            Vector4 segment[2];
+            VuTransformPoint(&frame, &start, &segment[0]);
+            VuTransformPoint(&frame, &down, &segment[1]);
+            Vector4 clipped[2];
+            if (ClipSegmentToPlanes(planes, segment, clipped) == 0)
+            {
+                continue;
+            }
+
+            const Vector4* point = &clipped[1];
+            f32 dx = segment[0].x - point->x;
+            f32 dy = segment[0].y - point->y;
+            f32 dz = segment[0].z - point->z;
+            entry->size[1] = __builtin_sqrtf((dx * dx + dy * dy) + dz * dz);
         }
 
-        const Vector4* point = &clipped[1];
-        f32 dx = segment[0].x - point->x;
-        f32 dy = segment[0].y - point->y;
-        f32 dz = segment[0].z - point->z;
-        entry->size[1] = __builtin_sqrtf((dx * dx + dy * dy) + dz * dz);
         Matrix4x4 world;
         VuMultiplyMatrices(&frame, view, &world);
         Matrix4x4 toScreen;
@@ -710,6 +741,13 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
         VuMultiplyMatrices(&world, &g_ShadowToCamera, &toCamera);
         DrawShadowEntry(entry, &toScreen, &toCamera, &world);
     }
+
+#ifndef __mips__
+    if (redraw)
+    {
+        return;
+    }
+#endif
 
     if (current == first)
     {

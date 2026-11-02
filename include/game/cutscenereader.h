@@ -73,6 +73,10 @@ extern "C"
     // The skip hint and the disc error's title drawn
     void DrawSkipHint(VideoController* controller) RETAIL(FUN_0029ede8);
     void DrawDiscError(VideoController* controller) RETAIL(FUN_0029ee60);
+#ifndef __mips__
+    // The same pair queued again by a display frame between two steps (its update queued them, and its overlay drew them)
+    void HostQueueCutsceneHints();
+#endif
     // The update of the idle, ready and finished states (nothing), and of the paused one: while its clock is stopped the state it
     // was paused in put back (a playing cutscene pauses again)
     void UpdateIdleCutscene(VideoController* controller) RETAIL(FUN_0029edd8);

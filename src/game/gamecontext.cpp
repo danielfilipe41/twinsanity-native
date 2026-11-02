@@ -11,6 +11,7 @@
 #include "game/clock.h"
 #include "game/controllers.h"
 #include "game/cutscenes.h"
+#include "game/cutscenereader.h"
 #include "game/decals.h"
 #include "game/instancefactory.h"
 #include "game/interpolation.h"
@@ -248,6 +249,12 @@ void DrawGameFrame(GameContext* context, bool playingMovie, bool redraw)
         }
 
         Platform::Graphics::DrawDecals(&g_DecalData);
+        // The cutscene's hint is queued by its update (once a step): an extra frame queues it again for its own overlay
+        HostQueueCutsceneHints();
+        // The game's own drawing runs again, as on its step: it queues the overlay the next pass draws and draws the
+        // effects it draws at once rather than queues (the pickup's sparkles) -- and it only draws, the stepping of all of
+        // it is in Update, so a display frame cannot advance any of it
+        context->gameController->Draw(0);
         return;
     }
 #endif

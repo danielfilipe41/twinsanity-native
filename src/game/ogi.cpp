@@ -84,11 +84,28 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
         return;
     }
 
+#ifndef __mips__
+    // The pose a display frame between steps draws: the bones eased between the step before's and this step's, so the
+    // limbs move at the display's rate as the instance's place does. A step's own draw (alpha 0) shows the step before's
+    // pose, and the step's draw is what remembers this one for the step after
+    Matrix4x4* pose = matrices;
+    if (ogi->jointCount != 0)
+    {
+        auto* eased = static_cast<Matrix4x4*>(Platform::Graphics::AllocFrameMemory(ogi->jointCount, sizeof(Matrix4x4)));
+        if (HostFrame::EaseJoints(joints, ogi, matrices, ogi->jointCount, eased))
+        {
+            pose = eased;
+        }
+    }
+#else
+    Matrix4x4* pose = matrices;
+#endif
+
     Platform::Graphics::ModelLights modelLights = LightsAt(lights);
     for (u32 index = 0; index < ogi->rigidModelCount; index++)
     {
         Matrix4x4 placed;
-        VuMultiplyMatrices(&matrices[ogi->rigidModelJoints[index]], matrix, &placed);
+        VuMultiplyMatrices(&pose[ogi->rigidModelJoints[index]], matrix, &placed);
         Platform::Graphics::DrawRigidModel(ogi->rigidModels[index], &placed, modelLights, mode);
     }
 
@@ -112,7 +129,7 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
 
     for (u32 index = 0; index < ogi->jointCount; index++)
     {
-        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &matrices[index], &skinMatrices[index]);
+        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &pose[index], &skinMatrices[index]);
     }
 
     if (ogi->hasSkin != 0)
@@ -419,12 +436,16 @@ void DrawInstanceModel(InstanceContext* instance, const Matrix4x4* chunkMatrix, 
     Matrix4x4 matrix = instance->place->matrix;
 #ifndef __mips__
     // A display frame between two steps draws the instance eased from where its movement node had it to where this step
-    // left it (the instances without one, or that jumped, keep the stepped place)
+    // left it; an instance without one (the played character, a thing a script or an attachment moves) eases from the
+    // matrix the step before's draw remembered. The ones that jumped, or weren't drawn then, keep the stepped place
     Matrix4x4 eased;
-    if (HostFrame::InterpolateInstanceMatrix(instance, &eased))
+    if (HostFrame::InterpolateRememberedMatrix(instance, &eased) ||
+        HostFrame::InterpolateInstanceMatrix(instance, &eased))
     {
         matrix = eased;
     }
+
+    HostFrame::RememberInstance(instance, &instance->place->matrix);
 #endif
     Matrix4x4 placed;
     Platform::Math::MultiplyByParent(&matrix, chunkMatrix, &placed);

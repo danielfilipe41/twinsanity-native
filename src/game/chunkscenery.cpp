@@ -1560,11 +1560,18 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
 void DrawChunkShadows(ChunkData* chunk, s32 depth, const Matrix4x4* toCamera, const Matrix4x4* matrix)
 {
     ChunkShadows* shadows = chunk->shadows;
-    if (chunk->flags.state == ChunkShown && shadows != nullptr && *shadows->currentCount != 0)
+    if (chunk->flags.state == ChunkShown && shadows != nullptr && ShadowDrawCount(shadows) != 0)
     {
         if (chunk->flags.drawn == 0)
         {
-            shadows->Swap();
+#ifndef __mips__
+            // The step's own frame did this list's swap; a display frame between steps leaves it alone (swapping again
+            // would empty the step's list for the next step's casts)
+            if (!HostFrame::IsRedraw())
+#endif
+            {
+                shadows->Swap();
+            }
         }
         else
         {

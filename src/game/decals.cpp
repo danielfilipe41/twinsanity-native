@@ -370,6 +370,16 @@ extern "C"
 
     s32 UpdateDecalsVU0(DecalData* decals, f32 delta)
     {
+#ifndef __mips__
+        // The host's display frames between steps draw the step's lists again instead of emptying them (DrawDecals), so
+        // they are emptied here, where the step re-lists its blocks: emptied by the draw as on the console, the lists
+        // after the step's own frame would be empty and the redraws would show no decals
+        for (u32 key = 0; key < DecalData::KeyCount; key++)
+        {
+            decals->drawLists[key] = nullptr;
+        }
+#endif
+
         if (decals->count == 0)
         {
             return 0;

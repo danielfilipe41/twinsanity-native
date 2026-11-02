@@ -475,3 +475,30 @@ void VideoController::Skip()
     StopCutscene(this);
     state = StateFinished;
 }
+
+#ifndef __mips__
+extern "C"
+{
+    // The cutscene's skip hint and disc error are queued in its update, once a step (UpdatePlayingCutscene): a display
+    // frame between two steps queues them again, so its own overlay shows them too. Everything they read (the state, the
+    // waited frames, the skippable bit) is the step's and does not change between the steps
+    void HostQueueCutsceneHints()
+    {
+        VideoController* controller = G_VideoController;
+        if (controller == nullptr || controller->state != VideoController::StatePlaying || controller->clock == nullptr ||
+            controller->clock->flags.running == 0 || controller->bits.musicOnly != 0 || controller->cutscene == nullptr)
+        {
+            return;
+        }
+
+        if (controller->waitedFrames >= VideoController::DiscErrorFrames)
+        {
+            DrawDiscError(controller);
+        }
+        else if (controller->bits.skippable != 0)
+        {
+            DrawSkipHint(controller);
+        }
+    }
+}
+#endif
