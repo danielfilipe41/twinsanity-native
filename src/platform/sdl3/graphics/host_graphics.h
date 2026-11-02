@@ -279,7 +279,6 @@ inline bgfx::TextureHandle HostMaterialTexture(const HostMaterial* material)
 // HostTextures holds for the game texture its first textured shader reads (ReadTexture's). SubmitQuad binds the
 // white texture in its place when this is invalid
 bgfx::TextureHandle HostMaterialBoundTexture(const HostMaterial* material);
-
 // A material's state as the 3D/2D draws set it (BgfxStateOfMaterial): the bgfx state flags a draw with the material
 // submits, its alpha test's comparison and reference (the fragment shader's u_materialAlpha) and its pass state the
 // caller keeps (whether the belt-and-braces alpha state is on). The draws build one of these from each submodel's
@@ -292,8 +291,11 @@ struct HostMaterialState
     u64 state;
     // The alpha test: x the comparison (HostAlphaMethod), y the reference the sample's alpha is tested against (the
     // GS's AREF / 128, the game's convention full at 1). The draws set these as the u_materialAlpha uniform; a
-    // material without an alpha test gets HostAlphaAlways, whose comparison drops nothing whatever the reference
-    f32 alphaReference[4];
+    // material without an alpha test gets HostAlphaAlways, whose comparison drops nothing whatever the reference.
+    // z turns the comparison round for the rejected samples' second pass and w is left to the draws: [3] is the
+    // failure action (AFAIL), which only the host reads (FailedSampleState), and [4] marks a "brighten" draw, whose
+    // fragment shader writes its alpha as its colour for the state's DST_COLOR, ONE blend (the GS's Cd·As + Cd)
+    f32 alphaReference[5];
 };
 
 // The state a submodel's material draws with: its first shader's settings (the material's shaderSettings, or a
@@ -302,8 +304,7 @@ struct HostMaterialState
 // u_materialAlpha because bgfx has no fixed-function one. withDepth tells whether the pass depth-tests (the 3D
 // passes do, the 2D one doesn't: a UI quad has no depth to test and only its blending and alpha test apply)
 HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseState, bool withDepth);
-// The screen effects' fullscreen filter goes through bgfx view 4 (the ScreenEffects bucket), kept sequential so
-// the filter's pass draws in submission order over the frame. Its readback blits on view 34 (bgfx
+// // the filter's pass draws in submission order over the frame. Its readback blits on view 34 (bgfx
 // runs a view's blits before its draws, so the blit needs a later view than the filter's pass; 34 keeps it out of the
 // buckets' range, where 26 is the fonts')
 constexpr bgfx::ViewId HostScreenFxView = 4;

@@ -3,6 +3,8 @@
 #include "game/context.h"
 #include "game/controllers.h"
 #include "game/filestream.h"
+#include "game/interpolation.h"
+#include "game/instances.h"
 #include "game/stream.h"
 #include "game/memory.h"
 #include "game/movie.h"
@@ -78,6 +80,10 @@ extern "C" int Main(u32 argc, char** argv)
     }
 
     context->StartUp();
+#ifndef __mips__
+    // Whether a step has drawn its own frame: the display frames before the first step have nothing to show yet
+    bool drawn = false;
+#endif
     while (g_GameState != GameStateQuitting)
     {
         // The frame's own boundary: retail's frame IS the vblank (the PS2 build waits for one, sceGsSyncV) and the whole
@@ -87,18 +93,35 @@ extern "C" int Main(u32 argc, char** argv)
         // out here. (The pads' own call to this is in their setup loop, not their per-frame path: it cannot pace anything.)
         Platform::Graphics::WaitVSync();
 
+        GameMovieController* movie = G_GameMovieController;
+        bool playingMovie = IsPlayingMovie(movie);
+
 #ifndef __mips__
-        // Presenting is the display's rate and running the game is the disc's: a display frame that falls between two of
-        // the game's steps has nothing new to draw, so it is skipped and the window keeps the last picture. This is where
-        // the two rates part, and it is why the logic does not run 1.2x fast on a 60 Hz monitor
+        // Presenting is the player's rate (settings.txt's `render`) and running the game is the disc's. A display frame
+        // between two steps has no new game state of its own: it draws the last step's state eased towards the next, so
+        // the picture moves at the display's rate while the logic keeps the field's. While a movie plays it presents
+        // itself, at its own rate, and repeats nothing
         if (!Platform::Time::LogicStepDue())
         {
+            if (drawn && !playingMovie)
+            {
+                HostRedrawFrame(Platform::Time::LogicAlpha());
+            }
+
             continue;
         }
 
         // The logic boundary, exactly one field on from the last: the game's frameTime is this step and nothing else, so
         // nothing the game counts per frame inherits the display's rate
         Platform::Time::AdvanceFrame();
+        // A step's own frame draws the stepped state, not an ease of it
+        HostFrame::SetAlpha(0.0f);
+        HostFrame::SetRedraw(false);
+        HostFrame::BeginLogicStep();
+        // The step before's frame memory is only now done with: its extra display frames redrew what it made (the joint
+        // matrices the models draw with), so this is where the frame's memory starts over
+        Platform::Graphics::BeginLogicFrame();
+        drawn = true;
 
         // The particle system ages by one global step an update, which retail fixes to the disc's field (particles.cpp's
         // PalFrame/NtscFrame). That is the logic's step, so the aging follows the disc and not the display
@@ -110,11 +133,10 @@ extern "C" int Main(u32 argc, char** argv)
 #endif
 
         // Each step asks again, the movie can start or end in between
-        GameMovieController* movie = G_GameMovieController;
-        context->BeginFrame(IsPlayingMovie(movie));
-        context->Update(IsPlayingMovie(movie));
-        context->EndFrame(IsPlayingMovie(movie));
-        context->Render(IsPlayingMovie(movie));
+        context->BeginFrame(playingMovie);
+        context->Update(playingMovie);
+        context->EndFrame(playingMovie);
+        context->Render(playingMovie);
     }
 
     return 0;

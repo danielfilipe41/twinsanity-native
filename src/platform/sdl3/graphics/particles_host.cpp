@@ -60,6 +60,7 @@ bgfx::UniformHandle g_particleUniform = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_particleAlphaUniform = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_stqProgram = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_stqSampler = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_decalAlpha = BGFX_INVALID_HANDLE;
 bgfx::VertexBufferHandle g_quadBuffer = BGFX_INVALID_HANDLE;
 bool g_made = false;
 
@@ -140,6 +141,7 @@ void MakeShared()
     bgfx::ShaderHandle stqFs = bgfx::createShader(bgfx::makeRef(fs_stq_glsl, sizeof(fs_stq_glsl)));
     g_stqProgram = bgfx::createProgram(stqVs, stqFs, true);
     g_stqSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
+    g_decalAlpha = bgfx::createUniform("u_decalAlpha", bgfx::UniformType::Vec4);
 
     const bgfx::Memory* memory = bgfx::copy(QuadVertices, sizeof(QuadVertices));
     g_quadBuffer = bgfx::createVertexBuffer(memory, QuadLayout());
@@ -977,6 +979,11 @@ bool SubmitDecals(DecalData* decals, u32 key, const StqVertex* vertices, u32 cou
                    ParticleBlendState(hostMaterial->blend));
     bgfx::setTexture(0, g_stqSampler, texture,
                      BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | HostMaterialFilter(hostMaterial));
+    // The page's alpha test: GEQUAL against the reference the page shader carries (the GS's AREF 5), KEEP on failure
+    const float decalAlpha[4] = {5.0f,
+                                 static_cast<float>(hostMaterial->shaderSettings[Platform::Graphics::HostShaderSettingAlphaReference]) / 128.0f,
+                                 0.0f, 0.0f};
+    bgfx::setUniform(g_decalAlpha, decalAlpha);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostDecalsView, g_stqProgram);
     return true;

@@ -1,12 +1,12 @@
-// Clock: the host's frames at the game's field rate.
+// Clock: the game's fixed step and the picture's own rate.
 //
 // Retail's game clock is the EE's timer 0, read once a frame at the vblank: a frame's frameTime is exactly one field's
 // worth of ticks (11520 at 50 Hz, 9600 at 60). A free-running host clock gives a slightly different number every frame,
 // and the camera smoothing, animation blending and particle aging that consume frameTime inherit that jitter. The host
-// therefore steps the game clock itself: WaitVSync is the field boundary and advances it by one exact step. Within the
-// field Ticks keeps counting (the game's per-frame budget checks, GameTimeHasTimeLeft, need time to pass) but never past
-// the step, so the next field's difference is still one step and a frame that overruns cannot make the game's clock jump
-// or run backwards.
+// therefore steps the game clock itself: AdvanceFrame moves it on by one exact step, taken when the wall clock says a
+// field is due (LogicStepDue), while WaitVSync paces the picture at its own rate. Within the field Ticks keeps counting
+// (the game's per-frame budget checks, GameTimeHasTimeLeft, need time to pass) but never past the step, so the next
+// field's difference is still one step and a frame that overruns cannot make the game's clock jump or run backwards.
 #include "platform/time.h"
 
 #include <chrono>
@@ -26,15 +26,16 @@ u64 g_FrameTicks = 0;
 u64 g_Step = Platform::Time::TicksPerSecond / DefaultLogicRate;
 s32 g_LogicRate = DefaultLogicRate;
 s32 g_DisplayRate = DefaultDisplayRate;
-// The display frames owed towards the next logic step, in units of 1/(logic * display) of a second: each display frame
-// adds the logic rate and a step is taken when the sum passes the display rate
-u32 g_StepDebt = 0;
+// The wall clock's next logic boundary, and whether one has been set yet
+std::chrono::steady_clock::time_point g_NextStep;
+bool g_HasNextStep = false;
 }
 
 void Platform::Time::Initialise()
 {
     g_FrameStart = std::chrono::steady_clock::now();
     g_FrameTicks = 0;
+    g_HasNextStep = false;
     g_Started = true;
 }
 
@@ -90,19 +91,39 @@ void Platform::Time::SetRates(s32 logicRate, s32 displayRate)
         g_Step = 1;
     }
 
-    g_StepDebt = 0;
+    g_HasNextStep = false;
 }
 
 bool Platform::Time::LogicStepDue()
 {
-    g_StepDebt += static_cast<u32>(g_LogicRate);
-    if (g_StepDebt < static_cast<u32>(g_DisplayRate))
+    // The step's turn is the wall clock's, not a count of the display's frames: the picture's rate is the player's to set
+    // and a machine that cannot hold it would otherwise slow the game down in proportion (the fields would be counted off
+    // the presents that did happen). A frame that arrives late still takes one step and starts the next from when it did,
+    // so a step is never paid back in a burst
+    if (!g_Started)
     {
-        // This display frame has nothing of the game's to show: the loop skips it and the window keeps the last picture
+        Initialise();
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (!g_HasNextStep)
+    {
+        g_NextStep = now;
+        g_HasNextStep = true;
+    }
+
+    if (now < g_NextStep)
+    {
         return false;
     }
 
-    g_StepDebt -= static_cast<u32>(g_DisplayRate);
+    auto step = std::chrono::nanoseconds(1000000000ll / (g_LogicRate > 0 ? g_LogicRate : DefaultLogicRate));
+    g_NextStep += step;
+    if (g_NextStep <= now)
+    {
+        g_NextStep = now + step;
+    }
+
     return true;
 }
 
@@ -115,4 +136,28 @@ void Platform::Time::AdvanceFrame()
 
     g_FrameTicks += g_Step;
     g_FrameStart = std::chrono::steady_clock::now();
+}
+
+f32 Platform::Time::LogicAlpha()
+{
+    if (!g_Started || g_Step == 0 || g_LogicRate <= 0)
+    {
+        return 0.0f;
+    }
+
+    // The share of a step's time gone since the step's own boundary. A display frame that lands on the step draws with 0
+    // (AdvanceFrame just reset the start), and the ones between it ease towards 1
+    auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - g_FrameStart);
+    double stepNanoseconds = static_cast<double>(g_Step) * 1.0e9 / static_cast<double>(TicksPerSecond);
+    f32 alpha = static_cast<f32>(static_cast<double>(elapsed.count()) / stepNanoseconds);
+    if (alpha < 0.0f)
+    {
+        alpha = 0.0f;
+    }
+    else if (1.0f < alpha)
+    {
+        alpha = 1.0f;
+    }
+
+    return alpha;
 }

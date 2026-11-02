@@ -3,6 +3,9 @@
 // A port of TT-Lab's EzSwizzle (TwinTech's Libraries/EzSwizzle.cs and Common/Color.cs): the same tables and swizzle
 // functions in the same order, over little endian bytes. The retail textures were made with that tool, so its own
 // decode is the ground truth for what the file's bytes mean.
+#include <cstdio>
+#include <cstdlib>
+
 #include "texture_decoder.h"
 
 #include <algorithm>
@@ -147,13 +150,21 @@ void ReadPsmct32(u8* destination, s32 dbp, s32 dbw, s32 rrw, s32 rrh, const u8* 
     }
 }
 
-// A colour of the file's channels doubled (the tools write them halved, so this is the inverse of what wrote them)
+// A colour of the file's channels doubled (the tools write them halved, so this is the inverse of what wrote them), held
+// at 255 instead of wrapping. The doubling of a byte at 128 or above used to fall off the top of the u8: an alpha of 128
+// -- the game's fully opaque, AlphaFull -- wrapped to 0 and became fully transparent, so every texel of it failed the
+// material's alpha test and the surface kept losing fixed patches of itself, and a full 192 red wrapped to 128. Nothing
+// below 128 moves, so every channel the doubling was right for decodes as it did
 void ScaleUp(u8* colour)
 {
-    colour[0] = static_cast<u8>(colour[0] << 1);
-    colour[1] = static_cast<u8>(colour[1] << 1);
-    colour[2] = static_cast<u8>(colour[2] << 1);
-    colour[3] = static_cast<u8>(colour[3] << 1);
+    // All four channels: the file stores them halved, and the window's are full at 255, so the doubling is what puts
+    // them in the domain the host blends and tests with (its alpha full at 1.0). Held at 255 rather than wrapped, since
+    // a shift dropped an alpha of 128 -- the game's fully opaque -- round to 0 and a full 192 red round to 128
+    for (u32 channel = 0; channel < 4; channel++)
+    {
+        const u32 value = static_cast<u32>(colour[channel]) * 2u;
+        colour[channel] = static_cast<u8>(value > 255u ? 255u : value);
+    }
 }
 }
 
@@ -215,12 +226,15 @@ bool DecodePs2Texture(const Ps2TextureHeader* header, const u8* packet, size_t p
     out->height = height;
     out->rgba.assign(static_cast<size_t>(width) * height * 4, 0);
 
-    // The transferred image's words are the pixels themselves: the palette is already the colours
+    // The transferred image's words are the pixels themselves, in the order the GS holds them: the image is read back
+    // through the 32 bit swizzle at the texture's own buffer width, as the GS does, and not taken as the source order.
+    // Copying it straight across left every 32 bit texture's texels in their swizzled places -- scrambled colours and,
+    // of what is tested here, scrambled alpha, so an alpha-tested surface kept losing patches of itself
     if (format == FormatPsmct32)
     {
-        u32 pixels = width * height;
-        u32 copy = gifBytes < pixels * 4 ? gifBytes : pixels * 4;
-        std::memcpy(out->rgba.data(), gifData, copy);
+        ReadPsmct32(out->rgba.data(), 0, static_cast<s32>(header->levelWidths[0]), static_cast<s32>(width),
+                    static_cast<s32>(height), gifData, static_cast<s32>(gifBytes / 4));
+        const u32 pixels = width * height;
         for (u32 pixel = 0; pixel < pixels; pixel++)
         {
             ScaleUp(out->rgba.data() + pixel * 4);
@@ -271,11 +285,12 @@ bool DecodePs2Texture(const Ps2TextureHeader* header, const u8* packet, size_t p
         ScaleUp(colours + entry * 4);
     }
 
-    u32 pixels = width * height;
+    const u32 pixels = width * height;
     for (u32 pixel = 0; pixel < pixels; pixel++)
     {
         std::memcpy(out->rgba.data() + static_cast<size_t>(pixel) * 4, colours + static_cast<u32>(indices[pixel]) * 4, 4);
     }
+
 
     // The mip levels the file declares, read out of the same transferred image: level k's data starts at its own
     // levelOffsets[k] (64-word units) and is as wide as its levelWidths[k] says, its image half the size of the one

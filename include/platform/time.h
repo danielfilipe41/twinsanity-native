@@ -15,20 +15,25 @@ u64 Ticks();
 
 // The host's framing (the PS2 side counts its own timer and never calls these). Two rates are kept apart:
 //
-// - the DISPLAY rate is how often the host presents a frame, paced to the monitor's own rate (60 by default). It is
-//   the loop's own business and the game's logic never sees it.
+// - the DISPLAY rate is how often the host presents a frame: the player's setting (settings.txt's `render`, 50 when the
+//   file has none, never below the logic rate). It is the loop's own business and the game's logic never sees it.
 // - the LOGIC rate is how often the game's frame runs, and it is the disc's: retail's frame IS the vblank, so the PAL
 //   release steps its logic 50 times a second and everything the game counts per frame assumes that step.
 //
 // WaitVSync paces the display's frames and steps nothing; the game's frame is taken by the loop when LogicStepDue says a
-// logic step is owed, and that is where AdvanceFrame moves the clock on by one exact field. So frameTime is one exact
-// field whatever the monitor does, and the picture runs at the monitor's rate while the game runs at the disc's
+// logic step is owed (the wall clock's 50 a second), and that is where AdvanceFrame moves the clock on by one exact field.
+// So frameTime is one exact field whatever the display does, and the picture runs at its rate while the game runs at the
+// disc's, the frames between two steps drawing the state eased between them
 s32 FrameRate();
 s32 DisplayRate();
 void SetRates(s32 logicRate, s32 displayRate);
-// Whether the loop owes the game a logic step: call once a display frame, after WaitVSync. It is true 50 times a second
-// at a 60 Hz display, so two display frames in twelve repeat the last one
+// Whether the loop owes the game a logic step: call once a display frame, after WaitVSync. The step's turn is the wall
+// clock's (50 a second on this PAL disc), whatever the picture's rate is: the display frames that fall between two steps
+// draw the state eased between them instead of stepping it
 bool LogicStepDue();
 // The logic boundary itself: the game's clock moves on by exactly one field
 void AdvanceFrame();
+// How far the display's clock is into the next logic step, 0 to 1: the draw between two steps interpolates the game's
+// state by it (0 at a step's own draw, so the stepped state is what that frame shows)
+f32 LogicAlpha();
 }

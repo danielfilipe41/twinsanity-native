@@ -251,6 +251,10 @@ void Platform::Graphics::SubmitBuckets(bool fromInterrupt)
     (void)fromInterrupt;
 }
 
+void Platform::Graphics::BeginLogicFrame()
+{
+}
+
 void* Platform::Graphics::AllocFrameMemory(u32 count, u32 size)
 {
     return std::malloc(count * size);

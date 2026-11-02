@@ -3,6 +3,7 @@
 #include "game/camerarig.h"
 #include "game/controllers.h"
 #include "game/instances.h"
+#include "game/interpolation.h"
 #include "game/place.h"
 #include "game/reference.h"
 
@@ -50,6 +51,10 @@ void RenderView::Update(f32 aspect)
     auto* camera = static_cast<InstanceContext*>(object);
     ObjectPlace* place = camera->place;
     RotateAndTranslate(place);
+#ifndef __mips__
+    // The sample the display frames between this step and the next ease from
+    HostFrame::SampleCamera(camera, &place->matrix);
+#endif
     auto* lens = static_cast<CameraLensNode*>(GetGameNode(&camera->nodes, NodeCameraLens));
     f32 scaled = lens->pixelAspect * aspect;
     f32 difference = scaled - inverseAspect;

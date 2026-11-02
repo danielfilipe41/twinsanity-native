@@ -4,6 +4,7 @@
 #include "game/clock.h"
 #include "game/context.h"
 #include "game/instances.h"
+#include "game/interpolation.h"
 #include "game/lights.h"
 #include "game/math.h"
 #include "game/memory.h"
@@ -65,7 +66,15 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
 {
     constexpr s32 MostShapes = 3;
     Matrix4x4* matrices = joints->start;
-    if (matrices != nullptr && joints->frame + 1 < g_RenderedFrames)
+#ifndef __mips__
+    // The host's frame memory is let go when a step begins, so joints an earlier step made are gone: only this step's are
+    // drawn (a display frame between steps redraws that step's own frame, and passes its number here)
+    bool stale = joints->frame != g_RenderedFrames;
+#else
+    bool stale = joints->frame + 1 < g_RenderedFrames;
+#endif
+
+    if (matrices != nullptr && stale)
     {
         matrices = nullptr;
     }
@@ -88,14 +97,27 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
         return;
     }
 
+#ifndef __mips__
+    // The joints put in the model's space go in a buffer of their own, the frame's own untouched: a display frame between two
+    // steps draws the same state again, and the console's multiply in place would put the model's space into it a second
+    // time on that frame (the skeleton scatters). The skin draws only read them
+    Matrix4x4* skinMatrices = matrices;
+    if (ogi->jointCount != 0)
+    {
+        skinMatrices = static_cast<Matrix4x4*>(Platform::Graphics::AllocFrameMemory(ogi->jointCount, sizeof(Matrix4x4)));
+    }
+#else
+    Matrix4x4* skinMatrices = matrices;
+#endif
+
     for (u32 index = 0; index < ogi->jointCount; index++)
     {
-        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &matrices[index], &matrices[index]);
+        Platform::Math::MultiplyByParent(&ogi->jointMatrices[index], &matrices[index], &skinMatrices[index]);
     }
 
     if (ogi->hasSkin != 0)
     {
-        Platform::Graphics::DrawSkin(ogi->skin, matrices, ogi->jointCount, matrix, modelLights, mode);
+        Platform::Graphics::DrawSkin(ogi->skin, skinMatrices, ogi->jointCount, matrix, modelLights, mode);
     }
 
     if (ogi->hasBlendSkin == 0)
@@ -117,7 +139,7 @@ void DrawOgi(GameOGI* ogi, const Matrix4x4* matrix, JointMatrices* joints, const
         }
     }
 
-    Platform::Graphics::DrawBlendSkin(ogi->blendSkin, matrices, ogi->jointCount, matrix, modelLights, weights, shapes,
+    Platform::Graphics::DrawBlendSkin(ogi->blendSkin, skinMatrices, ogi->jointCount, matrix, modelLights, weights, shapes,
                                       shapeCount, mode);
 }
 
@@ -380,16 +402,30 @@ void ModelNode::Draw(const Matrix4x4* matrix, const Matrix4x4* chunkMatrix, Chun
         {
             DrawOgi(drawnOgi, matrix, &drawnAnimator->matrices, &drawnAnimator->blendShapes, lights, mode);
         }
-
-        drawnOgi = nullptr;
     }
 
+#ifndef __mips__
+    // A display frame between two game steps redraws the instances the step's own frame drew, so what its update chose to
+    // draw stays for it: clearing it here (as the console does, its frame being drawn once) would leave every one of those
+    // frames without a model. The next step's update sets both again
+#else
+    drawnOgi = nullptr;
     drawnAnimator = nullptr;
+#endif
 }
 
 void DrawInstanceModel(InstanceContext* instance, const Matrix4x4* chunkMatrix, ChunkLights* lights, u32 mode)
 {
     Matrix4x4 matrix = instance->place->matrix;
+#ifndef __mips__
+    // A display frame between two steps draws the instance eased from where its movement node had it to where this step
+    // left it (the instances without one, or that jumped, keep the stepped place)
+    Matrix4x4 eased;
+    if (HostFrame::InterpolateInstanceMatrix(instance, &eased))
+    {
+        matrix = eased;
+    }
+#endif
     Matrix4x4 placed;
     Platform::Math::MultiplyByParent(&matrix, chunkMatrix, &placed);
     auto* node = static_cast<ModelNode*>(GetGameNode(&instance->nodes, NodeModel));

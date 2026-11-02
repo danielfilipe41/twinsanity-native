@@ -36,6 +36,42 @@ void SettingsPath(char* path)
     std::snprintf(path, PathLength, "%s/.local/share/twinsanity/settings.txt", home != nullptr ? home : "/tmp");
 }
 
+// The picture's rate when the file has none: the disc's field rate, so the host presents exactly when the game steps
+constexpr s32 DefaultRenderRate = 50;
+bool g_RenderRateLoaded = false;
+s32 g_RenderRate = DefaultRenderRate;
+
+// The file's `render` line: the picture's rate, read once before the renderer starts (the sound options wait for the sound
+// processor's first reset, this one can't: the renderer paces itself with it)
+void LoadRenderRate()
+{
+    if (g_RenderRateLoaded)
+    {
+        return;
+    }
+
+    g_RenderRateLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        int rate = 0;
+        if (std::sscanf(line, "render %d", &rate) == 1 && rate > 0)
+        {
+            g_RenderRate = rate;
+        }
+    }
+
+    std::fclose(file);
+}
+
 // The live options, as the game keeps them
 void LiveOptions(s16* left, s16* right, u32* stereo, u8* widescreen)
 {
@@ -59,6 +95,12 @@ void UseGroupVolume(u32 group, s16 left, s16 right)
     Platform::Audio::SetGroupVolume(static_cast<s32>((group + 1) << Platform::Audio::GroupShift), static_cast<u32>(left),
                                     static_cast<u32>(right));
 }
+}
+
+s32 HostSettingsRenderRate()
+{
+    LoadRenderRate();
+    return g_RenderRate;
 }
 
 void HostSettingsApplyOnce()
@@ -165,6 +207,7 @@ void HostSettingsKeep()
     g_KeptStereo = stereo;
     g_KeptWidescreen = widescreen;
     g_Kept = true;
+    LoadRenderRate();
     char path[PathLength];
     SettingsPath(path);
     std::FILE* file = std::fopen(path, "wb");
@@ -178,6 +221,7 @@ void HostSettingsKeep()
         std::fprintf(file, "group %u %d %d\n", group, static_cast<int>(left[group]), static_cast<int>(right[group]));
     }
 
-    std::fprintf(file, "stereo %d\nwidescreen %d\n", static_cast<int>(stereo), static_cast<int>(widescreen));
+    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\n", static_cast<int>(stereo), static_cast<int>(widescreen),
+                 static_cast<int>(g_RenderRate));
     std::fclose(file);
 }

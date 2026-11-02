@@ -1,4 +1,7 @@
 // The SDL3 platform's rigid-mesh builder (see mesh_builder.h).
+#include <cstdio>
+#include <cstdlib>
+
 #include "mesh_builder.h"
 
 #include <cmath>

@@ -214,8 +214,6 @@ HostTextureUpload HostTextureCache::GetOrUpload(const HostTextureKey& key, const
         return miss;
     }
 
-    // The resource's upload, held until its GameTexture dies: the game keeps hundreds live at once, so nothing is
-    // ever evicted to make room (see host_graphics.h's HostTextureCache)
     Entry slot;
     slot.key = key;
     slot.texture = handle;
@@ -372,8 +370,8 @@ u64 PresetBlend(u8 preset)
     case HostPresetSubtract: // Cd - Cs·As: the source subtracted from the destination
         return BGFX_STATE_BLEND_EQUATION(BGFX_STATE_BLEND_EQUATION_REVSUB) |
                BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE);
-    case HostPresetBrighten: // Cd - Cs·As (the host reaches the add: the reference's own mapping)
-        return BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE);
+    case HostPresetBrighten: // Cd·As + Cd: the shader writes the alpha as its colour (HostMaterialState's brighten)
+        return BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_DST_COLOR, BGFX_STATE_BLEND_ONE);
     case HostPresetDarken: // Cd·(1 - As)
         return BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ZERO, BGFX_STATE_BLEND_INV_SRC_ALPHA);
     case HostPresetScale: // Cd·As
@@ -417,6 +415,7 @@ HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseStat
         passed.alphaReference[1] = 0.0f;
         passed.alphaReference[2] = 0.0f;
         passed.alphaReference[3] = 0.0f;
+        passed.alphaReference[4] = 0.0f;
         return passed;
     }
 
@@ -484,7 +483,8 @@ HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseStat
     result.alphaReference[2] = 0.0f;
     // The alpha test's failure action (AFAIL), carried for the draws' second pass over the rejected samples
     result.alphaReference[3] = static_cast<f32>(settings[5]);
-    result.alphaReference[3] = 0.0f;
+    // A "brighten" material: the shader has to write its alpha as its colour for the state's Cd·As + Cd blend
+    result.alphaReference[4] = blends != 0 && preset == HostPresetBrighten ? 1.0f : 0.0f;
     return result;
 }
 

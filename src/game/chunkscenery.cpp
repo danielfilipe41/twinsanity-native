@@ -7,6 +7,7 @@
 #include "game/controllers.h"
 #include "game/hull.h"
 #include "game/instances.h"
+#include "game/interpolation.h"
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/objectcollision.h"
@@ -1507,12 +1508,22 @@ void DrawChunk(ChunkData* chunk, ChunkView* view, const ObjectPlace* place, s32 
     bool hasRoot = chunk->scenery != nullptr;
     chunk->flags.hasRoot = hasRoot;
     u32 frame = g_RenderedFrames;
-    if (!hasRoot || chunk->flags.drawStamp == static_cast<u16>(frame))
+    // An extra display frame draws the chunk again even though its stamp already is this frame's, and leaves the stamp
+    // alone: the next step's own draw has to find the stamp it set and draw for itself (its frame number is this one)
+    bool redraw = false;
+#ifndef __mips__
+    redraw = HostFrame::IsRedraw();
+#endif
+    if (!hasRoot || (chunk->flags.drawStamp == static_cast<u16>(frame) && !redraw))
     {
         return;
     }
 
-    chunk->flags.drawStamp = frame;
+    if (!redraw)
+    {
+        chunk->flags.drawStamp = frame;
+    }
+
     auto* matrices = &chunk->matrix;
     if (portal == nullptr)
     {

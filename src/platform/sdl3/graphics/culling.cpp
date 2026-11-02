@@ -473,6 +473,32 @@ void CullTestBox(const Vector4* corners)
     Vector4 apart = Difference(g_LinkCamera, middle);
     g_Distance = FloatToInt(apart.x * apart.x + apart.y * apart.y + apart.z * apart.z);
     JudgeAgainstPlanes(middle, half);
+
+    // The planes and the box's corners through the link's own clip matrix must BOTH put the box out before it is dropped:
+    // the plane sets are the frustum's in the chunk's space (whichever chunk loaded them last), while the clip matrix is
+    // this chunk's link's own. A box either one of them still sees is drawn, so neither a wrong plane set nor a corner the
+    // clip test dislikes can hide a cell the old test drew -- both an arena behind the far set and a floor's cell have
+    // disappeared from one or the other before
+    if (g_Outside != 0)
+    {
+        u32 any = 0;
+        u32 every = 0x3F;
+        for (u32 corner = 0; corner < 8; corner++)
+        {
+            Vector4 point = corners[0];
+            for (u32 axis = 0; axis < 3; axis++)
+            {
+                (&point.x)[axis] = (corner >> axis) % 2 != 0 ? (&corners[1].x)[axis] : (&corners[0].x)[axis];
+            }
+
+            u32 judgment = Judge(Through(&g_LinkToClip, &point, 1.0f));
+            any |= judgment;
+            every &= judgment;
+        }
+
+        g_Outside = every != 0 ? 1 : 0;
+        g_Clipped = (g_Clipped != 0 || any != 0) ? 1 : 0;
+    }
 }
 
 // 0x500: the box the model's own, judged through the model's matrix to the clip space, which carries the link's

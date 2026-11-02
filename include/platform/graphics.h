@@ -77,6 +77,9 @@ void WaitSent();
 // interrupt or not)
 void ResetBuckets(bool movie);
 void SubmitBuckets(bool fromInterrupt);
+// A game step's own frame begins: the frame memory the step before allocated is let go (nothing presents between the steps
+// once this is called, so what a step's frame made lasts until the next step)
+void BeginLogicFrame();
 // Memory for count items of a size that lasts until the frame is drawn (a skin's joints' matrices; on the PS2, taken from the
 // frame's DMA buffer, where the draws find it)
 void* AllocFrameMemory(u32 count, u32 size);

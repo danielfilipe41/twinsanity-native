@@ -13,6 +13,7 @@
 #include "game/cutscenes.h"
 #include "game/decals.h"
 #include "game/instancefactory.h"
+#include "game/interpolation.h"
 #include "game/navigation.h"
 #include "game/pads.h"
 #include "game/particles.h"
@@ -211,26 +212,93 @@ void GameContext::PreloadChunks()
     gameController->EnableCharacters(1);
 }
 
-void GameContext::GameEndFrame(bool playingMovie)
+namespace
+{
+// The game's frame drawn: the scene with its view, then the overlay. A step's own frame ages and draws the particles and
+// the decals and queues the game's overlay; an extra display frame (between two steps) draws them where the step left them,
+// and redraws the overlay the step queued (nothing queues between steps, so it is that frame's picture)
+void DrawGameFrame(GameContext* context, bool playingMovie, bool redraw)
 {
     GameRendererController* renderers = G_GameRendererController;
     GameTimeController* clocks = G_GameClockController;
     g_RenderTarget = G_Renderer_->target;
-    gameController->SetView(playingMovie);
+    if (!redraw)
+    {
+        context->gameController->SetView(playingMovie);
+    }
+
     renderers->DrawRendererScenes();
     if (playingMovie)
     {
-        gameController->Draw(playingMovie);
+        context->gameController->Draw(playingMovie);
         return;
     }
+
+#ifndef __mips__
+    if (redraw)
+    {
+        HostDrawParticlesOnly();
+        Platform::Graphics::UseHelperPrograms(Platform::Graphics::DecalPrograms, true);
+        // The decals' view is the camera chunk's, set by the scene's draw from this frame's eased camera; the step's own
+        // frame loaded it in UpdateDecalsVU0 after that draw, and this one only draws them again. Like that one, it needs
+        // decals and a camera (there is no g_RenderView before the first scene draws)
+        if (g_DecalData.count != 0 && g_RenderView != nullptr)
+        {
+            UploadDecalCameraToVU0(&g_DecalData);
+        }
+
+        Platform::Graphics::DrawDecals(&g_DecalData);
+        return;
+    }
+#endif
 
     f32 seconds = static_cast<f32>(static_cast<s32>(clocks->clocks[FirstClock].advance)) * g_SecondsPerClockUnit;
     UpdateAndDrawParticles(g_GameState == GameStatePaused, seconds);
     Platform::Graphics::UseHelperPrograms(Platform::Graphics::DecalPrograms, true);
     UpdateDecalsVU0(&g_DecalData, seconds);
     Platform::Graphics::DrawDecals(&g_DecalData);
-    gameController->Draw(0);
+    context->gameController->Draw(0);
 }
+}
+
+void GameContext::GameEndFrame(bool playingMovie)
+{
+    DrawGameFrame(this, playingMovie, false);
+}
+
+#ifndef __mips__
+extern "C"
+{
+    // An extra display frame: the step's state drawn eased by the share of the step gone (the game itself is not stepped,
+    // nothing ages or is queued), the scene finished with its effects, then the frame presented
+    void HostRedrawFrame(f32 alpha)
+    {
+        GameContext* context = g_GameContext;
+        if (context == nullptr || context->gameController == nullptr || G_Renderer_ == nullptr ||
+            G_GameRendererController == nullptr)
+        {
+            return;
+        }
+
+        HostFrame::SetAlpha(alpha);
+        HostFrame::SetRedraw(true);
+        // The picture being redrawn is the last step's own frame: the number it drew under (g_RenderedFrames moved on by
+        // one when that frame presented) is the one its frame-tagged data is good for, the drawn models' joint matrices
+        // among it. Under the next number a model whose joints were made the step before reads as stale and vanishes
+        u32 rendered = g_RenderedFrames;
+        if (rendered != 0)
+        {
+            g_RenderedFrames = rendered - 1;
+        }
+
+        DrawGameFrame(context, false, true);
+        HostFrame::SetRedraw(false);
+        g_RenderedFrames = rendered;
+        G_GameRendererController->AfterGameRender();
+        G_GameRendererController->Render();
+    }
+}
+#endif
 
 void MakeRate(UpdateRate* rate, u8 graceRoot, u8 cutoffRoot, u32 steps)
 {

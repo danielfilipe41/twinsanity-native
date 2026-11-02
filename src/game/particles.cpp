@@ -3540,3 +3540,30 @@ EABI_EXPORT(CreateParticleEmitter, CreateParticleEmitter);
 EABI_EXPORT(TestParticleCollisionSpheres, TestParticleCollisionSpheres);
 EABI_EXPORT(FUN_001ba148, TestParticleCollision);
 EABI_EXPORT(UpdateAndDrawParticles, UpdateAndDrawParticles);
+
+#ifndef __mips__
+extern "C"
+{
+    // An extra display frame's particle draw: the systems drawn where the step's own frame left them, with nothing aged,
+    // emitted, collided or rescheduled (that is the step's business). The frame's number is the step's, so the views are the
+    // ones the step's draw put the chunks in
+    void HostDrawParticlesOnly()
+    {
+        if (g_ParticlesSetUp == 0)
+        {
+            return;
+        }
+
+        Platform::Graphics::UseHelperPrograms(Platform::Graphics::CullingPrograms, false);
+        ParticleViews views;
+        views.frame = g_RenderedFrames;
+        views.count = 0;
+        DrawParticleList(0, 0, &views);
+        DrawParticleList(0, DrawListDistortion, &views);
+        for (s32 index = 0; index < views.count; index++)
+        {
+            views.chunks[index]->particleView = -1;
+        }
+    }
+}
+#endif

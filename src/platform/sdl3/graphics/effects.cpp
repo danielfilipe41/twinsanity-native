@@ -56,6 +56,7 @@ HostWave g_wave = {{}, {}, 0.0f, 0.0f};
 // The distortion's program and its frame copy (the process owns them; made lazily after BgfxInit)
 bgfx::ProgramHandle g_stqProgram = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_stqSampler = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_decalAlpha = BGFX_INVALID_HANDLE;
 bgfx::TextureHandle g_frameCopy = BGFX_INVALID_HANDLE;
 u32 g_frameCopyWidth = 0;
 u32 g_frameCopyHeight = 0;
@@ -97,6 +98,7 @@ void MakeShared()
     bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_stq_glsl, sizeof(fs_stq_glsl)));
     g_stqProgram = bgfx::createProgram(vs, fs, true);
     g_stqSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
+    g_decalAlpha = bgfx::createUniform("u_decalAlpha", bgfx::UniformType::Vec4);
 }
 
 u32 HashBytes(u32 hash, const void* bytes, size_t size)
@@ -520,6 +522,9 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
     // and filter it bilinearly (the retail's screen copy writes Bilinear into the GS's TEX1)
     bgfx::setTexture(0, g_stqSampler, texture,
                      BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP | BGFX_SAMPLER_MIP_POINT);
+    // The hexagons are not decals: the shared program's alpha test stays off for them
+    const float noAlphaTest[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    bgfx::setUniform(g_decalAlpha, noAlphaTest);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostDistortionView, g_stqProgram);
 }

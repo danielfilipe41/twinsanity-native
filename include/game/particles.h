@@ -588,6 +588,10 @@ extern "C"
     // runtimes' blocks, their particles made, their timing and the blocks' events, then the draw lists 0 and 2 drawn. The particle
     // time starts again at 0 when nothing ran or drew
     void UpdateAndDrawParticles(s32 frozen, f32 delta) RETAIL_N32(UpdateAndDrawParticles);
+#ifndef __mips__
+    // An extra display frame's particles drawn where the step's own frame left them (nothing ages or emits)
+    void HostDrawParticlesOnly();
+#endif
     // The generators by genSort and the velocity rules by genCode
     extern const ParticleGenerator g_ParticleGenerators[] RETAIL(ParticleGeneratorTable);
     extern const ParticleVelocityRule g_ParticleVelocityRules[] RETAIL(ParticleGenCodeTable);

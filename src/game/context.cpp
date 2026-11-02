@@ -241,7 +241,12 @@ void GameContextPrototype::Render(bool playingMovie)
             if (g_RendererRestartDue)
             {
                 Platform::Graphics::WaitIdle();
+#ifndef __mips__
+                // The host's frame memory is the step boundary's (Platform::Graphics::BeginLogicFrame): letting it go here
+                // would take away what this step's own frame drew with, and the display frames after it redraw exactly that
+#else
                 Platform::Graphics::ResetBuckets(false);
+#endif
                 renderer->FinishScene(0);
                 renderer->Render();
                 g_RendererRestartDue = false;

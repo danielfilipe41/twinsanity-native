@@ -1,6 +1,8 @@
 // 3D draw submits: rigid models, skins and blend skins through the mesh_builder's parses, cached
 // by packet handle, drawn with the instance's matrix and lights as uniforms. The game's matrices are row-vector
 // (multiply from the left), bgfx's column-major, so the model-to-clip product is transposed on upload.
+#include <cstdlib>
+
 #include "draws_host.h"
 
 #include "host_graphics.h"
@@ -537,7 +539,18 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     bgfx::setUniform(g_ambient, &ambient, 1);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
     bgfx::setUniform(g_materialColour, g_drawColour, 1);
-    bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
+    // The uniform's w is the brighten flag, not AFAIL (which only the host reads, for the rejected samples' second
+    // pass): a brighten draw's fragment shader must write its alpha as its colour for DST_COLOR, ONE to multiply the
+    // background by 1 + As
+    if (alphaRef != nullptr)
+    {
+        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
+        bgfx::setUniform(g_alpha, alpha, 1);
+    }
+    else
+    {
+        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+    }
     bgfx::submit(view, bgfx::isValid(program) ? program : g_rigidProgram);
     g_counters.rigidDraws++;
     return true;
@@ -676,7 +689,15 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     bgfx::setUniform(g_blendWeights, blendUniforms, 4);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
     bgfx::setUniform(g_materialColour, g_drawColour, 1);
-    bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
+    if (alphaRef != nullptr)
+    {
+        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
+        bgfx::setUniform(g_alpha, alpha, 1);
+    }
+    else
+    {
+        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+    }
     bgfx::submit(view, g_skinProgram);
     g_counters.skinDraws++;
     return true;
@@ -751,7 +772,15 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::setUniform(g_ambient, &ambient, 1);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
     bgfx::setUniform(g_materialColour, g_drawColour, 1);
-    bgfx::setUniform(g_alpha, alphaRef != nullptr ? alphaRef : g_noAlphaTest, 1);
+    if (alphaRef != nullptr)
+    {
+        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
+        bgfx::setUniform(g_alpha, alpha, 1);
+    }
+    else
+    {
+        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+    }
     bgfx::submit(view, g_rigidProgram);
     return true;
 }

@@ -6,6 +6,7 @@
 #include "game/controllers.h"
 #include "game/font.h"
 #include "game/instances.h"
+#include "game/interpolation.h"
 #include "game/lights.h"
 #include "game/math.h"
 #include "game/memory.h"
@@ -539,6 +540,21 @@ extern "C" void DrawRendererScene(Renderer* renderer)
             s32 fov = lens->fov;
             f32 aspect = g_WidescreenTv != 0 ? WideAspect : NarrowAspect;
             Platform::Graphics::SetViewFrustum(lens->nearPlane, lens->farPlane, aspect, &fov);
+#ifndef __mips__
+            // A display frame between two steps draws through the camera eased between its last sample and where it stands
+            // now (the place itself is not touched: the game keeps stepping its own state)
+            ObjectPlace easedPlace;
+            Matrix4x4 easedCamera;
+            if (HostFrame::InterpolateCameraMatrix(camera, &place->matrix, &easedCamera))
+            {
+                easedPlace = *place;
+                easedPlace.matrix = easedCamera;
+                place = &easedPlace;
+                InvertMatrix(&easedCamera, 4, toCamera);
+                const Vector4 forward = {0.0f, 0.0f, 1.0f, 0.0f};
+                VuRotateVector(&easedCamera, &forward, &renderer->view->forward);
+            }
+#endif
             renderer->view->MakeMatrices(renderer->target);
             chunk->drawMatrix = identity;
             if (sky != nullptr)

@@ -3,6 +3,7 @@
 #include "draws_host.h"
 #include "host_graphics.h"
 #include "mesh_builder.h"
+#include "../settings.h"
 #include "game/controllers.h"
 #include "game/animation.h"
 #include "game/graphicstables.h"
@@ -383,6 +384,67 @@ u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShade
     return static_cast<u32>(textureId);
 }
 
+// A material's later shaders' own alpha test, beside the material (its storage is a fixed 0x70 bytes with no room):
+// the GS writes ATST and AREF from the shader being drawn, so pass k's test is not the first shader's
+static constexpr u32 MaterialPassAlphaSlots = 512;
+struct MaterialPassAlpha { const void* material; u8 method[Platform::Graphics::HostMaterialPasses - 1];
+                           u8 reference[Platform::Graphics::HostMaterialPasses - 1]; };
+static MaterialPassAlpha g_materialPassAlpha[MaterialPassAlphaSlots];
+static u32 g_materialPassAlphaCount;
+
+static MaterialPassAlpha* MaterialPassAlphaSlot(const void* material, bool create)
+{
+    for (u32 i = 0; i < g_materialPassAlphaCount; i++)
+    {
+        if (g_materialPassAlpha[i].material == material)
+        {
+            return &g_materialPassAlpha[i];
+        }
+    }
+
+    if (!create || g_materialPassAlphaCount >= MaterialPassAlphaSlots)
+    {
+        return nullptr;
+    }
+
+    MaterialPassAlpha* slot = &g_materialPassAlpha[g_materialPassAlphaCount++];
+    std::memset(slot, 0, sizeof(*slot));
+    slot->material = material;
+    return slot;
+}
+
+static void MaterialPassAlphaStore(const void* material, u32 pass, u8 method, u8 reference)
+{
+    if (material == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
+    {
+        return;
+    }
+
+    MaterialPassAlpha* slot = MaterialPassAlphaSlot(material, true);
+    if (slot != nullptr)
+    {
+        slot->method[pass] = method;
+        slot->reference[pass] = reference;
+    }
+}
+
+static void MaterialPassAlphaOf(const void* material, u32 pass, u8* method, u8* reference)
+{
+    *method = 0;
+    *reference = 0;
+    if (material == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
+    {
+        return;
+    }
+
+    const MaterialPassAlpha* slot = MaterialPassAlphaSlot(material, false);
+    if (slot != nullptr)
+    {
+        *method = slot->method[pass];
+        *reference = slot->reference[pass];
+    }
+}
+
 // A material's shaders read past (shaderclasses.cpp's ReadMaterialShaders): the programs' key, the bucket, the name and each
 // shader's type and bytes. Returns the first shader's texture ID, with *textured saying whether it samples one,
 // *settings holding its 30 setting bytes and *animation its animation (both when they aren't nullptr; only the first
@@ -547,9 +609,10 @@ s32 g_hostFrameRate = 50;
 void Platform::Graphics::WaitVSync()
 {
     // Retail's frame IS the vblank: the PS2 build waits for one here (ps2/graphics.cpp's sceGsSyncV) and the game's
-    // per-frame work is written for that step. The host renders as fast as the GPU allows, so wait the field's turn out
-    // here, at the rate StartRenderer chose, then move the game's clock one exact step. A field that overruns starts the
-    // next one from now instead of being paid back in a burst (retail drops the time too: its timer keeps running)
+    // per-frame work is written for that step. The host's picture has its own rate instead (settings.txt's `render`), so
+    // this waits the picture's turn out, and nothing else: the game's clock moves on its own step (main.cpp takes it when
+    // Platform::Time::LogicStepDue, the wall clock's 50 a second, says it is owed). A frame that overruns starts the next
+    // one from now instead of being paid back in a burst (retail drops the time too: its timer keeps running)
     constexpr long long NanosecondsPerSecond = 1000000000ll;
     const long long step = NanosecondsPerSecond / (g_hostFrameRate > 0 ? g_hostFrameRate : 60);
     static std::chrono::steady_clock::time_point next;
@@ -581,8 +644,8 @@ void Platform::Graphics::WaitVSync()
     }
 
     // The picture's boundary only. The game's clock has its own step (main.cpp takes it when Platform::Time::LogicStepDue
-    // says the game is owed one), so presenting faster than the game runs repeats the last picture instead of speeding
-    // the game up
+    // says the game is owed one), so presenting faster than the game runs draws the frames between its steps without
+    // stepping it, and presenting slower cannot make it run faster
 }
 
 bool Platform::Graphics::IsPalDisplay()
@@ -613,11 +676,22 @@ void Platform::Graphics::StartRenderer(s32 height, bool pal)
     // pickups' spin, the walk cycle's step - came round 1.2x as often as on the console. The picture keeps its PAL
     // offsets and tiling either way, so only the rate follows the region
     g_palDisplay = pal;
-    // The game's logic runs at the disc's field rate (50 on this PAL disc), and the picture is presented at the monitor's
-    // (60 by default). They are separate on purpose: the logic must not follow the display, or the game runs 1.2x fast
-    // on a 60 Hz monitor, which is what a flat 60 did to every per-frame count the game has
-    const s32 displayRate = 60;
+    // The game's logic runs at the disc's field rate (50 on this PAL disc), and the picture is presented at the player's
+    // chosen rate (settings.txt's `render`, 50 when it has none). They are separate on purpose: the logic must not follow
+    // the display, or the game runs 1.2x fast on a 60 Hz monitor, which is what a flat 60 did to every per-frame count the
+    // game has. Below the field rate the loop could not owe a step every display frame, so the rate is raised to it (the
+    // picture would otherwise starve the fixed step); a sanity ceiling keeps a typo from spinning the loop
+    constexpr s32 MaxRenderRate = 1000;
     const s32 logicRate = pal ? 50 : 60;
+    s32 displayRate = HostSettingsRenderRate();
+    if (displayRate < logicRate)
+    {
+        displayRate = logicRate;
+    }
+    else if (MaxRenderRate < displayRate)
+    {
+        displayRate = MaxRenderRate;
+    }
 
     Platform::Time::SetRates(logicRate, displayRate);
     g_hostFrameRate = Platform::Time::DisplayRate();
@@ -907,7 +981,15 @@ void Platform::Graphics::ResetBuckets(bool movie)
 void Platform::Graphics::SubmitBuckets(bool fromInterrupt)
 {
     (void)fromInterrupt;
-    // The frame is drawn: its memory starts over for the next
+    // The frame is drawn, but its memory is not let go here: the display frames between two game steps redraw the same
+    // step's state, and what the step's own frame made in frame memory (the instances' joint matrices above all) has to
+    // outlive the present for them to draw it again. BeginLogicFrame starts the memory over at the step after
+}
+
+void Platform::Graphics::BeginLogicFrame()
+{
+    // A game step's own frame begins: everything the one before it allocated is done with (its display frames have all
+    // presented by now), so the frame's memory starts over here rather than under the first present
     ResetFrameMemory();
 }
 
@@ -1225,6 +1307,11 @@ static Platform::Graphics::HostMaterialState LaterPassStateOf(const Platform::Gr
     copy.shaderSettings[Platform::Graphics::HostShaderSettingDepthTest] = material->passDepth[pass];
     copy.shaderSettings[Platform::Graphics::HostShaderSettingNoDepthWrites] = (material->passFlags[pass] & 1) != 0 ? 1 : 0;
     copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaTest] = (material->passFlags[pass] & 2) != 0 ? 1 : 0;
+    u8 method = 0;
+    u8 reference = 0;
+    MaterialPassAlphaOf(material, pass, &method, &reference);
+    copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaMethod] = method;
+    copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaReference] = reference;
     return HostMaterialStateOf(&copy, baseState, true);
 }
 
@@ -1257,7 +1344,7 @@ void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matr
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
         HostSetDrawScroll(subModelMaterial);
         const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-                // The shadow-caster mark (draws_host.cpp's MarkedForCaster): an OGI's rigid parts are the character too, so
+        // The shadow-caster mark (draws_host.cpp's MarkedForCaster): an OGI's rigid parts are the character too, so
         // their draws leave the frame's alpha at bit 7 = 0 and the shadow volumes skip them. It keeps an opaque part's
         // RGB factors intact -- forcing only the alpha half left them at enum 0, which bgfx/drivers draw black
         const bgfx::ViewId view = ViewOf(subModelMaterial);
@@ -1755,6 +1842,12 @@ void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream
             hostMaterial->passFlags[pass - 1] =
                 static_cast<u8>((passSettings[Platform::Graphics::HostShaderSettingNoDepthWrites] != 0 ? 1 : 0) |
                                 (passSettings[Platform::Graphics::HostShaderSettingAlphaTest] != 0 ? 2 : 0));
+            // Each later shader's own alpha test: the GS writes ATST and AREF from the shader being drawn, so a
+            // pass's test uses its own method and reference rather than the cleared block's NEVER at zero. The game's
+            // material storage has no room for them, so they sit beside it (MaterialPassAlphaOf)
+            MaterialPassAlphaStore(hostMaterial, pass - 1,
+                                   passSettings[Platform::Graphics::HostShaderSettingAlphaMethod],
+                                   passSettings[Platform::Graphics::HostShaderSettingAlphaReference]);
         }
     }
     std::memcpy(hostMaterial->scrollPhases, scroll.phases, sizeof(scroll.phases));
@@ -1874,6 +1967,17 @@ RigidModel* Platform::Graphics::NewRigidModel(u32 id)
 
 void Platform::Graphics::DeleteRigidModel(RigidModel* model)
 {
+    // The references its read took go with it (the PS2's RigidModelDestroy): its submodels' materials and the model it
+    // names. Without them the game's tables never let an entry go, so the copy a level file installed stayed alive for
+    // the whole session -- and the level files reuse IDs with different contents (the Earth hub's and AltEarth's
+    // c975f2a2 have different submodels), so a later file's copy was never read and the earlier one was drawn instead
+    auto* host = reinterpret_cast<HostRigidModel*>(model);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMaterial(host->materials[index]);
+    }
+    ReleaseModel(reinterpret_cast<RigidModelData*>(host->model));
+    std::free(host->materials);
     std::free(model);
 }
 
@@ -1923,6 +2027,17 @@ Skin* Platform::Graphics::NewSkin(u32 id)
 
 void Platform::Graphics::DeleteSkin(Skin* skin)
 {
+    // Its submodels' materials released (the PS2's SkinDestroy), else the material table keeps every skin's materials
+    // alive for the session and a level file's later definition of one is never read
+    auto* host = reinterpret_cast<HostSkin*>(skin);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMaterial(host->materials[index]);
+    }
+    std::free(host->materials);
+    std::free(host->vertexCounts);
+    std::free(host->sizes);
+    std::free(const_cast<u8**>(host->packets));
     std::free(skin);
 }
 
@@ -1973,6 +2088,33 @@ BlendSkin* Platform::Graphics::NewBlendSkin(u32 id)
 
 void Platform::Graphics::DeleteBlendSkin(BlendSkin* skin)
 {
+    auto* host = reinterpret_cast<HostBlendSkin*>(skin);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMaterial(host->materials[index]);
+    }
+    std::free(host->materials);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        auto* subModel = host->subModels[index];
+        if (subModel != nullptr)
+        {
+            for (u32 part = 0; part < subModel->count; part++)
+            {
+                auto* blendPart = subModel->parts[part];
+                if (blendPart != nullptr)
+                {
+                    std::free(blendPart->shapeAddresses);
+                    std::free(blendPart->shapeSizes);
+                    std::free(blendPart->shapeCounts);
+                    std::free(blendPart);
+                }
+            }
+            std::free(subModel->parts);
+            std::free(subModel);
+        }
+    }
+    std::free(host->subModels);
     std::free(skin);
 }
 
@@ -2060,6 +2202,14 @@ RigidModel* Platform::Graphics::NewMesh(u32 id)
 
 void Platform::Graphics::DeleteMesh(RigidModel* mesh)
 {
+    // A mesh is a rigid model (the PS2's MeshDestroy is RigidModelDestroy): its references go the same way
+    auto* host = reinterpret_cast<HostRigidModel*>(mesh);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMaterial(host->materials[index]);
+    }
+    ReleaseModel(reinterpret_cast<RigidModelData*>(host->model));
+    std::free(host->materials);
     std::free(mesh);
 }
 
@@ -2078,6 +2228,13 @@ Lod* Platform::Graphics::NewLod(u32 id)
 
 void Platform::Graphics::DeleteLod(Lod* lod)
 {
+    // Its meshes released (the PS2's LodDestroy): a LOD kept its meshes' table entries alive for the session otherwise
+    auto* host = reinterpret_cast<HostLod*>(lod);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMesh(reinterpret_cast<RigidModel*>(host->meshes[index]));
+    }
+    std::free(host->meshes);
     std::free(lod);
 }
 
@@ -2156,6 +2313,13 @@ Sky* Platform::Graphics::NewSky(u32 id)
 
 void Platform::Graphics::DeleteSky(Sky* sky)
 {
+    // Its meshes released (the PS2's SkyDestroy), for the same reason a LOD's are
+    auto* host = reinterpret_cast<HostSky*>(sky);
+    for (u32 index = 0; index < host->count; index++)
+    {
+        ReleaseMesh(reinterpret_cast<RigidModel*>(host->models[index]));
+    }
+    std::free(host->models);
     std::free(sky);
 }
 

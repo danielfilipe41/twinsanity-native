@@ -31,7 +31,6 @@ Known issues:
 - Sounds sometimes get stuck and keep repeating forever
 - After dying sometimes music doesnt start playing again
 - The wrong music plays after a death on Slip Slide Icecapades
-- Sometimes characters get stuck on an animation (i dont know if this is retail behaviour tho)
 
 ## Getting the game
 
@@ -136,6 +135,19 @@ card.
 The game's options are written to `settings.txt` next to the saves. Each line is one option:
 `group <n> <left> <right>` for the four volume groups (0 effects, 1 second effects, 2 music,
 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's own save wins where they overlap.
+
+`render <n>` is the picture's rate, the frames the port presents a second. The game's logic always
+steps at the disc's field rate (50 a second on this PAL disc), whatever this says, and the display
+frames between two steps draw the state eased between them, so the picture moves at this rate
+without the game itself running faster. It is 50 (one present per step) when the file has none, and
+is raised to 50 if set lower. Above 50 the extra frames cost CPU in proportion (the scene is drawn
+again for each), so a rate the machine cannot hold presents what it can and leaves the game's step
+alone. Two consequences of easing: the picture runs one step (20 ms) behind the logic, and the
+parts that step in one go (particles, decals' ageing, material shader animation) still move at 50.
+
+```sh
+echo 'render 120' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
+```
 
 A crash writes `crash.log` in the working directory and to stderr: the signal, registers, and the
 faulting frame with the frames below it.

@@ -219,6 +219,11 @@ extern "C"
 
     GameContext* CreateGameContext(u32 argumentCount, char** arguments);
     GameContext* ParseArguments(u32 argc, char** argv);
+#ifndef __mips__
+    // An extra display frame (between two of the game's steps): its state drawn eased by the share of a step gone, the
+    // scene finished with its effects, and the frame presented. Nothing is stepped, aged or queued
+    void HostRedrawFrame(f32 alpha);
+#endif
     // Whether the argument starts with the option
     bool ContextIsOption(GameContext* context, const char* argument, const char* option) RETAIL(StringEqualToRB);
     // "OPTION=value": the value, in upper case

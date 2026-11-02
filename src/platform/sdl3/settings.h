@@ -4,7 +4,12 @@
 // the game puts its defaults) and written back as they change.
 #pragma once
 
+#include "common.h"
+
 // The sound processor's first reset: put the file's options into the game, if there is a file
 void HostSettingsApplyOnce();
 // Once a second, from the mixer: write the file when the options have changed
 void HostSettingsKeep();
+// The picture's rate: how often the host presents a frame (the game's logic stays at the disc's field rate). Read from the
+// file's `render` line before the renderer starts; 50, the field rate, when the file has none
+s32 HostSettingsRenderRate();
