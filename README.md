@@ -16,7 +16,7 @@ real. Nothing from the game is included in the repository. You need your own cop
 
 ## Status
 
-The Linux port is the current focus. Currently doing a full 100% playthrough to see if its working normally
+Currently finishing up the Linux port, the entire game is considered playable and 100% of the gems can be collected
 
 Known issues:
 - Pop-in is noticeable; a distance setting is planned.
