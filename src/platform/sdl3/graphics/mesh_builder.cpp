@@ -183,6 +183,8 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
     std::vector<Strip> strips;
     u32 stripStart = 0;
     u32 stripVertices = 0;
+    // Where the strip's latest position row begins, within the strip: its attribute rows index from here
+    u32 rowBase = 0;
     bool havePositions = false;
     auto Fresh = []() {
         MeshVertex fresh{};
@@ -223,11 +225,21 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                 // fix the strip's start, the UV/colour and normal rows that follow index from it. Every row itself appends
                 // (never re-indexes an earlier row): the rows are the packet's own per-strip layout, as the reference decoder
                 // (desktop/graphics.cpp's DecodeSubModel) reads them
+                // A strip's positions may arrive in several address-3 rows (a wall's strip is split into rows by the
+                // tools); every row appends to the strip, and the attribute rows that follow it land on the vertexes
+                // that row appended, which is what the console's VU1 sees. Splitting the strip per row dropped every
+                // triangle that joined one row to the next: the level's walls lost triangles and kept showing what
+                // stood behind them
                 u32 base = 0;
                 if (address == 3)
                 {
-                    stripStart = static_cast<u32>(vertices.size());
-                    stripVertices = count;
+                    if (stripVertices == 0)
+                    {
+                        stripStart = static_cast<u32>(vertices.size());
+                    }
+
+                    rowBase = stripVertices;
+                    stripVertices += count;
                     havePositions = true;
                     base = static_cast<u32>(vertices.size());
                     vertices.resize(vertices.size() + count, Fresh());
@@ -236,12 +248,12 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
                 }
                 else
                 {
-                    if (!havePositions || stripStart + count > vertexCount)
+                    if (!havePositions || stripStart + stripVertices > vertexCount)
                     {
                         return false;
                     }
 
-                    base = stripStart;
+                    base = stripStart + rowBase;
                 }
 
                 if (count == 0 || base + count > vertexCount)
@@ -323,7 +335,9 @@ bool ParseRigidSubModel(const u8* packet, size_t packetSize, u32 vertexCount, Ps
             }
 
             havePositions = false;
+            stripStart = static_cast<u32>(vertices.size());
             stripVertices = 0;
+            rowBase = 0;
             pos += 2;  // the MSCAL and the programme's address
             continue;
         }

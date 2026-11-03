@@ -226,14 +226,15 @@ bool DecodePs2Texture(const Ps2TextureHeader* header, const u8* packet, size_t p
     out->height = height;
     out->rgba.assign(static_cast<size_t>(width) * height * 4, 0);
 
-    // The transferred image's words are the pixels themselves, in the order the GS holds them: the image is read back
-    // through the 32 bit swizzle at the texture's own buffer width, as the GS does, and not taken as the source order.
-    // Copying it straight across left every 32 bit texture's texels in their swizzled places -- scrambled colours and,
-    // of what is tested here, scrambled alpha, so an alpha-tested surface kept losing patches of itself
+    // The transferred image's words are the pixels themselves, in the order the source file holds them: the upload's
+    // destination width matches the texture's own buffer width, so writing them to GS memory and reading the texture
+    // back through the 32 bit swizzle cancels out. Unswizzling them again here scrambled the wall's rock and lava
+    // (a 256 wide image its buffer width is four blocks wide for) into a grid of the wrong texels
     if (format == FormatPsmct32)
     {
-        ReadPsmct32(out->rgba.data(), 0, static_cast<s32>(header->levelWidths[0]), static_cast<s32>(width),
-                    static_cast<s32>(height), gifData, static_cast<s32>(gifBytes / 4));
+        const size_t bytes = static_cast<size_t>(width) * height * 4;
+        const size_t copy = gifBytes < bytes ? gifBytes : bytes;
+        std::memcpy(out->rgba.data(), gifData, copy);
         const u32 pixels = width * height;
         for (u32 pixel = 0; pixel < pixels; pixel++)
         {

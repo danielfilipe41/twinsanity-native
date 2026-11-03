@@ -336,11 +336,12 @@ u64 DepthState(u8 method)
     case 1:
         return BGFX_STATE_DEPTH_TEST_ALWAYS;
     case 2:
-        // GEQUAL counts an equal depth, so its mirror does too: LESS would drop the case a face drawn onto an existing
-        // surface (a decal, a second layer, an overlay) needs
-        return BGFX_STATE_DEPTH_TEST_LEQUAL;
-    case 3:
+        // The GS's own numbering (TEST.ZTST: 0 never, 1 always, 2 less, 3 lequal), which the game's settings byte 8
+        // carries verbatim: LESS rejects a fragment at equal depth, so a surface drawn onto a coplanar one loses to it
+        // deterministically instead of fighting it per pixel
         return BGFX_STATE_DEPTH_TEST_LESS;
+    case 3:
+        return BGFX_STATE_DEPTH_TEST_LEQUAL;
     case 4:
         return BGFX_STATE_DEPTH_TEST_EQUAL;
     case 5:
