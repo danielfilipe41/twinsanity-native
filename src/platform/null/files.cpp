@@ -24,6 +24,9 @@ struct HostFile
 std::mutex g_TableMutex;
 std::vector<std::unique_ptr<HostFile>> g_Files;
 
+// The disc's folder when the game wasn't started in it (Platform::GameData::Locate), empty for the working directory
+std::string g_Root;
+
 std::string HostPath(const char* path)
 {
     std::string converted(path != nullptr ? path : "");
@@ -33,6 +36,14 @@ std::string HostPath(const char* path)
         {
             letter = '/';
         }
+    }
+
+    // A relative path is one of the disc's own: resolved against the root when there is one. An absolute path (a leading
+    // slash, or a drive letter) is the host's own and is left alone
+    const bool absolute = !converted.empty() && (converted[0] == '/' || (converted.size() > 1 && converted[1] == ':'));
+    if (!absolute && !g_Root.empty())
+    {
+        return g_Root + "/" + converted;
     }
     return converted;
 }
@@ -152,6 +163,24 @@ HostFile* HandleAt(s32 file)
     }
     return g_Files[file].get();
 }
+}
+
+void Platform::Files::SetRoot(const char* path)
+{
+    g_Root.clear();
+    if (path == nullptr)
+    {
+        return;
+    }
+    // Held with the slashes the rest of this file splits on (the case-insensitive fallback walks the components)
+    for (const char* letter = path; *letter != '\0'; letter++)
+    {
+        g_Root += *letter == '\\' ? '/' : *letter;
+    }
+    while (g_Root.size() > 1 && g_Root.back() == '/')
+    {
+        g_Root.pop_back();
+    }
 }
 
 void Platform::Files::Reset()

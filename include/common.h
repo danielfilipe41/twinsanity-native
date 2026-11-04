@@ -41,8 +41,18 @@ consteval f32 Rounded(double value)
 constexpr u32 ShiftMask = 0x1F;
 
 // A function or variable by the name the retail executable's symbols give it (the asm's and the Ghidra project's): a function
-// defined with it takes the retail one's place, a variable declared with it is the retail data the split keeps
+// defined with it takes the retail one's place, a variable declared with it is the retail data the split keeps.
+//
+// On 32-bit MinGW a C++ member function takes `this` in ECX and pops its own arguments, where every function the retail ABI
+// has takes all of its arguments on the stack. The retail vtables hold plain functions and member functions alike, and the
+// code calls them through one cast (CallVirtual), so on this target they all have to be the one convention: cdecl. The
+// attribute is a no-op on the data declarations (it only applies to function types, hence -Wno-attributes there), which is
+// what a retail function's argument passing is on every other host already.
+#if defined(__GNUC__) && defined(_WIN32) && !defined(__x86_64__)
+#define RETAIL(name) asm(#name) __attribute__((cdecl))
+#else
 #define RETAIL(name) asm(#name)
+#endif
 
 // A value the compiler mustn't fold into what follows (1 / sqrt(x) fused into one RSQRT.S rounds unlike the retail SQRT.S and
 // DIV.S): the register class is the machine's float one

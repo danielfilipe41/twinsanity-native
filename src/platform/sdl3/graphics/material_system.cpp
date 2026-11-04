@@ -6,8 +6,10 @@
 
 #include <cstring>
 
-#include "shaders/fs_draw2d.bin.h"
-#include "shaders/vs_draw2d.bin.h"
+#include "host_shaders.h"
+
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
 namespace
 {
@@ -32,8 +34,8 @@ void MakeShared()
         return;
     }
     g_made = true;
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_draw2d_glsl, sizeof(vs_draw2d_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_draw2d_glsl, sizeof(fs_draw2d_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::Draw2DVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::Draw2DFragment);
     g_program = bgfx::createProgram(vs, fs, true);
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     // The fragment shader's alpha test (the material's ATST and AREF): the draws set it before every one, but it is

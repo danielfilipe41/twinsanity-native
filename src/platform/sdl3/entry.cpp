@@ -3,6 +3,8 @@
 #include "common.h"
 #include "graphics/bgfx_context.h"
 
+#include "platform/gamedata.h"
+
 #include <SDL3/SDL.h>
 
 #include <cstdio>
@@ -25,6 +27,14 @@ int main(int argc, char** argv)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
     {
         std::fprintf(stderr, "sdl3: SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // The disc's files: the working directory's, or the folder the player picks (and the run keeps for next time). Before the
+    // window, because there is nothing to show without them
+    if (!Platform::GameData::Locate())
+    {
+        SDL_Quit();
         return 1;
     }
 

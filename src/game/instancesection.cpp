@@ -306,13 +306,65 @@ void DestroyKindReader(InstanceKindReader* reader, u32 destroyFlags)
     }
 }
 
+// Each kind's registration as a plain function taking the layout, so AddElement can be handed one. A pointer to member isn't
+// usable: on 32-bit MinGW every call through one passes `this` in ECX, while the retail functions take it as the stack's first
+// argument (CallVirtual's convention, which RETAIL puts them on), so the pointer would hand the layout back wrong.
+namespace
+{
+void RegisterTemplate(LayoutInstances* layout, u32 index, u32 count, InstanceTemplate* instanceTemplate)
+{
+    layout->RegisterTemplate(index, count, instanceTemplate);
+}
+
+void RegisterObjectInstance(LayoutInstances* layout, u32 index, u32 count, ObjectInstance* instance)
+{
+    layout->RegisterObjectInstance(index, count, instance);
+}
+
+void RegisterAiPosition(LayoutInstances* layout, u32 index, u32 count, AiPosition* position)
+{
+    layout->RegisterAiPosition(index, count, position);
+}
+
+void RegisterAiPath(LayoutInstances* layout, u32 index, u32 count, AiPath* path)
+{
+    layout->RegisterAiPath(index, count, path);
+}
+
+void RegisterPosition(LayoutInstances* layout, u32 index, u32 count, LayoutPosition* position)
+{
+    layout->RegisterPosition(index, count, position);
+}
+
+void RegisterPath(LayoutInstances* layout, u32 index, u32 count, LayoutPath* path)
+{
+    layout->RegisterPath(index, count, path);
+}
+
+void RegisterTrigger(LayoutInstances* layout, u32 index, u32 count, MessageTrigger* trigger)
+{
+    layout->RegisterTrigger(index, count, trigger);
+}
+
+void RegisterCamera(LayoutInstances* layout, u32 index, u32 count, CameraTrigger* camera)
+{
+    layout->RegisterCamera(index, count, camera);
+}
+
+void RegisterSurface(LayoutInstances* layout, u32 index, u32 count, CollisionSurface* surface)
+{
+    layout->RegisterSurface(index, count, surface);
+}
+}
+
 // The element read registered with the layout (its index the count of the kind's list so far) and added to the list, which is
 // made with room for 10 when there's none
 template <typename Element>
-void AddElement(InstanceKindReader* reader, Element* element, void (LayoutInstances::*registerElement)(u32, u32, Element*))
+void AddElement(InstanceKindReader* reader, Element* element,
+                void (*registerElement)(LayoutInstances*, u32, u32, Element*))
 {
     PointerArray<void>* list = *reader->list;
-    (reader->layout->*registerElement)(list != nullptr ? list->count : 0, reader->count, element);
+    registerElement(reader->layout, list != nullptr ? list->count : 0, reader->count, element);
     if (*reader->list == nullptr)
     {
         auto* array = static_cast<PointerArray<void>*>(MemoryAllocate(sizeof(PointerArray<void>)));
@@ -804,7 +856,7 @@ void LoadInstanceTemplate(InstanceKindReader* reader, u8* data, u32 size, Reader
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     auto* instanceTemplate = static_cast<InstanceTemplate*>(MemoryAllocate(sizeof(InstanceTemplate)));
     instanceTemplate = InstanceTemplate::Construct(instanceTemplate, &stream);
-    AddElement(reader, instanceTemplate, &LayoutInstances::RegisterTemplate);
+    AddElement(reader, instanceTemplate, &RegisterTemplate);
     stream.Destroy(DestroyOnly);
 }
 
@@ -813,7 +865,7 @@ void LoadInstance(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     MemoryStream stream;
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     ObjectInstance* instance = ObjectInstance::Construct(static_cast<ObjectInstance*>(MemoryAllocate(sizeof(ObjectInstance))), &stream);
-    AddElement(reader, instance, &LayoutInstances::RegisterObjectInstance);
+    AddElement(reader, instance, &RegisterObjectInstance);
     stream.Destroy(DestroyOnly);
 }
 
@@ -823,7 +875,7 @@ void LoadAiPosition(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     auto* position = static_cast<AiPosition*>(MemoryAllocate(sizeof(AiPosition)));
     position->Read(&stream);
-    AddElement(reader, position, &LayoutInstances::RegisterAiPosition);
+    AddElement(reader, position, &RegisterAiPosition);
     stream.Destroy(DestroyOnly);
 }
 
@@ -833,7 +885,7 @@ void LoadAiPath(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     auto* path = static_cast<AiPath*>(MemoryAllocate(sizeof(AiPath)));
     path->Read(&stream);
-    AddElement(reader, path, &LayoutInstances::RegisterAiPath);
+    AddElement(reader, path, &RegisterAiPath);
     stream.Destroy(DestroyOnly);
 }
 
@@ -843,7 +895,7 @@ void LoadPosition(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     MemoryStream::Construct(&stream, data, size, 0, ElementAlignment);
     auto* position = static_cast<LayoutPosition*>(MemoryAllocate(sizeof(LayoutPosition)));
     position->Read(&stream);
-    AddElement(reader, position, &LayoutInstances::RegisterPosition);
+    AddElement(reader, position, &RegisterPosition);
     stream.Destroy(DestroyOnly);
 }
 
@@ -856,7 +908,7 @@ void LoadPath(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     path->vtable = g_LayoutPathVTable;
     path->points = nullptr;
     path->Read(&stream);
-    AddElement(reader, path, &LayoutInstances::RegisterPath);
+    AddElement(reader, path, &RegisterPath);
     stream.Destroy(DestroyOnly);
 }
 
@@ -868,7 +920,7 @@ void LoadTrigger(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     LayoutTrigger::Construct(trigger);
     trigger->vtable = g_MessageTriggerVTable;
     trigger->Read(&stream);
-    AddElement(reader, trigger, &LayoutInstances::RegisterTrigger);
+    AddElement(reader, trigger, &RegisterTrigger);
     stream.Destroy(DestroyOnly);
 }
 
@@ -880,7 +932,7 @@ void LoadCamera(InstanceKindReader* reader, u8* data, u32 size, ReaderStack*)
     LayoutTrigger::Construct(camera);
     camera->vtable = g_CameraTriggerVTable;
     camera->Read(&stream);
-    AddElement(reader, camera, &LayoutInstances::RegisterCamera);
+    AddElement(reader, camera, &RegisterCamera);
     stream.Destroy(DestroyOnly);
 }
 
@@ -892,7 +944,7 @@ void LoadCollisionSurface(InstanceKindReader* reader, u8* data, u32 size, Reader
     ConstructResourceHeader(surface);
     ContactMessage::Construct(&surface->contact);
     surface->Read(&stream);
-    AddElement(reader, surface, &LayoutInstances::RegisterSurface);
+    AddElement(reader, surface, &RegisterSurface);
     stream.Destroy(DestroyOnly);
 }
 

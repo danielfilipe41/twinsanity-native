@@ -1,7 +1,7 @@
 // Bgfx context: initializes bgfx on an SDL3 window's native handle, clears and presents
 // frames. SDL3 retired SDL_GetWindowWMInfo; the native handles come from SDL_GetWindowProperties instead:
 // X11's display + window (what bgfx's EGL backend wants as ndt/nwh) or Wayland's display + surface (bgfx wraps
-// the surface in a wl_egl_window itself when platformData.type is Wayland).
+// the surface in a wl_egl_window itself when platformData.type is Wayland), and on Windows the HWND alone.
 #include "bgfx_context.h"
 
 #include "common.h"
@@ -9,6 +9,8 @@
 #include <bgfx/bgfx.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace
 {
@@ -22,6 +24,97 @@ constexpr std::uint32_t DebugClearColor = 0xff00ffff;
 // The swap chain BgfxInit requests: 960x540, entry.cpp's window size
 constexpr std::uint16_t SwapWidth = BgfxWindowWidth;
 constexpr std::uint16_t SwapHeight = BgfxWindowHeight;
+
+// The renderers each platform has, so a build carries only its own (and tools/build_shaders.py's platform backends hold
+// the shader side of the same sets):
+//   Linux    opengl (the default), vulkan
+//   Windows  opengl (the default), vulkan, direct3d11, direct3d12
+//   Android  opengles (its GL, the default), vulkan
+//   macOS    metal (no blobs yet)
+//   web      webgpu, webgl/opengles (no blobs yet)
+// A named renderer is tried alone, so a driver that cannot take it fails here instead of quietly rendering on another
+// backend; "auto" leaves the choice (and the fallback when it fails) to bgfx. A renderer this build has no shader blobs
+// for is refused with a word rather than started and failing at its first draw (HostCreateShader)
+bgfx::RendererType::Enum RendererFromEnvironment(bool* fallback)
+{
+    *fallback = false;
+    const char* requested = std::getenv("TWINSANITY_RENDERER");
+#if defined(__EMSCRIPTEN__)
+    // The web's GL is WebGL (bgfx's GL ES renderer), and its other renderer is WebGPU
+    if (requested == nullptr || *requested == '\0' || std::strcmp(requested, "opengl") == 0 ||
+        std::strcmp(requested, "webgl") == 0 || std::strcmp(requested, "opengles") == 0 ||
+        std::strcmp(requested, "gles") == 0)
+    {
+        return bgfx::RendererType::OpenGLES;
+    }
+    if (std::strcmp(requested, "webgpu") == 0)
+    {
+        return bgfx::RendererType::WebGPU;
+    }
+#elif defined(__ANDROID__)
+    // Android's GL is GL ES: ES has no desktop GLSL, so the default here is the ES renderer
+    if (requested == nullptr || *requested == '\0' || std::strcmp(requested, "opengl") == 0 ||
+        std::strcmp(requested, "opengles") == 0 || std::strcmp(requested, "gles") == 0)
+    {
+        return bgfx::RendererType::OpenGLES;
+    }
+#else
+    if (requested == nullptr || *requested == '\0' || std::strcmp(requested, "opengl") == 0)
+    {
+        return bgfx::RendererType::OpenGL;
+    }
+    if (std::strcmp(requested, "opengles") == 0 || std::strcmp(requested, "gles") == 0)
+    {
+        std::fprintf(stderr, "bgfx: TWINSANITY_RENDERER=%s is Android's renderer; this build's GL is desktop OpenGL\n",
+                     requested);
+        return bgfx::RendererType::OpenGL;
+    }
+#endif
+#if !defined(__EMSCRIPTEN__)
+    // Vulkan is every native platform's second renderer (the web has none)
+    if (std::strcmp(requested, "vulkan") == 0)
+    {
+        return bgfx::RendererType::Vulkan;
+    }
+#endif
+#if defined(TWINSANITY_HAVE_DXBC)
+    // Windows' two Direct3D renderers (both take the DXBC blobs host_shaders.cpp carries)
+    if (std::strcmp(requested, "direct3d11") == 0)
+    {
+        return bgfx::RendererType::Direct3D11;
+    }
+    if (std::strcmp(requested, "direct3d12") == 0)
+    {
+        return bgfx::RendererType::Direct3D12;
+    }
+#else
+    // No DXBC blobs in this build: naming a Direct3D renderer says so here instead of starting one whose first draw fails
+    if (std::strcmp(requested, "direct3d11") == 0 || std::strcmp(requested, "direct3d12") == 0)
+    {
+        std::fprintf(stderr,
+                     "bgfx: TWINSANITY_RENDERER=%s needs the Direct3D shader blobs, which this build has none of (see "
+                     "docs/BUILD_WINDOWS.md); using OpenGL\n",
+                     requested);
+        return bgfx::RendererType::OpenGL;
+    }
+#endif
+#if defined(__APPLE__)
+    // Same for Metal: bgfx would build the renderer, but no MSL blobs are generated yet
+    if (std::strcmp(requested, "metal") == 0)
+    {
+        std::fprintf(stderr, "bgfx: TWINSANITY_RENDERER=metal has no shader blobs in this build yet\n");
+        return bgfx::RendererType::OpenGL;
+    }
+#endif
+    if (std::strcmp(requested, "auto") == 0)
+    {
+        *fallback = true;
+        return bgfx::RendererType::Count;
+    }
+
+    std::fprintf(stderr, "bgfx: TWINSANITY_RENDERER=%s is not a renderer name, using OpenGL\n", requested);
+    return bgfx::RendererType::OpenGL;
+}
 
 bool g_initialized = false;
 
@@ -69,12 +162,24 @@ bool BgfxInit(SDL_Window* window)
     }
 
     bgfx::Init init;
-    init.type = bgfx::RendererType::OpenGL;
+    bool fallback = false;
+    init.type = RendererFromEnvironment(&fallback);
     init.reset = BGFX_RESET_NONE;
-    init.fallback = false;
+    init.fallback = fallback;
     init.swapChain.width = SwapWidth;
     init.swapChain.height = SwapHeight;
 
+#if defined(_WIN32)
+    // Windows' backends (WGL, Direct3D, Vulkan) take the window as its HWND, with no display handle beside it
+    void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    if (hwnd == nullptr)
+    {
+        std::fprintf(stderr, "bgfx: window has no Win32 HWND: %s\n", SDL_GetError());
+        return false;
+    }
+    init.platformData.type = bgfx::NativeWindowHandleType::Default;
+    init.swapChain.nwh = hwnd;
+#else
     void* xDisplay = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
     std::int64_t xWindow = SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
     void* wlDisplay = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
@@ -96,6 +201,7 @@ bool BgfxInit(SDL_Window* window)
         std::fprintf(stderr, "bgfx: window has neither X11 nor Wayland native handles\n");
         return false;
     }
+#endif
 
     if (!bgfx::init(init))
     {
@@ -103,6 +209,12 @@ bool BgfxInit(SDL_Window* window)
         return false;
     }
 
+    // The backend actually running (TWINSANITY_RENDERER may have been unset or "auto"), so a log says which one drew,
+    // with the clip-space conventions the host's shaders and render-target sampling have to follow
+    const bgfx::Caps* caps = bgfx::getCaps();
+    std::fprintf(stderr, "bgfx: renderer %s (NDC depth [%d, 1], origin %s left)\n",
+                 bgfx::getRendererName(bgfx::getRendererType()), caps->homogeneousDepth ? -1 : 0,
+                 caps->originBottomLeft ? "bottom" : "top");
     bgfx::reset(BGFX_RESET_NONE);
     bgfx::setDebug(BGFX_DEBUG_TEXT);
     bgfx::setViewClear(ClearView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, DebugClearColor);

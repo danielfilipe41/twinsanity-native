@@ -9,10 +9,10 @@
 
 #include "game/effects.h"
 
-#include "shaders/fs_scenefog.bin.h"
-#include "shaders/fs_screenfx.bin.h"
-#include "shaders/vs_scenefog.bin.h"
-#include "shaders/vs_screenfx.bin.h"
+#include "host_shaders.h"
+
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
 extern "C"
 {
@@ -53,8 +53,8 @@ void MakeFogShared()
         return;
     }
     g_fogMade = true;
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_scenefog_glsl, sizeof(vs_scenefog_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_scenefog_glsl, sizeof(fs_scenefog_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::SceneFogVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::SceneFogFragment);
     g_fogProgram = bgfx::createProgram(vs, fs, true);
     g_fogDepthSampler = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
     g_fogPaletteSampler = bgfx::createUniform("s_palette", bgfx::UniformType::Sampler);
@@ -129,8 +129,8 @@ void MakeShared()
         return;
     }
     g_made = true;
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_screenfx_glsl, sizeof(vs_screenfx_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_screenfx_glsl, sizeof(fs_screenfx_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::ScreenFxVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::ScreenFxFragment);
     g_program = bgfx::createProgram(vs, fs, true);
     g_depthSampler = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
     g_paletteSampler = bgfx::createUniform("s_palette", bgfx::UniformType::Sampler);
@@ -258,6 +258,9 @@ void ScreenFxDrawFilter()
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
     bgfx::setTexture(0, g_depthSampler, g_depth);
     bgfx::setTexture(1, g_paletteSampler, g_palette);
+    // Its own output is a render target like the ones the other fullscreen passes read (HostRenderTargetVSign)
+    const f32 uvSign[4] = {Platform::Graphics::HostRenderTargetVSign(), 0.0f, 0.0f, 0.0f};
+    bgfx::setUniform(Platform::Graphics::HostRenderTargetVSignUniform(), uvSign);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostScreenFxView, g_program);
 }
@@ -352,6 +355,10 @@ void DrawSceneFog()
     bgfx::setTexture(1, g_fogPaletteSampler, g_fogPalette);
     const f32 fogMode[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     bgfx::setUniform(g_fogUniform, fogMode);
+    // The depth it samples is a render target and its destination is another, so its V follows the backend's row order
+    // (HostRenderTargetVSign)
+    const f32 uvSign[4] = {Platform::Graphics::HostRenderTargetVSign(), 0.0f, 0.0f, 0.0f};
+    bgfx::setUniform(Platform::Graphics::HostRenderTargetVSignUniform(), uvSign);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostSceneFogView, g_fogProgram);
 }

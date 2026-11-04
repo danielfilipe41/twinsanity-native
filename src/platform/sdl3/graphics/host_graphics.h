@@ -10,11 +10,60 @@
 
 #include <bgfx/bgfx.h>
 
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 #include <vector>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace Platform::Graphics
 {
+// The host's resource memory: the resources the tables make and the arrays inside them. It is 16-byte aligned because these
+// structs hold Matrix4x4s and the compiler copies those with SSE's aligned moves; the i386 CRT's malloc and calloc hand back
+// 8-byte aligned memory where the POSIX hosts' give 16, so the alignment is asked for there and freed the matching way.
+// Every allocation goes through Allocate/AllocateZeroed and every free through Free, whichever file made it.
+namespace HostMemory
+{
+inline constexpr std::size_t Alignment = 16;
+
+inline void* Allocate(std::size_t bytes)
+{
+    const std::size_t size = bytes != 0 ? bytes : 1;
+#if defined(_WIN32)
+    return ::_aligned_malloc(size, Alignment);
+#else
+    return std::malloc(size);
+#endif
+}
+
+inline void* AllocateZeroed(std::size_t count, std::size_t size)
+{
+#if defined(_WIN32)
+    const std::size_t bytes = (count != 0 ? count : 1) * size;
+    void* memory = ::_aligned_malloc(bytes != 0 ? bytes : 1, Alignment);
+    if (memory != nullptr)
+    {
+        std::memset(memory, 0, bytes != 0 ? bytes : 1);
+    }
+    return memory;
+#else
+    return std::calloc(count != 0 ? count : 1, size);
+#endif
+}
+
+inline void Free(void* memory)
+{
+#if defined(_WIN32)
+    ::_aligned_free(memory);
+#else
+    std::free(memory);
+#endif
+}
+}
+
 // How many of a shader's setting bytes the host keeps (the file's base shader: the reading's 30 fields, the same
 // bytes shaderclasses.cpp's ReadShader reads into ShaderSettings)
 constexpr u32 HostShaderSettings = 30;
@@ -517,6 +566,48 @@ inline void HostMapToClip(f32 fractionX, f32 fractionY, f32* clipX, f32* clipY)
     *clipX = fractionX * 2.0f - 1.0f;
     *clipY = 1.0f - fractionY * 2.0f;
 }
+
+// Whether the renderer can copy one depth texture into another (bgfx's BGFX_TEXTURE_BLIT_DST on a depth texture).
+// Vulkan's vkCmdBlitImage refuses depth/stencil formats, so its shadow coverage target keeps only its own attachment
+// depth and skips the frame-depth copy, which is the path a frame without a scene depth already used
+inline bool HostDepthBlitSupported()
+{
+    return bgfx::getRendererType() != bgfx::RendererType::Vulkan;
+}
+
+// Whether the renderer's clip space has +Y downwards (Vulkan, WebGPU, Metal, Direct3D) rather than OpenGL's +Y
+// upwards. The host's clip-space geometry is written OpenGL's way (the game's PS2 matrices are y-up), which is why the
+// pass that lands on the backbuffer mirrors its y there. bgfx itself only applies this convention to the projection it
+// builds in its own examples (Caps::originBottomLeft and Caps::homogeneousDepth are inputs to mtxProj): a shader that
+// writes gl_Position from the application's own matrix gets whatever that matrix says, unchanged
+inline bool HostClipSpaceYDown()
+{
+    switch (bgfx::getRendererType())
+    {
+    case bgfx::RendererType::Vulkan:
+    case bgfx::RendererType::WebGPU:
+    case bgfx::RendererType::Metal:
+    case bgfx::RendererType::Direct3D11:
+    case bgfx::RendererType::Direct3D12:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// The V of a fullscreen pass's clip-space-derived UVs when the pass reads one render target and writes another. A y-down
+// backend stores a target's rows the other way round (its clip space puts +Y at the bottom of the memory image), while a
+// texture fetch always reads row v of the image, so such a pass has to mirror V to line its source up with its
+// destination. It is the same fact that makes the composite mirror its geometry instead: there the destination is the
+// backbuffer, whose rows are the ones that are flipped
+inline f32 HostRenderTargetVSign()
+{
+    return HostClipSpaceYDown() ? -1.0f : 1.0f;
+}
+
+// The uniform such a pass mirrors its V with (a program declares it as vec4 u_rtVSign and the host sets x to
+// HostRenderTargetVSign): one handle by the uniform's name, made on first use and shared by every program that declares it
+bgfx::UniformHandle HostRenderTargetVSignUniform();
 
 // The sky's half-size buffer (sky.cpp): DrawChunkSky draws the chunk's sky into it (bgfx view 0, the Sky bucket)
 // and copies it over the screen (view 1). HostSkySetCopyTarget redirects the copy (the headless proof reads its

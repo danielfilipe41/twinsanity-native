@@ -20,6 +20,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +29,9 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 namespace
 {
@@ -109,7 +113,7 @@ constexpr u32 SkyResourceSize = 0x50;
 // A resource made with its ID: zeroed memory with the tables' header (no references, the ID)
 void* MakeResource(u32 id, u32 size)
 {
-    void* memory = std::calloc(1, size);
+    void* memory = Platform::Graphics::HostMemory::AllocateZeroed(1, size);
     static_cast<u32*>(memory)[1] = id;
     return memory;
 }
@@ -130,7 +134,7 @@ void* AllocResourceBytes(u32 size)
         return nullptr;
     }
 
-    return std::malloc(size);
+    return Platform::Graphics::HostMemory::Allocate(size);
 }
 
 // Past a size a signed Skip takes as one step
@@ -207,7 +211,7 @@ void ReleaseFreedTexture(GameTexture* texture)
 
         g_freedTextures.erase(g_freedTextures.begin() + static_cast<long>(at));
         Platform::Graphics::HostTextures().InvalidateTransfer(texture);
-        std::free(texture);
+        Platform::Graphics::HostMemory::Free(texture);
         return;
     }
 
@@ -243,8 +247,8 @@ void ReleaseOldestFreedMaterial()
 
     // Nothing can draw through the material's bytes any more, so its later passes' alpha test goes with it
     MaterialPassAlphaRemove(freed.host);
-    std::free(freed.host);
-    std::free(freed.resource);
+    Platform::Graphics::HostMemory::Free(freed.host);
+    Platform::Graphics::HostMemory::Free(freed.resource);
 }
 // The PS2 resources' bytes the null platform reads past instead of uploading (src/platform/ps2/renderer/resources.cpp): a
 // texture's data is its size, the GS's header, 0x20 bytes of the tools' memory and its image
@@ -1739,11 +1743,11 @@ ScreenModel* Platform::Graphics::EndScreenModel()
         return nullptr;
     }
 
-    auto* model = static_cast<HostScreenModel*>(std::calloc(1, sizeof(HostScreenModel)));
+    auto* model = static_cast<HostScreenModel*>(Platform::Graphics::HostMemory::AllocateZeroed(1, sizeof(HostScreenModel)));
     model->material = g_screenModelMaterial;
     model->count = static_cast<u32>(g_screenModelVertices.size());
     model->packetSize = model->count * sizeof(HostScreenModelVertex);
-    model->packet = static_cast<u8*>(std::malloc(model->packetSize));
+    model->packet = static_cast<u8*>(Platform::Graphics::HostMemory::Allocate(model->packetSize));
     std::memcpy(model->packet, g_screenModelVertices.data(), model->packetSize);
     g_screenModelVertices.clear();
     return reinterpret_cast<ScreenModel*>(model);
@@ -1755,8 +1759,8 @@ void Platform::Graphics::DeleteScreenModel(ScreenModel* model)
     auto* host = reinterpret_cast<HostScreenModel*>(model);
     if (host != nullptr)
     {
-        std::free(host->packet);
-        std::free(host);
+        Platform::Graphics::HostMemory::Free(host->packet);
+        Platform::Graphics::HostMemory::Free(host);
     }
 }
 
@@ -1797,7 +1801,7 @@ Material* Platform::Graphics::MakeSkidMaterial(bool subtracting)
     // their preset alone; the strip itself is drawn with the shared 3D program, whose ambient-only lighting and white
     // texture reduce it to the vertexes' colours
     constexpr u8 SkidDepthTest = 2; // the GS's ZTST gequal: ShaderConstruct's default, which the skid material keeps
-    auto* material = static_cast<Material*>(std::calloc(1, MaterialStorage));
+    auto* material = static_cast<Material*>(Platform::Graphics::HostMemory::AllocateZeroed(1, MaterialStorage));
     ConstructMaterial(material);
     auto* host = reinterpret_cast<HostMaterial*>(material);
     host->program = HostDraw3DProgram().idx;
@@ -1961,7 +1965,7 @@ void Platform::Graphics::DeleteTexture(GameTexture* texture)
             GameTexture* released = g_freedTextures[victim];
             g_freedTextures.erase(g_freedTextures.begin() + static_cast<long>(victim));
             HostTextures().InvalidateTransfer(released);
-            std::free(released);
+            Platform::Graphics::HostMemory::Free(released);
         }
 
         return;
@@ -1969,7 +1973,7 @@ void Platform::Graphics::DeleteTexture(GameTexture* texture)
 
     // The uploads the resource owns go with it
     HostTextures().InvalidateTransfer(texture);
-    std::free(texture);
+    Platform::Graphics::HostMemory::Free(texture);
 }
 
 void Platform::Graphics::ReadTexture(GameTexture* texture, Stream* stream)
@@ -2060,7 +2064,7 @@ void Platform::Graphics::DeleteMaterial(MaterialResource* material)
 
 void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream)
 {
-    auto* host = static_cast<Material*>(std::calloc(1, MaterialStorage));
+    auto* host = static_cast<Material*>(Platform::Graphics::HostMemory::AllocateZeroed(1, MaterialStorage));
     material->material = host;
 
     // The first shader's settings (its blending, alpha test and depth test) and its texture, when it samples one,
@@ -2172,15 +2176,15 @@ void Platform::Graphics::DeleteModel(RigidModelData* model)
         for (u32 index = 0; index < data->subModelCount; index++)
         {
             HostRetireDrawPacket(data->packets[index]);
-            std::free(const_cast<u8*>(data->packets[index]));
+            Platform::Graphics::HostMemory::Free(const_cast<u8*>(data->packets[index]));
         }
     }
 
-    std::free(data->vertexCounts);
-    std::free(data->sizes);
-    std::free(data->extraSizes);
-    std::free(const_cast<u8**>(data->packets));
-    std::free(model);
+    Platform::Graphics::HostMemory::Free(data->vertexCounts);
+    Platform::Graphics::HostMemory::Free(data->sizes);
+    Platform::Graphics::HostMemory::Free(data->extraSizes);
+    Platform::Graphics::HostMemory::Free(const_cast<u8**>(data->packets));
+    Platform::Graphics::HostMemory::Free(model);
 }
 
 void Platform::Graphics::ReadModel(RigidModelData* model, Stream* stream)
@@ -2199,10 +2203,10 @@ void Platform::Graphics::ReadModel(RigidModelData* model, Stream* stream)
     data->subModelCount = stored;
     if (stored != 0)
     {
-        data->vertexCounts = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
-        data->sizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
-        data->extraSizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
-        data->packets = static_cast<const u8**>(std::calloc(stored, sizeof(u8*)));
+        data->vertexCounts = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u32)));
+        data->sizes = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u32)));
+        data->extraSizes = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u32)));
+        data->packets = static_cast<const u8**>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u8*)));
         if (data->vertexCounts == nullptr || data->sizes == nullptr || data->extraSizes == nullptr ||
             data->packets == nullptr)
         {
@@ -2268,8 +2272,8 @@ void Platform::Graphics::DeleteRigidModel(RigidModel* model)
         ReleaseMaterial(host->materials[index]);
     }
     ReleaseModel(reinterpret_cast<RigidModelData*>(host->model));
-    std::free(host->materials);
-    std::free(model);
+    Platform::Graphics::HostMemory::Free(host->materials);
+    Platform::Graphics::HostMemory::Free(model);
 }
 
 namespace
@@ -2285,7 +2289,7 @@ void HostReadRigidModelData(Platform::Graphics::HostRigidModel* model, Stream* s
     if (model->count != 0)
     {
         model->materials =
-            static_cast<MaterialResource**>(std::calloc(model->count, sizeof(MaterialResource*)));
+            static_cast<MaterialResource**>(Platform::Graphics::HostMemory::AllocateZeroed(model->count, sizeof(MaterialResource*)));
     }
 
     for (u32 index = 0; index < model->count; index++)
@@ -2325,20 +2329,20 @@ void Platform::Graphics::DeleteSkin(Skin* skin)
     {
         ReleaseMaterial(host->materials[index]);
     }
-    std::free(host->materials);
+    Platform::Graphics::HostMemory::Free(host->materials);
     // Its submodels' bytes and the draw cache's uploads of them (DeleteModel's own reason)
     if (host->packets != nullptr)
     {
         for (u32 index = 0; index < host->count; index++)
         {
             HostRetireDrawPacket(host->packets[index]);
-            std::free(const_cast<u8*>(host->packets[index]));
+            Platform::Graphics::HostMemory::Free(const_cast<u8*>(host->packets[index]));
         }
     }
-    std::free(host->vertexCounts);
-    std::free(host->sizes);
-    std::free(const_cast<u8**>(host->packets));
-    std::free(skin);
+    Platform::Graphics::HostMemory::Free(host->vertexCounts);
+    Platform::Graphics::HostMemory::Free(host->sizes);
+    Platform::Graphics::HostMemory::Free(const_cast<u8**>(host->packets));
+    Platform::Graphics::HostMemory::Free(skin);
 }
 
 void Platform::Graphics::ReadSkin(Skin* skin, Stream* stream)
@@ -2354,10 +2358,10 @@ void Platform::Graphics::ReadSkin(Skin* skin, Stream* stream)
     host->count = stored;
     if (stored != 0)
     {
-        host->materials = static_cast<MaterialResource**>(std::calloc(stored, sizeof(MaterialResource*)));
-        host->vertexCounts = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
-        host->sizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
-        host->packets = static_cast<const u8**>(std::calloc(stored, sizeof(u8*)));
+        host->materials = static_cast<MaterialResource**>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(MaterialResource*)));
+        host->vertexCounts = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u32)));
+        host->sizes = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u32)));
+        host->packets = static_cast<const u8**>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(u8*)));
         if (host->materials == nullptr || host->vertexCounts == nullptr || host->sizes == nullptr ||
             host->packets == nullptr)
         {
@@ -2411,7 +2415,7 @@ void Platform::Graphics::DeleteBlendSkin(BlendSkin* skin)
     {
         ReleaseMaterial(host->materials[index]);
     }
-    std::free(host->materials);
+    Platform::Graphics::HostMemory::Free(host->materials);
     for (u32 index = 0; index < host->count; index++)
     {
         auto* subModel = host->subModels[index];
@@ -2425,26 +2429,26 @@ void Platform::Graphics::DeleteBlendSkin(BlendSkin* skin)
                     // Its packet and every shape's bytes were copied off the stream (ReadBlendSkin), so they go with
                     // the part. Only the table of shape addresses was freed before, which leaked the data they point at
                     HostRetireDrawPacket(blendPart->packet);
-                    std::free(const_cast<u8*>(blendPart->packet));
+                    Platform::Graphics::HostMemory::Free(const_cast<u8*>(blendPart->packet));
                     if (blendPart->shapeAddresses != nullptr)
                     {
                         for (u32 shape = 0; shape < blendPart->shapeCount; shape++)
                         {
-                            std::free(reinterpret_cast<u8*>(static_cast<size_t>(blendPart->shapeAddresses[shape])));
+                            Platform::Graphics::HostMemory::Free(reinterpret_cast<u8*>(static_cast<size_t>(blendPart->shapeAddresses[shape])));
                         }
                     }
-                    std::free(blendPart->shapeAddresses);
-                    std::free(blendPart->shapeSizes);
-                    std::free(blendPart->shapeCounts);
-                    std::free(blendPart);
+                    Platform::Graphics::HostMemory::Free(blendPart->shapeAddresses);
+                    Platform::Graphics::HostMemory::Free(blendPart->shapeSizes);
+                    Platform::Graphics::HostMemory::Free(blendPart->shapeCounts);
+                    Platform::Graphics::HostMemory::Free(blendPart);
                 }
             }
-            std::free(subModel->parts);
-            std::free(subModel);
+            Platform::Graphics::HostMemory::Free(subModel->parts);
+            Platform::Graphics::HostMemory::Free(subModel);
         }
     }
-    std::free(host->subModels);
-    std::free(skin);
+    Platform::Graphics::HostMemory::Free(host->subModels);
+    Platform::Graphics::HostMemory::Free(skin);
 }
 
 void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
@@ -2467,8 +2471,8 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
                                              : MaxResourceShapes);
     if (stored != 0)
     {
-        host->materials = static_cast<MaterialResource**>(std::calloc(stored, sizeof(MaterialResource*)));
-        host->subModels = static_cast<HostBlendSubModel**>(std::calloc(stored, sizeof(HostBlendSubModel*)));
+        host->materials = static_cast<MaterialResource**>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(MaterialResource*)));
+        host->subModels = static_cast<HostBlendSubModel**>(Platform::Graphics::HostMemory::AllocateZeroed(stored, sizeof(HostBlendSubModel*)));
         if (host->materials == nullptr || host->subModels == nullptr)
         {
             host->count = 0;
@@ -2478,7 +2482,7 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
     for (u32 index = 0; index < readCount; index++)
     {
         const bool keepModel = index < host->count;
-        auto* subModel = keepModel ? static_cast<HostBlendSubModel*>(std::calloc(1, sizeof(HostBlendSubModel)))
+        auto* subModel = keepModel ? static_cast<HostBlendSubModel*>(Platform::Graphics::HostMemory::AllocateZeroed(1, sizeof(HostBlendSubModel)))
                                    : nullptr;
         s32 partCount;
         stream->ReadS32(&partCount);
@@ -2492,7 +2496,7 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
             u32 key = static_cast<u32>(id);
             host->materials[index] = g_MaterialTable.Acquire(&key, nullptr);
             subModel->count = storedParts;
-            subModel->parts = static_cast<HostBlendPart**>(std::calloc(storedParts, sizeof(HostBlendPart*)));
+            subModel->parts = static_cast<HostBlendPart**>(Platform::Graphics::HostMemory::AllocateZeroed(storedParts, sizeof(HostBlendPart*)));
             if (subModel->parts == nullptr)
             {
                 subModel->count = 0;
@@ -2503,7 +2507,7 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
         for (u32 part = 0; part < readParts; part++)
         {
             const bool wanted = keepModel && part < subModel->count;
-            auto* blendPart = wanted ? static_cast<HostBlendPart*>(std::calloc(1, sizeof(HostBlendPart))) : nullptr;
+            auto* blendPart = wanted ? static_cast<HostBlendPart*>(Platform::Graphics::HostMemory::AllocateZeroed(1, sizeof(HostBlendPart))) : nullptr;
             // A part the allocator refused is read and skipped like one past the cap (the draw finds a null part)
             const bool keep = blendPart != nullptr;
             s32 packetSize;
@@ -2538,9 +2542,9 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
                 blendPart->shapeCount = shapes;
                 if (shapes != 0)
                 {
-                    blendPart->shapeAddresses = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
-                    blendPart->shapeSizes = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
-                    blendPart->shapeCounts = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
+                    blendPart->shapeAddresses = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(shapes, sizeof(u32)));
+                    blendPart->shapeSizes = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(shapes, sizeof(u32)));
+                    blendPart->shapeCounts = static_cast<u32*>(Platform::Graphics::HostMemory::AllocateZeroed(shapes, sizeof(u32)));
                     if (blendPart->shapeAddresses == nullptr || blendPart->shapeSizes == nullptr ||
                         blendPart->shapeCounts == nullptr)
                     {
@@ -2602,8 +2606,8 @@ void Platform::Graphics::DeleteMesh(RigidModel* mesh)
         ReleaseMaterial(host->materials[index]);
     }
     ReleaseModel(reinterpret_cast<RigidModelData*>(host->model));
-    std::free(host->materials);
-    std::free(mesh);
+    Platform::Graphics::HostMemory::Free(host->materials);
+    Platform::Graphics::HostMemory::Free(mesh);
 }
 
 void Platform::Graphics::ReadMesh(RigidModel* mesh, Stream* stream)
@@ -2627,8 +2631,8 @@ void Platform::Graphics::DeleteLod(Lod* lod)
     {
         ReleaseMesh(reinterpret_cast<RigidModel*>(host->meshes[index]));
     }
-    std::free(host->meshes);
-    std::free(lod);
+    Platform::Graphics::HostMemory::Free(host->meshes);
+    Platform::Graphics::HostMemory::Free(lod);
 }
 
 namespace
@@ -2661,7 +2665,7 @@ void Platform::Graphics::ReadLod(Lod* lod, Stream* stream)
         u32 count;
         stream->ReadU32(&count);
         host->count = static_cast<u8>(count);
-        host->meshes = static_cast<HostRigidModel**>(std::calloc(host->count, sizeof(HostRigidModel*)));
+        host->meshes = static_cast<HostRigidModel**>(Platform::Graphics::HostMemory::AllocateZeroed(host->count, sizeof(HostRigidModel*)));
         s32 nearest;
         stream->ReadS32(&nearest);
         s32 farthest;
@@ -2687,7 +2691,7 @@ void Platform::Graphics::ReadLod(Lod* lod, Stream* stream)
         s8 count;
         stream->ReadS8(&count);
         host->count = static_cast<u8>(count);
-        host->meshes = static_cast<HostRigidModel**>(std::calloc(host->count, sizeof(HostRigidModel*)));
+        host->meshes = static_cast<HostRigidModel**>(Platform::Graphics::HostMemory::AllocateZeroed(host->count, sizeof(HostRigidModel*)));
         s32 nearest;
         stream->ReadS32(&nearest);
         s32 farthest;
@@ -2712,8 +2716,8 @@ void Platform::Graphics::DeleteSky(Sky* sky)
     {
         ReleaseMesh(reinterpret_cast<RigidModel*>(host->models[index]));
     }
-    std::free(host->models);
-    std::free(sky);
+    Platform::Graphics::HostMemory::Free(host->models);
+    Platform::Graphics::HostMemory::Free(sky);
 }
 
 void Platform::Graphics::ReadSky(Sky* sky, Stream* stream)
@@ -2731,7 +2735,7 @@ void Platform::Graphics::ReadSky(Sky* sky, Stream* stream)
         return;
     }
 
-    host->models = static_cast<HostRigidModel**>(std::calloc(host->count, sizeof(HostRigidModel*)));
+    host->models = static_cast<HostRigidModel**>(Platform::Graphics::HostMemory::AllocateZeroed(host->count, sizeof(HostRigidModel*)));
     HostReadMeshes(host->models, host->count, stream);
 }
 

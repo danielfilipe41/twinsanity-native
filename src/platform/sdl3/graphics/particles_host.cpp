@@ -17,10 +17,10 @@
 #include "game/renderer.h"
 #include "game/view.h"
 
-#include "shaders/fs_particle.bin.h"
-#include "shaders/fs_stq.bin.h"
-#include "shaders/vs_particle.bin.h"
-#include "shaders/vs_stq.bin.h"
+#include "host_shaders.h"
+
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
 #include <cmath>
 #include <cstring>
@@ -131,14 +131,14 @@ void MakeShared()
         return;
     }
     g_made = true;
-    bgfx::ShaderHandle particleVs = bgfx::createShader(bgfx::makeRef(vs_particle_glsl, sizeof(vs_particle_glsl)));
-    bgfx::ShaderHandle particleFs = bgfx::createShader(bgfx::makeRef(fs_particle_glsl, sizeof(fs_particle_glsl)));
+    bgfx::ShaderHandle particleVs = HostCreateShader(HostShader::ParticleVertex);
+    bgfx::ShaderHandle particleFs = HostCreateShader(HostShader::ParticleFragment);
     g_particleProgram = bgfx::createProgram(particleVs, particleFs, true);
     g_particleSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_particleUniform = bgfx::createUniform("u_particle", bgfx::UniformType::Vec4);
     g_particleAlphaUniform = bgfx::createUniform("u_particleAlpha", bgfx::UniformType::Vec4);
-    bgfx::ShaderHandle stqVs = bgfx::createShader(bgfx::makeRef(vs_stq_glsl, sizeof(vs_stq_glsl)));
-    bgfx::ShaderHandle stqFs = bgfx::createShader(bgfx::makeRef(fs_stq_glsl, sizeof(fs_stq_glsl)));
+    bgfx::ShaderHandle stqVs = HostCreateShader(HostShader::StqVertex);
+    bgfx::ShaderHandle stqFs = HostCreateShader(HostShader::StqFragment);
     g_stqProgram = bgfx::createProgram(stqVs, stqFs, true);
     g_stqSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_decalAlpha = bgfx::createUniform("u_decalAlpha", bgfx::UniformType::Vec4);
@@ -638,7 +638,7 @@ void MakePageModeMaterials(ParticlePage* page)
     g_inPageMaterials = true;
     for (u32 mode = 0; mode < 4; mode++)
     {
-        auto* material = static_cast<Material*>(std::calloc(1, MaterialStorage));
+        auto* material = static_cast<Material*>(Platform::Graphics::HostMemory::AllocateZeroed(1, MaterialStorage));
         MakeParticleMaterial(material);
         auto* host = reinterpret_cast<HostMaterial*>(material);
         host->blend = modes[mode];

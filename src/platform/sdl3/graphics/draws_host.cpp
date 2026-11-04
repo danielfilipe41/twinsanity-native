@@ -20,14 +20,12 @@
 
 #include "game/math.h"
 
-#include "shaders/fs_draw3d.bin.h"
-#include "shaders/fs_shadowvolume.bin.h"
+#include "host_shaders.h"
 
-#include "shaders/fs_scenecomposite.bin.h"
-#include "shaders/vs_draw3d.bin.h"
-#include "shaders/vs_draw3dskin.bin.h"
-#include "shaders/vs_scenecomposite.bin.h"
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -169,14 +167,14 @@ void MakeShared()
     }
 
     g_made = true;
-    bgfx::ShaderHandle rigidVs = bgfx::createShader(bgfx::makeRef(vs_draw3d_glsl, sizeof(vs_draw3d_glsl)));
-    bgfx::ShaderHandle skinVs = bgfx::createShader(bgfx::makeRef(vs_draw3dskin_glsl, sizeof(vs_draw3dskin_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_draw3d_glsl, sizeof(fs_draw3d_glsl)));
+    bgfx::ShaderHandle rigidVs = HostCreateShader(HostShader::Draw3DVertex);
+    bgfx::ShaderHandle skinVs = HostCreateShader(HostShader::Draw3DSkinVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::Draw3DFragment);
     g_rigidProgram = bgfx::createProgram(rigidVs, fs, true);
-    bgfx::ShaderHandle volumeVs = bgfx::createShader(bgfx::makeRef(vs_draw3d_glsl, sizeof(vs_draw3d_glsl)));
-    bgfx::ShaderHandle volumeFs = bgfx::createShader(bgfx::makeRef(fs_shadowvolume_glsl, sizeof(fs_shadowvolume_glsl)));
+    bgfx::ShaderHandle volumeVs = HostCreateShader(HostShader::Draw3DVertex);
+    bgfx::ShaderHandle volumeFs = HostCreateShader(HostShader::ShadowVolumeFragment);
     g_shadowVolumeProgram = bgfx::createProgram(volumeVs, volumeFs, true);
-    bgfx::ShaderHandle skinFs = bgfx::createShader(bgfx::makeRef(fs_draw3d_glsl, sizeof(fs_draw3d_glsl)));
+    bgfx::ShaderHandle skinFs = HostCreateShader(HostShader::Draw3DFragment);
     g_skinProgram = bgfx::createProgram(skinVs, skinFs, true);
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_mvp = bgfx::createUniform("u_mvp", bgfx::UniformType::Mat4);
@@ -927,11 +925,30 @@ void EnsureSceneTarget()
                                           BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
                                               BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     // The scene's depth: the shadow pass samples it for the resolve's ramp (it is also the depth test the 3D passes
-    // rely on, which is why the scene has to be one target rather than the backbuffer)
-    g_sceneDepth = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1,
-                                         bgfx::TextureFormat::D24S8,
-                                         BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
-                                             BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    // rely on, which is why the scene has to be one target rather than the backbuffer). The format has to be one the
+    // renderer can both attach and sample, which D24S8 is not on every Vulkan driver (AMD's radv exposes it as
+    // attachment-only); D32F carries the same normalized depth and samples everywhere, so the first format the
+    // renderer accepts is taken
+    static constexpr bgfx::TextureFormat::Enum DepthFormats[] = {bgfx::TextureFormat::D24S8,
+                                                                 bgfx::TextureFormat::D32F,
+                                                                 bgfx::TextureFormat::D16};
+    constexpr u64 DepthFlags = BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
+                               BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+    for (bgfx::TextureFormat::Enum format : DepthFormats)
+    {
+        g_sceneDepth =
+            bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, format, DepthFlags);
+        if (bgfx::isValid(g_sceneDepth))
+        {
+            break;
+        }
+    }
+    if (!bgfx::isValid(g_sceneColour) || !bgfx::isValid(g_sceneDepth))
+    {
+        // Fail here rather than let createFrameBuffer walk an invalid handle
+        std::fprintf(stderr, "bgfx: no scene target format the renderer accepts\n");
+        return;
+    }
     bgfx::TextureHandle handles[2] = {g_sceneColour, g_sceneDepth};
     g_sceneTarget = bgfx::createFrameBuffer(2, handles, true);
     // The shadow resolve darkens the frame as it is drawn, and the frame is this target (the composite at the frame's end
@@ -953,8 +970,8 @@ void EnsureComposite()
     }
     // A program of its own: the 2D quad's program multiplies the sample by the vertex colour, and the composite's
     // alpha must be forced opaque, so it cannot share that one
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_scenecomposite_glsl, sizeof(vs_scenecomposite_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_scenecomposite_glsl, sizeof(fs_scenecomposite_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::SceneCompositeVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::SceneCompositeFragment);
     g_compositeProgram = bgfx::createProgram(vs, fs, true);
     g_compositeSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
 }
@@ -977,20 +994,40 @@ void EnsureCompositeTriangle(f32 offsetX, f32 offsetY)
         g_compositeTriangle = BGFX_INVALID_HANDLE;
     }
 
-    // A frame pixel is two clip units across (NDC runs -1 to 1 over the frame), and clip y grows up where the offset's
-    // y counts down the frame
+    // A frame pixel is two clip units across (NDC runs -1 to 1 over the frame). The composite is the only pass that
+    // lands on the backbuffer (every other pass draws into the scene target, whose v bgfx measures from the same edge on
+    // every backend), so it alone has to answer the backend's clip-space Y: Vulkan and the other Direct3D-style backends
+    // put -1 at the top where OpenGL puts +1, and mirroring the triangle's Y here is what shows the picture upright
+    // there. The UVs travel with their vertices, so they need no separate mirror. On OpenGL the triangle is exactly the
+    // one it was
+    const bool yDown = Platform::Graphics::HostClipSpaceYDown();
+    const f32 ySign = yDown ? -1.0f : 1.0f;
     const f32 clipX = 2.0f * offsetX / static_cast<f32>(BgfxWindowWidth);
-    const f32 clipY = -2.0f * offsetY / static_cast<f32>(BgfxWindowHeight);
+    // The offset counts down the frame, which is +Y in a y-down backend's clip space and -Y in OpenGL's
+    const f32 clipY = (yDown ? 2.0f : -2.0f) * offsetY / static_cast<f32>(BgfxWindowHeight);
     const CompositeVertex triangle[3] = {
-        {-1.0f + clipX, -1.0f + clipY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {3.0f + clipX, -1.0f + clipY, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {-1.0f + clipX, 3.0f + clipY, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {-1.0f + clipX, ySign * -1.0f + clipY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {3.0f + clipX, ySign * -1.0f + clipY, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {-1.0f + clipX, ySign * 3.0f + clipY, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
     };
     const bgfx::Memory* memory = bgfx::copy(triangle, sizeof(triangle));
     g_compositeTriangle = bgfx::createVertexBuffer(memory, CompositeLayout());
     g_compositeOffsetX = offsetX;
     g_compositeOffsetY = offsetY;
 }
+}
+
+// The V sign uniform of the fullscreen passes that read one render target while writing another (HostRenderTargetVSign):
+// a handle by the uniform's name, so one handle serves every program that declares u_rtVSign
+bgfx::UniformHandle HostRenderTargetVSignUniform()
+{
+    static bgfx::UniformHandle handle = BGFX_INVALID_HANDLE;
+    if (!bgfx::isValid(handle))
+    {
+        handle = bgfx::createUniform("u_rtVSign", bgfx::UniformType::Vec4);
+    }
+
+    return handle;
 }
 
 bgfx::FrameBufferHandle HostSceneTarget()

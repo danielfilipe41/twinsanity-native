@@ -1,13 +1,18 @@
-// Saves: the memory cards as directories of the host's file system under the SDL_GetPrefPath-
-// equivalent ($XDG_DATA_HOME/twinsanity, ~/.local/share/twinsanity when unset), one subdirectory per port and slot,
-// each save a directory named as on the card ("<region><product><save>") with the game's file names verbatim inside
-// (icon.sys among them). The host's I/O is synchronous, so an operation only queues and the next Update runs it.
+// Saves: the memory cards as directories of the host's file system under the platform's per-user data directory
+// (%LOCALAPPDATA%\twinsanity on Windows, $XDG_DATA_HOME/twinsanity with ~/.local/share/twinsanity when unset), one
+// subdirectory per port and slot, each save a directory named as on the card ("<region><product><save>") with the game's file
+// names verbatim inside (icon.sys among them). The host's I/O is synchronous, so an operation only queues and the next Update
+// runs it.
 #include "platform/saves.h"
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <sys/statvfs.h>
+#endif
 #include <unistd.h>
 
 #include <cerrno>
@@ -17,6 +22,15 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+
+#if defined(_WIN32)
+// The POSIX spellings this file uses, on the CRT: mkdir takes no mode, localtime_r is localtime_s and fsync is _commit
+#include <direct.h>
+#include <io.h>
+#define localtime_r(time, result) localtime_s(result, time)
+#define mkdir(path, mode) _mkdir(path)
+#define fsync(fd) _commit(fd)
+#endif
 
 namespace
 {
@@ -71,9 +85,27 @@ void Finish(s32 succeeded, s32 step, s32 error)
     g_Operation = Operation::None;
 }
 
-// The base directory all cards live under ($XDG_DATA_HOME/twinsanity, ~/.local/share/twinsanity without it)
+// The base directory all cards live under: %LOCALAPPDATA%\twinsanity on Windows, $XDG_DATA_HOME/twinsanity
+// (~/.local/share/twinsanity without it) elsewhere
 std::string BasePath()
 {
+#if defined(_WIN32)
+    const char* localAppData = ::getenv("LOCALAPPDATA");
+    if (localAppData != nullptr && localAppData[0] != '\0')
+    {
+        return std::string(localAppData) + "\\twinsanity";
+    }
+
+    // No profile (a service's environment): the temp directory, as the other side falls back to /tmp
+    char temp[MAX_PATH];
+    const DWORD length = ::GetTempPathA(sizeof(temp) - 1, temp);
+    if (length != 0 && length < sizeof(temp))
+    {
+        return std::string(temp, length) + "twinsanity";
+    }
+
+    return "twinsanity";
+#else
     const char* dataHome = ::getenv("XDG_DATA_HOME");
     if (dataHome != nullptr && dataHome[0] != '\0')
     {
@@ -87,6 +119,7 @@ std::string BasePath()
     }
 
     return "/tmp/twinsanity";
+#endif
 }
 
 std::string CardPath(s32 port, s32 slot)
@@ -154,13 +187,25 @@ bool MakeDirectories(const std::string& path)
 // The card's free space in kilobytes (the base's filesystem, the root's when nothing's there yet)
 s32 FreeKilobytes()
 {
+#if defined(_WIN32)
+    // The card's directory, or the current one when it isn't there yet (the other side's statvfs falls back to / the
+    // same way): a directory that doesn't exist has no free space to report, and a save can't be made with none
+    ULARGE_INTEGER freeBytes;
+    if (!GetDiskFreeSpaceExA(BasePath().c_str(), &freeBytes, nullptr, nullptr) &&
+        !GetDiskFreeSpaceExA(nullptr, &freeBytes, nullptr, nullptr))
+    {
+        return 0;
+    }
+    const u64 freeKilobytes = static_cast<u64>(freeBytes.QuadPart) >> ClusterShift;
+#else
     struct statvfs status;
     if (::statvfs(BasePath().c_str(), &status) != 0 && ::statvfs("/", &status) != 0)
     {
         return 0;
     }
-    u64 freeBytes = static_cast<u64>(status.f_bavail) * static_cast<u64>(status.f_frsize);
-    u64 freeKilobytes = freeBytes >> ClusterShift;
+    const u64 freeBytes = static_cast<u64>(status.f_bavail) * static_cast<u64>(status.f_frsize);
+    const u64 freeKilobytes = freeBytes >> ClusterShift;
+#endif
     return freeKilobytes > static_cast<u64>(0x7FFFFFFF) ? 0x7FFFFFFF : static_cast<s32>(freeKilobytes);
 }
 
@@ -200,12 +245,13 @@ void FillEntry(FileEntry* entry, const char* name, const struct stat& status)
     entry->name[length] = '\0';
 }
 
+// A card is a directory, and a directory is only made when there is something to put on it: the game formats both slots as
+// it looks for its memory card, and a folder per slot left behind by that is one the player has to tell apart from the one
+// holding their save. A formatted card with no saves is what a missing directory already says (MeasureSave reads it as no
+// save), so this has nothing to do.
 void FormatStep()
 {
-    std::string base = BasePath();
-    std::string card = CardPath(g_Context.port, g_Context.slot);
-    bool made = MakeDirectories(base) && MakeDirectory(base.c_str()) && MakeDirectory(card.c_str());
-    Finish(made ? 1 : 0, made ? 1 : 0, made ? 0 : errno);
+    Finish(1, 1, 0);
 }
 
 void CreateSaveStep()
@@ -449,6 +495,26 @@ bool Platform::Saves::Initialise(const char* region, const char* product)
     ::snprintf(g_Region, sizeof(g_Region), "%s", region);
     ::snprintf(g_Product, sizeof(g_Product), "%s", product);
     ForgetResults();
+    // The cards' directory is made here rather than on the first save: the storage is measured before any is made, and
+    // Windows reports a directory that isn't there yet as no space at all
+    const std::string base = BasePath();
+    MakeDirectories(base);
+    MakeDirectory(base.c_str());
+    // The empty cards a format used to leave behind are cleared out: rmdir only removes a directory with nothing in it, so a
+    // card with a save is never touched
+    if (DIR* directories = ::opendir(base.c_str()))
+    {
+        while (dirent* found = ::readdir(directories))
+        {
+            const char* name = found->d_name;
+            if (::strncmp(name, "card", 4) != 0 || ::strchr(name, '.') != nullptr)
+            {
+                continue;
+            }
+            ::rmdir((base + "/" + name).c_str());
+        }
+        ::closedir(directories);
+    }
     return true;
 }
 

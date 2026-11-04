@@ -7,6 +7,8 @@
 // Two PS2 steps are missing because a bgfx view cannot sample or copy the backbuffer: the frame's alpha and depth
 // are not shrunk into the target. Its depth starts at the near end, so only the volumes' own surfaces test
 // against it.
+#include <cstdio>
+
 #include "host_graphics.h"
 
 #include "game/resources.h"
@@ -15,8 +17,10 @@
 
 #include "draws_host.h"
 
-#include "shaders/fs_shadowresolve.bin.h"
-#include "shaders/vs_shadowresolve.bin.h"
+#include "host_shaders.h"
+
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
 namespace
 {
@@ -47,6 +51,8 @@ u32 g_lutEntries[Platform::Graphics::HostShadowLutEntries] = {};
 // The half-res target's size (remade when the screen's changes) and whether BeginShadows is open
 u32 g_halfWidth = 0;
 u32 g_halfHeight = 0;
+// Whether the coverage target's depth is also the frame-depth copy's destination (false: the volumes keep their own)
+bool g_halfDepthBlit = false;
 bool g_open = false;
 // Spare view clearing the coverage target's own depth for the depth-less path (the ramp falls back to it, so it must hold
 // this frame's clear, not last frame's). View 33: outside the retail buckets' 0..27 range, and OrderFrameViews runs it
@@ -107,8 +113,8 @@ void MakeShared()
                                   BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT |
                                       BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
                                   bgfx::copy(g_lutEntries, sizeof(g_lutEntries)));
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_shadowresolve_glsl, sizeof(vs_shadowresolve_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_shadowresolve_glsl, sizeof(fs_shadowresolve_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::ShadowResolveVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::ShadowResolveFragment);
     g_resolve = bgfx::createProgram(vs, fs, true);
     g_shadowSampler = bgfx::createUniform("s_shadow", bgfx::UniformType::Sampler);
     g_depthSampler = bgfx::createUniform("s_depth", bgfx::UniformType::Sampler);
@@ -172,15 +178,38 @@ void MakeHalf(u32 width, u32 height)
         bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, bgfx::TextureFormat::RGBA8,
                               BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     // BGFX_TEXTURE_BLIT_DST: the frame's depth is copied INTO this one (BeginShadows) rather than attached to a second
-    // framebuffer, which is the attachment that reads as a constant
-    bgfx::TextureHandle depth =
-        bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, bgfx::TextureFormat::D24S8,
-                              BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST | BGFX_SAMPLER_MIN_POINT |
-                                  BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    // framebuffer, which is the attachment that reads as a constant. Vulkan cannot make that copy (its blit takes no
+    // depth formats), so there the depth is an attachment only and the volumes keep their own. The format has to be one
+    // the renderer can attach: D24S8 is attachment-only on some Vulkan drivers (AMD's radv), so the first the renderer
+    // accepts is taken
+    const bool depthBlit = Platform::Graphics::HostDepthBlitSupported();
+    const u64 depthFlags = depthBlit
+        ? BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
+              BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP
+        : BGFX_TEXTURE_RT | BGFX_TEXTURE_RT_WRITE_ONLY;
+    static constexpr bgfx::TextureFormat::Enum DepthFormats[] = {bgfx::TextureFormat::D24S8,
+                                                                 bgfx::TextureFormat::D32F,
+                                                                 bgfx::TextureFormat::D16};
+    bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
+    for (bgfx::TextureFormat::Enum format : DepthFormats)
+    {
+        depth = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, format, depthFlags);
+        if (bgfx::isValid(depth))
+        {
+            break;
+        }
+    }
+    if (!bgfx::isValid(colour) || !bgfx::isValid(depth))
+    {
+        // Fail here rather than let createFrameBuffer walk an invalid handle
+        std::fprintf(stderr, "bgfx: no shadow coverage target the renderer accepts\n");
+        return;
+    }
     const bgfx::TextureHandle handles[2] = {colour, depth};
     g_half = bgfx::createFrameBuffer(2, handles, true);
     g_halfColour = colour;
     g_halfDepth = depth;
+    g_halfDepthBlit = depthBlit;
 }
 }
 
@@ -200,6 +229,10 @@ void BeginShadows()
     const u32 width = g_frameWidth != 0 ? g_frameWidth : BgfxWindowWidth;
     const u32 height = g_frameHeight != 0 ? g_frameHeight : BgfxWindowHeight;
     MakeHalf(width, height);
+    if (!bgfx::isValid(g_half))
+    {
+        return;
+    }
 
     // The frame's colour into the copy the resolve's gate samples: the frame the resolve darkens (the scene target in the
     // game, whatever a harness sets otherwise), copied because a pass cannot sample the colour it is drawing into
@@ -232,7 +265,7 @@ void BeginShadows()
     {
         sceneDepth = bgfx::getTexture(g_frame, 1);
     }
-    g_volumesOverSceneDepth = bgfx::isValid(sceneDepth) && bgfx::isValid(g_halfDepth);
+    g_volumesOverSceneDepth = g_halfDepthBlit && bgfx::isValid(sceneDepth) && bgfx::isValid(g_halfDepth);
     if (g_volumesOverSceneDepth)
     {
         bgfx::setViewRect(HostShadowVolumeDepthView, 0, 0, static_cast<u16>(g_halfWidth), static_cast<u16>(g_halfHeight));
@@ -320,6 +353,10 @@ void EndShadows()
     // black and the gate zeroes every shadow
     bgfx::setTexture(3, g_frameSampler, g_frameCopy);
     bgfx::setUniform(g_amount, g_amountValue);
+    // It reads the coverage target, the frame's depth and the frame's colour copy and writes the frame: render targets on
+    // both sides, so its V follows the backend's row order (HostRenderTargetVSign)
+    const f32 uvSign[4] = {Platform::Graphics::HostRenderTargetVSign(), 0.0f, 0.0f, 0.0f};
+    bgfx::setUniform(Platform::Graphics::HostRenderTargetVSignUniform(), uvSign);
 
     // The ramp indexes the LUT by distance, so it needs the game's near and far planes (view.cpp SetProjection:
     // m[2][2] = (f+n)/(f-n), m[3][2] = -2fn/(f-n)). Raw perspective depth packs the visible world into roughly

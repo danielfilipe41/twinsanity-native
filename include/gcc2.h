@@ -33,7 +33,8 @@ inline Result CallVirtual(const void* object, const GccVTableEntry* vtable, u32 
 #else
     // Elsewhere the entries are the C++ functions themselves, whose arguments are in their declaration's order:
     // going through CallEabi would reorder them (floats first) and shift `this` into the wrong slot, so a member
-    // taking one float would be handed (value, this) and read a null `this`
+    // taking one float would be handed (value, this) and read a null `this`. The entries are cdecl on every host
+    // (RETAIL() puts the member functions there on 32-bit MinGW, whose own member ABI is thiscall)
     return reinterpret_cast<Result (*)(void*, Args...)>(entry.function)(self, args...);
 #endif
 }

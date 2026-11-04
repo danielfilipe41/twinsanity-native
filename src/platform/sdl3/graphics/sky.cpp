@@ -188,15 +188,17 @@ void DrawSkyCopy(u32 width, u32 height)
     // The shader's fractions map to NDC 2f - 1, y flipped (HostMapToClip); the texture's top-left shows at the
     // screen's top-left (the PS2's sprite shows the buffer's corner at the frame's). bgfx's OpenGL render targets
     // are GL-oriented (BGFX_CONFIG_GL_NORMALIZE_NDC_CONVENTIONS off): NDC y = +1 is the texture's v = 1, so the
-    // copy reads v inverted, 1 - fraction
+    // copy reads v inverted, 1 - fraction. A y-down backend stores the half-size buffer's rows the other way round
+    // (HostRenderTargetVSign), so there the fraction is read as it is
+    const bool yDown = Platform::Graphics::HostClipSpaceYDown();
     const f32 corners[4][2] = {{0.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}};
     for (u32 vertex = 0; vertex < 4; vertex++)
     {
         f32 clipX = 0.0f;
         f32 clipY = 0.0f;
         Platform::Graphics::HostMapToClip(corners[vertex][0], corners[vertex][1], &clipX, &clipY);
-        at[vertex] = {clipX, clipY, 0.0f, corners[vertex][0], 1.0f - corners[vertex][1], 1.0f, 1.0f, 1.0f,
-                      1.0f};
+        const f32 v = yDown ? corners[vertex][1] : 1.0f - corners[vertex][1];
+        at[vertex] = {clipX, clipY, 0.0f, corners[vertex][0], v, 1.0f, 1.0f, 1.0f, 1.0f};
     }
     bgfx::setViewMode(HostSkyCopyView, bgfx::ViewMode::Sequential);
     // The copy lands on the scene target (the frame the 3D passes drew into); a proof sets its own target instead

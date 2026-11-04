@@ -20,14 +20,20 @@ Directive map: .word→.4byte, .half/.short→.2byte, .dword/.xword→.8byte,
 .byte/.float/.double/.ascii/.asciiz/.align/.space/.incbin unchanged. splat's
 dlabel/enddlabel/nonmatching macros expand to plain .globl/.type/label so no
 include/macro.inc is needed.
+
+--coff drops .type/.size, the ELF metadata COFF (the Windows build's objects)
+has no pseudo-ops for: .type there wants .def/.endef. Labels themselves stay
+verbatim, because every retail symbol is named through RETAIL()'s asm label.
 """
 import re
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "asm" / "data"
-OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "build" / "host" / "data"
+ARGS = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+COFF = "--coff" in sys.argv[1:]
+SRC = Path(ARGS[0]) if len(ARGS) > 0 else HERE / "asm" / "data"
+OUT = Path(ARGS[1]) if len(ARGS) > 1 else HERE / "build" / "host" / "data"
 
 DIRECTIVES = {
     ".word": ".4byte",
@@ -44,6 +50,7 @@ SHORT_CONSTANTS = {
     "D_1C0": "0x1C0",
 }
 SHORT_CONSTANT_RE = re.compile(r"\b(D_1000|D_1C0)\b")
+END_SYMBOL_RE = re.compile(r"\b_end\b")
 LOCAL_LABEL_RE = re.compile(r"^\.L[0-9A-Fa-f]+$")
 
 LABEL_MACRO = re.compile(r"^\s*(?:dlabel|glabel|jlabel|ehlabel|alabel)\s+(\S+)")
@@ -65,10 +72,18 @@ def convert_line(line):
     match = LABEL_MACRO.match(line)
     if match:
         name = match.group(1)
+        if COFF:
+            # .type/.size carry ELF metadata, which COFF has no pseudo-ops for (.type there wants .def/.endef). A C global
+            # declared without a RETAIL() asm label is spelled _name by the PE compiler, so the label also gets that alias;
+            # retail asm itself (RETAIL's asm label) names it verbatim.
+            alias = "" if name.startswith("_") else f"\n\t.globl _{name}\n\t.set _{name}, {name}"
+            return f"\t.globl {name}\n{name}:{alias}"
         return f"\t.globl {name}\n\t.type {name}, @object\n{name}:"
 
     match = END_MACRO.match(line)
     if match:
+        if COFF:
+            return None
         name = match.group(1)
         return f"\t.size {name}, . - {name}"
 
@@ -109,6 +124,10 @@ def convert_line(line):
         operands = [operand.strip() for operand in rest.split(",")]
         if all(LOCAL_LABEL_RE.match(operand) is not None for operand in operands):
             rest = ", ".join(["0"] * len(operands))
+        if COFF:
+            # _end is ELF's end-of-image marker and PE's linker keeps it in a .endjunk section it discards, so the retail
+            # data's pointer to it is zeroed (nothing on the host reads that word)
+            rest = END_SYMBOL_RE.sub("0", rest)
         return f"\t{DIRECTIVES[parts[0]]} {rest}".rstrip()
 
     return code
@@ -147,8 +166,9 @@ def convert_file(src, dst):
 
 
 def main():
-    if len(sys.argv) == 4 and sys.argv[1] == "--file":
-        convert_file(Path(sys.argv[2]), Path(sys.argv[3]))
+    if "--file" in sys.argv:
+        index = sys.argv.index("--file")
+        convert_file(Path(sys.argv[index + 1]), Path(sys.argv[index + 2]))
         return
 
     if not SRC.is_dir():

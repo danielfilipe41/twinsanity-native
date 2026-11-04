@@ -9,10 +9,15 @@ lists.
 PLATFORM (an environment variable, ps2 by default) picks the platform layer's side in src/platform/. Where the toolchain is comes
 from tools/local_config.py ($PS2DEV, local.json, else /usr/local/ps2dev or C:/ps2dev). The commands run the tools with the
 Python running this script, so the same works on Linux and Windows (where ninja runs commands without a shell).
+
+TARGET (an environment variable, windows on a Windows host and linux elsewhere) picks the host build's target: linux is the
+32-bit x86 build with the system's g++, windows the 32-bit MinGW build of the same sdl3 platform ($CXX crosses to it from
+Linux). PLATFORM=web writes the wasm32 (Emscripten) build.
 """
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,12 +46,17 @@ CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G
             ["-Iinclude", f"-I{PS2SDK}/ee/include", f"-I{PS2SDK}/common/include"])
 
 PLATFORM = os.environ.get("PLATFORM", "ps2")
+TARGET = os.environ.get("TARGET", "windows" if os.name == "nt" else "linux")
+WINDOWS = TARGET == "windows"
 
 # Host builds (PLATFORM=null/sdl3): 32-bit x86 keeps the retail 32-bit-pointer layouts, so CHECK_SIZE/OFFSET hold.
 # -malign-double matches the MIPS ABI's 8-byte doubles; SSE2 avoids x87 extended precision. No -mno-check-zero-division:
 # x86 idiv traps on zero by hardware (retail didn't); game code guards its divisors in practice. -no-pie: the retail data
 # holds absolute addresses (jump tables, baked pointers) that only make sense at a fixed load base
 HOST = PLATFORM in ("null", "sdl3")
+# The web: Emscripten, wasm32. It builds the same sdl3 platform layer (src/platform/sdl3 over the null stubs) and the game's
+# C++, and its renderers are WebGL (bgfx's GL ES) and WebGPU -- see tools/build_shaders.py's web backends
+WEB = PLATFORM == "web"
 HOST_CXXFLAGS = (["-m32", "-malign-double", "-msse2", "-mfpmath=sse", "-O2", "-g", "-std=gnu++26", "-fno-pie",
                   "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-asynchronous-unwind-tables",
                   "-fno-common", "-fno-strict-aliasing", "-ffunction-sections",
@@ -123,6 +133,187 @@ def bgfx_flags():
     libs = [f"-L{bgfx_lib.as_posix()}", "-lbgfxRelease", "-lbimgRelease", "-lbimg_decodeRelease", "-lbxRelease",
             "-lX11", "-lGL", "-lpthread", "-ldl", "-lrt"]
     return cflags, libs
+
+
+# wasm32 is 32-bit, so the retail pointer layouts hold, but there is no -m32 and no fixed load base: em++ makes a relocatable
+# module. -ffp-contract=off and -fno-delete-null-pointer-checks are the retail arithmetic's, as on the other hosts. SDL3
+# comes from the emsdk's port (-sUSE_SDL=3) rather than third_party/SDL: it carries the Emscripten backend
+WEB_CXXFLAGS = ["-O2", "-std=gnu++26", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-common",
+                "-fno-strict-aliasing", "-ffunction-sections", "-ffp-contract=off", "-fno-delete-null-pointer-checks",
+                "-Wall", "-Wno-invalid-offsetof", "-fno-omit-frame-pointer", "-Iinclude", "-Iinclude/host",
+                "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include",
+                "-sUSE_SDL=3"]
+
+
+def web_bgfx_flags():
+    """bgfx+bx+bimg for wasm32: bgfx's gmake-web project (genie --gcc=... then make in .build/projects/gmake-web) lands
+    its libraries in .build/wasm32-emscripten/bin, or wherever $BGFX_WEB_PREFIX says"""
+    prefix = Path(os.environ.get("BGFX_WEB_PREFIX", "third_party/bgfx/.build/wasm32-emscripten"))
+    return [f"-L{prefix.as_posix()}/bin", "-lbgfxRelease", "-lbimgRelease", "-lbimg_decodeRelease", "-lbxRelease"]
+
+
+def main_windows():
+    """Windows build (TARGET=windows, PLATFORM=sdl3): the same sdl3 platform layer and game C++ with a 32-bit MinGW
+    compiler, so the retail 32-bit pointer layouts and absolute addresses hold. It is a console program: the port logs to
+    stdout, and SDL_MAIN_HANDLED keeps the entry's own main instead of SDL's WinMain shim. Cross-compiling from Linux works
+    with mingw-w64's i686 g++ ($CXX overrides the compiler); SDL3 comes from $SDL_PREFIX, bgfx+bx+bimg (bgfx's gmake-mingw-gcc
+    project) from $BGFX_PREFIX. Renderers: OpenGL and Vulkan -- Direct3D needs DXBC/DXIL blobs, which only a Windows shaderc
+    with fxc/dxc can make (tools/build_shaders.py --platform windows --d3d)"""
+    if PLATFORM != "sdl3":
+        raise SystemExit("TARGET=windows builds the sdl3 platform: PLATFORM=sdl3 TARGET=windows python configure.py")
+    cxx_name = os.environ.get("CXX", "g++" if os.name == "nt" else "i686-w64-mingw32-g++")
+    cxx = command([cxx_name])
+    # A MinGW SDL3 install (MSYS2's /mingw32, Arch's mingw-w64-sdl3 at /usr/i686-w64-mingw32) when there is one, else a
+    # source build's install prefix
+    mingw_sysroot = Path("/usr/i686-w64-mingw32")
+    sdl_prefix = os.environ.get("SDL_PREFIX", mingw_sysroot.as_posix() if (mingw_sysroot / "include" / "SDL3").is_dir()
+                                else "third_party/SDL/install")
+    bgfx_prefix = os.environ.get("BGFX_PREFIX", "third_party/bgfx/.build/win32_mingw-gcc")
+    # Direct3D 11 and 12 take DXBC, which only a shaderc built for Windows makes (tools/build_shaders.py --d3d); the
+    # blobs are optional, so the build carries the renderers only when the generated headers are there
+    if (HERE / "src" / "platform" / "sdl3" / "graphics" / "shaders" / "vs_draw2d_dxbc.bin.h").is_file():
+        cflags_extra = ["-DTWINSANITY_HAVE_DXBC=1"]
+    else:
+        cflags_extra = []
+    cflags = ["-O2", "-g", "-std=gnu++26", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-common",
+              "-fno-strict-aliasing", "-ffunction-sections", "-ffp-contract=off", "-fno-delete-null-pointer-checks",
+              "-fno-omit-frame-pointer", "-Wall", "-Wno-invalid-offsetof", "-Wno-attributes", "-msse2", "-mfpmath=sse",
+              "-malign-double",
+              "-DSDL_MAIN_HANDLED", "-Iinclude", "-Iinclude/host", f"-I{sdl_prefix}/include/SDL3",
+              "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include"] + cflags_extra
+    # SDL3 statically (the MinGW package ships both libSDL3.a and the DLL import library), so the build is one .exe. bgfx
+    # dlopens vulkan-1.dll itself, so the Vulkan renderer needs no import library to link against.
+    libs = [f"-L{sdl_prefix}/lib", "-Wl,-Bstatic", "-lSDL3", "-Wl,-Bdynamic",
+            f"-L{bgfx_prefix}/bin", "-lbgfxRelease", "-lbimgRelease", "-lbimg_decodeRelease", "-lbxRelease",
+            "-lopengl32", "-lgdi32", "-lole32", "-luuid", "-loleaut32", "-lm",
+            # SDL3's own Windows dependencies (its MinGW build's SDL3.pc), and the C++ runtime linked in: one .exe to ship
+            "-limm32", "-lwinmm", "-lversion", "-lsetupapi", "-ladvapi32", "-lshell32", "-luser32", "-lhid",
+            "-lws2_32", "-lcomdlg32", "-ldinput8", "-ldxguid", "-luxtheme", "-lksuser",
+            # the GCC runtime too, libwinpthread included: the .exe needs no DLLs beside it. -Bstatic is set last because the
+            # -Bdynamic after SDL3 (which the import libraries need) leaves ld there for the runtime the driver adds
+            "-static", "-static-libgcc", "-static-libstdc++", "-Wl,-Bstatic"]
+    lines = [
+        "# host platform: sdl3 (windows, 32-bit MinGW)",
+        "ninja_required_version = 1.10",
+        f"cxx = {cxx}",
+        f"cxxflags = {command(cflags)}",
+        f"ldflags = {command(libs)}",
+        "",
+        "rule cxx",
+        "  command = $cxx $cxxflags -MMD -MF $out.d -c -o $out $in",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CXX $in",
+        "rule link",
+        # PE's leading underscore and the retail asm labels spell some symbols differently: pe_link bridges them
+        "  command = python3 tools/pe_link.py --nm " + cxx_name.replace("g++", "nm") + " -- $cxx -o $out $in $ldflags",
+        "  description = LINK $out",
+        "rule hostdata",
+        "  command = python3 tools/host_data.py --coff --file $in $out.host.s && $cxx -c $out.host.s -o $out",
+        "  description = HOSTDATA $in",
+        "rule configure",
+        "  command = PLATFORM=sdl3 TARGET=windows python3 configure.py",
+        "  generator = 1",
+        "",
+    ]
+    sdl3_names = {path.name for path in (HERE / "src" / "platform" / "sdl3").rglob("*.cpp")} | {"sound.cpp"}
+    src = sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src").rglob("*.cpp")
+                 if (path.relative_to(HERE / "src").parts[:1] != ("platform",)
+                     or path.relative_to(HERE / "src").parts[1] == "sdl3")
+                 and path.name not in ("bgfx_test.cpp", "draw2d_test.cpp", "screenfx_test.cpp", "shadows_test.cpp",
+                                       "particles_test.cpp"))
+    src += sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "null").rglob("*.cpp")
+                  if path.name not in sdl3_names)
+    src_objects = []
+    compile_commands = []
+    for path in src:
+        obj = f"build/win32/{path}.o"
+        src_objects.append(obj)
+        lines.append(f"build {obj}: cxx {path}")
+        compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
+                                 "arguments": [cxx_name] + cflags + ["-c", "-o", obj, path]})
+    data_objects = []
+    if (HERE / "asm" / "data").is_dir():
+        for path in sorted((HERE / "asm" / "data").rglob("*.s")):
+            obj = f"build/win32/data/{path.stem}.o"
+            data_objects.append(obj)
+            lines.append(f"build {obj}: hostdata {path.relative_to(HERE).as_posix()} | tools/host_data.py")
+        # The link itself is tools/pe_link.py's call (the leading-underscore bridge), so its edits relink
+        lines.append(f"build build/win32/game-with-data.exe: link {' '.join(src_objects + data_objects)}"
+                     " | tools/pe_link.py")
+        lines.append("build game: phony build/win32/game-with-data.exe")
+    # No code-only link edge: the retail data objects define the symbols the game code references, so an executable
+    # without them cannot link
+    lines += [
+        f"build compile: phony {' '.join(src_objects)}",
+        f"build build.ninja: configure | configure.py",
+        "default compile",
+        "",
+    ]
+    (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
+    (HERE / "build").mkdir(exist_ok=True)
+    (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
+    print(f"build.ninja: {len(src)} C++ files for windows (32-bit MinGW)")
+    if not shutil.which(cxx_name):
+        print(f"{cxx_name} is not on PATH: install mingw-w64 (i686) or set CXX to a 32-bit MinGW g++", file=sys.stderr)
+
+
+def main_web():
+    """Web build (PLATFORM=web): the sdl3 layer and the game's C++ compiled to wasm32 with em++, in the same source split
+    the sdl3 host build uses. Shaders are the web's own: WebGL takes the GLSL ES 300 blobs and WebGPU the WGSL ones, both
+    checked in (tools/build_shaders.py --platform web). The link needs the retail data as wasm, which tools/host_data.py
+    does not emit yet (it writes x86 assembly), so this build's target is compile: every TU as wasm32."""
+    cxx = command([os.environ.get("EMXX", "em++")])
+    lines = [
+        "# host platform: web (wasm32, Emscripten)",
+        "ninja_required_version = 1.10",
+        f"cxx = {cxx}",
+        f"cxxflags = {command(WEB_CXXFLAGS)}",
+        f"ldflags = {command(WEB_CXXFLAGS + ['-sALLOW_MEMORY_GROWTH=1', '-sSTACK_SIZE=1048576',
+                                          '-sMIN_WEBGL_VERSION=2', '-sMAX_WEBGL_VERSION=2', '-sUSE_WEBGPU=1'] +
+                                web_bgfx_flags())}",
+        "",
+        "rule cxx",
+        "  command = $cxx $cxxflags -MMD -MF $out.d -c -o $out $in",
+        "  depfile = $out.d",
+        "  deps = gcc",
+        "  description = CXX $in",
+        "rule link",
+        "  command = $cxx -o $out $in $ldflags",
+        "  description = LINK $out",
+        "rule configure",
+        "  command = PLATFORM=web python3 configure.py",
+        "  generator = 1",
+        "",
+    ]
+    sdl3_names = {path.name for path in (HERE / "src" / "platform" / "sdl3").rglob("*.cpp")} | {"sound.cpp"}
+    src = sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src").rglob("*.cpp")
+                 if (path.relative_to(HERE / "src").parts[:1] != ("platform",)
+                     or path.relative_to(HERE / "src").parts[1] == "sdl3")
+                 and path.name not in ("bgfx_test.cpp", "draw2d_test.cpp", "screenfx_test.cpp", "shadows_test.cpp",
+                                       "particles_test.cpp"))
+    src += sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "null").rglob("*.cpp")
+                  if path.name not in sdl3_names)
+    src_objects = []
+    compile_commands = []
+    for path in src:
+        obj = f"build/web/{path}.o"
+        src_objects.append(obj)
+        lines.append(f"build {obj}: cxx {path}")
+        compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
+                                 "arguments": [os.environ.get("EMXX", "em++")] + WEB_CXXFLAGS + ["-c", "-o", obj, path]})
+    lines += [
+        f"build compile: phony {' '.join(src_objects)}",
+        f"build build.ninja: configure | configure.py",
+        "default compile",
+        "",
+    ]
+    (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
+    (HERE / "build").mkdir(exist_ok=True)
+    (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
+    print(f"build.ninja: {len(src)} C++ files for wasm32 (Emscripten)")
+    if not shutil.which(os.environ.get("EMXX", "em++")):
+        print("em++ is not on PATH: install emsdk and source its emsdk_env.sh, then configure again", file=sys.stderr)
 
 
 def main_host():
@@ -227,6 +418,7 @@ def main_host():
             f"build build/host/draw2d_test: link build/host/sdl3/src/platform/sdl3/graphics/draw2d_test.cpp.o "
             f"{bgfx_context_obj} {vumath_obj} "
             "build/host/sdl3/src/platform/sdl3/graphics/draws_host.cpp.o "
+            "build/host/sdl3/src/platform/sdl3/graphics/host_shaders.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/mesh_builder.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/draw2d.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/material_system.cpp.o "
@@ -259,6 +451,7 @@ def main_host():
             f"{bgfx_context_obj} {vumath_obj} "
             "build/host/sdl3/src/platform/sdl3/graphics/shadows.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/draws_host.cpp.o "
+            "build/host/sdl3/src/platform/sdl3/graphics/host_shaders.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/mesh_builder.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/draw2d.cpp.o "
             "build/host/sdl3/src/platform/sdl3/graphics/material_system.cpp.o "
@@ -337,25 +530,16 @@ def main_host():
                                  "output": "build/host/tools/audio_disc.o",
                                  "arguments": ["g++"] + HOST_CXXFLAGS +
                                  ["-c", "-o", "build/host/tools/audio_disc.o", "tools/audio_disc.cpp"]})
-        # The saves proof: drives the host Platform::Saves (src/platform/null/saves.cpp, the card as a directory of the
-        # host's filesystem) through the game's save sequence (Initialise/Format/CreateSave/Write/Read/FindFile/MeasureSave),
-        # the error paths and a fresh-process re-read, printing PASS/FAIL a step; `ninja saves-proof` then run
-        # build/host/saves_proof from the repo root (the card is $XDG_DATA_HOME/twinsanity)
-        lines += [
-            "build build/host/tools/saves_proof.o: cxx tools/saves_proof.cpp",
-            f"build build/host/saves_proof: link build/host/tools/saves_proof.o "
-            f"build/host/{PLATFORM}/src/platform/null/saves.cpp.o",
-            "build saves-proof: phony build/host/saves_proof",
-            "",
-        ]
-        compile_commands.append({"directory": HERE.as_posix(), "file": "tools/saves_proof.cpp",
-                                 "output": "build/host/tools/saves_proof.o",
-                                 "arguments": ["g++"] + HOST_CXXFLAGS + sdl_cflags + bgfx_cflags +
-                                 ["-c", "-o", "build/host/tools/saves_proof.o", "tools/saves_proof.cpp"]})
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
 
 
 def main():
+    if WEB:
+        main_web()
+        return
+    if HOST and WINDOWS:
+        main_windows()
+        return
     if HOST:
         main_host()
         return

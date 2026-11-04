@@ -4,13 +4,133 @@
 // caught: the last three are what the C++ runtime and asserts raise.
 #include "common.h"
 
-#include <csignal>
 #include <cstring>
 #include <ctime>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <csignal>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <ucontext.h>
 #include <unistd.h>
+#endif
+
+#if defined(_WIN32)
+// The same crash log on Windows: unhandled exceptions (access violations, divide by zero, the CRT's fastfail on an assert)
+// arrive at SetUnhandledExceptionFilter, which writes the fault, the module base and the stack's return addresses to
+// crash.log beside the game and to stderr. The addresses are module offsets: resolve one with
+//   addr2line -f -C -e game-with-data.exe <offset>
+namespace
+{
+struct Buffer
+{
+    char text[8192];
+    u32 length = 0;
+
+    void Append(const char* string)
+    {
+        for (; *string != '\0' && length + 1 < sizeof(text);)
+        {
+            text[length++] = *string++;
+        }
+    }
+
+    void AppendHex(u64 value)
+    {
+        static const char* digits = "0123456789abcdef";
+        char reversed[24];
+        u32 count = 0;
+        do
+        {
+            reversed[count++] = digits[value & 0xF];
+            value >>= 4;
+        } while (value != 0);
+        while (count != 0 && length + 1 < sizeof(text))
+        {
+            text[length++] = reversed[--count];
+        }
+    }
+};
+
+void WriteAll(HANDLE handle, const char* text, size_t size)
+{
+    DWORD written = 0;
+    WriteFile(handle, text, static_cast<DWORD>(size), &written, nullptr);
+}
+
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* info)
+{
+    const char* name = "EXCEPTION";
+    switch (info->ExceptionRecord->ExceptionCode)
+    {
+    case EXCEPTION_ACCESS_VIOLATION:
+        name = "EXCEPTION_ACCESS_VIOLATION (bad memory access)";
+        break;
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+        name = "EXCEPTION_ILLEGAL_INSTRUCTION";
+        break;
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+        name = "EXCEPTION_INT_DIVIDE_BY_ZERO";
+        break;
+    case EXCEPTION_STACK_OVERFLOW:
+        name = "EXCEPTION_STACK_OVERFLOW";
+        break;
+    case EXCEPTION_PRIV_INSTRUCTION:
+        name = "EXCEPTION_PRIV_INSTRUCTION";
+        break;
+    case 0xC0000409:
+        name = "FAST_FAIL (abort/assert)";
+        break;
+    default:
+        break;
+    }
+
+    const auto base = static_cast<u64>(reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr)));
+    Buffer buffer;
+    buffer.Append("\r\n=== Crash Twinsanity host crash ===\r\n");
+    buffer.Append(name);
+    buffer.Append("\r\nmodule base 0x");
+    buffer.AppendHex(base);
+    buffer.Append("\r\nfault address 0x");
+    buffer.AppendHex(static_cast<u64>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)));
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2)
+    {
+        const ULONG_PTR* parameters = info->ExceptionRecord->ExceptionInformation;
+        buffer.Append(parameters[0] == 0   ? "\r\naccess: read 0x"
+                      : parameters[0] == 1 ? "\r\naccess: write 0x"
+                                           : "\r\naccess: execute 0x");
+        buffer.AppendHex(static_cast<u64>(parameters[1]));
+    }
+
+    buffer.Append("\r\nbacktrace (innermost first, module offsets):\r\n");
+    void* frames[64];
+    const USHORT count = RtlCaptureStackBackTrace(0, 64, frames, nullptr);
+    for (u32 index = 0; index < count; index++)
+    {
+        buffer.Append("0x");
+        buffer.AppendHex(static_cast<u64>(reinterpret_cast<uintptr_t>(frames[index])) - base);
+        buffer.Append("\r\n");
+    }
+
+    HANDLE file = CreateFileA("crash.log", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        WriteAll(file, buffer.text, buffer.length);
+        CloseHandle(file);
+    }
+    WriteAll(GetStdHandle(STD_ERROR_HANDLE), buffer.text, buffer.length);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+}
+
+void InstallCrashLog()
+{
+    SetUnhandledExceptionFilter(CrashHandler);
+}
+
+#else
 
 namespace
 {
@@ -248,3 +368,5 @@ void InstallCrashLog()
     sigaction(SIGFPE, &action, nullptr);
     sigaction(SIGABRT, &action, nullptr);
 }
+
+#endif

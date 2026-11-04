@@ -9,8 +9,10 @@
 #include "game/math.h"
 #include "game/particles.h"
 
-#include "shaders/fs_stq.bin.h"
-#include "shaders/vs_stq.bin.h"
+#include "host_shaders.h"
+
+using Platform::Graphics::HostCreateShader;
+using Platform::Graphics::HostShader;
 
 #include <cmath>
 #include <cstring>
@@ -94,8 +96,8 @@ void MakeShared()
     {
         return;
     }
-    bgfx::ShaderHandle vs = bgfx::createShader(bgfx::makeRef(vs_stq_glsl, sizeof(vs_stq_glsl)));
-    bgfx::ShaderHandle fs = bgfx::createShader(bgfx::makeRef(fs_stq_glsl, sizeof(fs_stq_glsl)));
+    bgfx::ShaderHandle vs = HostCreateShader(HostShader::StqVertex);
+    bgfx::ShaderHandle fs = HostCreateShader(HostShader::StqFragment);
     g_stqProgram = bgfx::createProgram(vs, fs, true);
     g_stqSampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_decalAlpha = bgfx::createUniform("u_decalAlpha", bgfx::UniformType::Vec4);

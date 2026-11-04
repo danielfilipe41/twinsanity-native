@@ -22,6 +22,9 @@ enum Whence : s32
     SeekEnd = 2,
 };
 
+// The directory the game's own paths are read from: empty for the working directory (a run started in the disc's folder),
+// or the folder the launch found the files in (Platform::GameData::Locate). Set once, before the game opens anything
+void SetRoot(const char* path);
 // Forgets what it knew of the file system (open again after the I/O processor restarted)
 void Reset();
 // Returns the descriptor, negative on failure

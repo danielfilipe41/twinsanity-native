@@ -131,5 +131,10 @@ void HostShadowSetFrameTarget(bgfx::FrameBufferHandle, u32, u32, bool)
 {
     // This proof's 2D draws never need the shadow frame; shadows.cpp owns the real hook.
 }
+// A drawn material tells the platform's quarantine it's still in use (material_system.cpp -> graphics.cpp's
+// TouchFreedMaterial). The proof never frees a material, so nothing is quarantined for a draw to keep: a no-op.
+void TouchFreedMaterial(const void*)
+{
+}
 }
 }

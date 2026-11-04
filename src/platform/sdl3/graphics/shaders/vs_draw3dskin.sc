@@ -26,18 +26,21 @@ uniform vec4 u_materialColour;
 uniform mat4 u_joints[128];
 uniform vec4 u_blendWeights[4];
 
-vec3 SkinPosition(vec3 position)
+// The attributes are parameters rather than globals: shaderc's SPIR-V path compiles HLSL, where the $input attributes
+// are main's parameters and a helper function cannot see them (the GLSL path declares them as globals, so the same
+// source works for both)
+vec3 SkinPosition(vec3 position, vec3 indices, vec3 inputWeights)
 {
     // The packet's weights as they come: retail's skinning program multiplies the joints' positions by them directly
     // (VU1 Parameter, ITOF0 of the packed weights then MULx/MULy/MULz, no divide by their sum), so renormalising here
     // was the host's own addition. Only a vertex with no weight at all needs the fallback, and retail's data has none
-    vec3 weights = a_weight.xyz;
+    vec3 weights = inputWeights;
     float total = weights.x + weights.y + weights.z;
     weights = total > 0.0 ? weights : vec3(1.0, 0.0, 0.0);
     // Indices are stored as floats 0-255 directly
-    int first = int(a_indices.x + 0.5);
-    int second = int(a_indices.y + 0.5);
-    int third = int(a_indices.z + 0.5);
+    int first = int(indices.x + 0.5);
+    int second = int(indices.y + 0.5);
+    int third = int(indices.z + 0.5);
     vec3 skinned = mul(u_joints[first], vec4(position, 1.0)).xyz * weights.x;
     skinned += mul(u_joints[second], vec4(position, 1.0)).xyz * weights.y;
     skinned += mul(u_joints[third], vec4(position, 1.0)).xyz * weights.z;
@@ -46,7 +49,7 @@ vec3 SkinPosition(vec3 position)
 
 void main()
 {
-    vec3 world = SkinPosition(a_position);
+    vec3 world = SkinPosition(a_position, a_indices, a_weight.xyz);
     gl_Position = mul(u_mvp, vec4(world, 1.0));
     vec3 normal = normalize(a_normal.xyz * 2.0 - 1.0);
     vec3 light = u_ambient.rgb;
