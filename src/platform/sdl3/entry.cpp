@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include <cstdio>
+#include <cstring>
 
 extern "C" int Main(u32 argc, char** argv);
 
@@ -31,18 +32,41 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // The disc's files: the working directory's, or the folder the player picks (and the run keeps for next time). Before the
-    // window, because there is nothing to show without them
-    if (!Platform::GameData::Locate())
+    // The run's own options are read and taken out of argv before the game's parser sees the rest: the retail parser takes the
+    // words as its own arguments and would make `--disc` one of them
+    const char* disc = nullptr;
+    int count = 1;
+    for (int index = 1; index < argc; index++)
     {
-        SDL_Quit();
-        return 1;
+        if (std::strcmp(argv[index], "--disc") == 0 && index + 1 < argc)
+        {
+            disc = argv[index + 1];
+            index++;
+            continue;
+        }
+        if (std::strncmp(argv[index], "--disc=", 7) == 0)
+        {
+            disc = argv[index] + 7;
+            continue;
+        }
+        argv[count++] = argv[index];
     }
+    argc = count;
 
+    // The window comes first: the picker that finds the disc's files is a dialog a window belongs to, and until the files are
+    // found there is nothing to draw in it
     SDL_Window* window = SDL_CreateWindow("Crash Twinsanity", WindowWidth, WindowHeight, SDL_WINDOW_RESIZABLE);
     if (window == nullptr)
     {
         std::fprintf(stderr, "sdl3: SDL_CreateWindow failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
+    // The disc's files: what --disc named, the working directory's, or what the player picks (and the run keeps for next time)
+    if (!Platform::GameData::Locate(disc, window))
+    {
+        SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }

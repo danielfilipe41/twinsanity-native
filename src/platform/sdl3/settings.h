@@ -7,6 +7,7 @@
 #include "common.h"
 
 #include "graphics/bgfx_context.h"
+#include "platform/system.h"
 
 // The sound processor's first reset: put the file's options into the game, if there is a file
 void HostSettingsApplyOnce();
@@ -19,6 +20,11 @@ void HostSettingsTick();
 // The picture's antialiasing, from the file's `antialias` line: off when the file has none, and off for a word this build
 // has no mode for. Read before the renderer makes its first frame's targets, like the rate, and written back as it was read
 AntiAlias HostSettingsAntiAlias();
+
+// The language the game's texts, voices, movies and title cards are read in, from the file's `language` line: english,
+// french, german, spanish or italian, the five the disc carries. English when the file has none, and for a word this build has
+// no language for. Asked for as the game starts, which is where it puts its language in place
+Platform::System::ConsoleLanguage HostSettingsLanguage();
 
 // The picture's rate: how often the host presents a frame (the game's logic stays at the disc's field rate). Read from the
 // file's `render` line before the renderer starts; 50, the field rate, when the file has none

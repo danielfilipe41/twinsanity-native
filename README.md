@@ -49,13 +49,27 @@ bsdtar -xf "Crash Twinsanity (Europe).iso" SLES_525.68
 sha1sum SLES_525.68    # d41b8d53f733f930cf03d8ea944bec24429fe57c
 ```
 
-Started somewhere else, the PC build asks for the folder once, with a picker titled "Point to the extracted ISO folder":
-the answer is kept beside the saves (in `gamedata.txt`), so the next run opens straight from it, and a folder that no longer
-has the files asks again. `TWINSANITY_DATA` names the folder for a run without asking -- also the way a host whose picker
-hands over something that isn't a path (Android's content URIs) is given its files.
+Two things give the PC build its files, and either will do: the extracted folder (the one with `SYSTEM.CNF` in it), or a disc
+image of the same disc -- a plain `.iso`, or a raw 2352-byte `.bin`. Nothing has to be extracted for an image: the port reads
+the volume's own file system (ISO9660, the PS2 disc's layout), read-only, straight out of the file.
 
-For the PS2 build to run in PCSX2, point `disc_image` (or `TWINSANITY_ISO`) at the ISO. The PC build does not read the ISO
-directly; it reads the extracted folder.
+Started somewhere else, it asks once, with a picker: choose the folder with the files in it, or the folder holding the image.
+A folder with one image in it is taken as it is; a folder with several asks which one with a second, filtered (`.iso`/`.bin`)
+dialog. The answer is kept beside the saves (in `gamedata.txt`), so the next run opens straight from it, and a path that no
+longer has the files asks again.
+
+`--disc <path>` answers for one run and is not kept, folder or image:
+
+```sh
+cd disc && ../build/host/sdl3/game-with-data
+../build/host/sdl3/game-with-data --disc "Crash Twinsanity (Europe).iso"
+../build/host/sdl3/game-with-data --disc /path/to/extracted/
+```
+
+`TWINSANITY_DATA` does the same from the environment (a folder, an image, or a folder of images) -- also the way a host whose
+picker hands over something that isn't a path (Android's content URIs) is given its files.
+
+For the PS2 build to run in PCSX2, point `disc_image` (or `TWINSANITY_ISO`) at the ISO.
 
 ## Building
 
@@ -105,7 +119,7 @@ Memory cards are directories under the platform's per-user data directory: `%LOC
 There is one per port and slot: `card0_0`, `card0_1`, `card1_0`, `card1_1`. Each holds the game's saves as they would be on
 a card.
 
-The folder the game's files were found in is kept in `gamedata.txt` next to the saves (asked for when it stops having them);
+The path the game's files were found at is kept in `gamedata.txt` next to the saves (asked for again when it stops having them);
 `settings.txt` beside it holds the game's options, one per line: `group <n> <left> <right>` for
 the four volume groups (0 effects, 1 second effects, 2 music, 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's
 own save wins where they overlap.
@@ -127,6 +141,14 @@ the 3D geometry, the sprites and the menus' text alike; hardware multisampling i
 
 ```sh
 echo 'antialias smaa' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
+```
+
+`language <name>` is the language the game reads its texts, voices, movies and title pictures in: `english` when the file has
+none, or `french`, `german`, `spanish`, `italian` -- the five the disc carries. The game's own OPTIONS screen has no row for
+it, so this is the way to choose it, and it takes effect at the next start (the game puts its language in place once, early).
+
+```sh
+echo 'language french' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
 ```
 
 A crash writes `crash.log` in the working directory and to stderr: the signal, registers, and the faulting frame with the

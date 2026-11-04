@@ -38,12 +38,14 @@ ninja game
 ```
 
 `build/host/sdl3/game-with-data` is the result. The game reads its files relative to the working directory, so run it
-from `disc/`:
+from `disc/` -- or point it at your own disc image, which needs no extraction (see
+[Saves and settings](../README.md#saves-and-settings)):
 
 ```sh
 cd disc
 ../build/host/sdl3/game-with-data
 TWINSANITY_RENDERER=vulkan ../build/host/sdl3/game-with-data
+../build/host/sdl3/game-with-data --disc "../Crash Twinsanity (Europe).iso"
 ```
 
 Renderers and shader blobs are [here](BUILDING.md#renderers).

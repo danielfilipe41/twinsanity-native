@@ -7,6 +7,7 @@
 #include "platform/saves.h"
 
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,73 @@ void LoadAntiAlias()
     std::fclose(file);
 }
 
+// The file's `language` line: the language the game's texts and voices are read in. Read once, as the game starts and asks the
+// console which language it runs in (Platform::System::Language), which is the one place the retail code takes it from
+bool g_LanguageLoaded = false;
+Platform::System::ConsoleLanguage g_Language = Platform::System::LanguageEnglish;
+
+constexpr const char* LanguageWords[] = {"english", "french", "german", "spanish", "italian"};
+constexpr Platform::System::ConsoleLanguage LanguageValues[] = {
+    Platform::System::LanguageEnglish, Platform::System::LanguageFrench, Platform::System::LanguageGerman,
+    Platform::System::LanguageSpanish, Platform::System::LanguageItalian};
+constexpr u32 LanguageCount = sizeof(LanguageWords) / sizeof(LanguageWords[0]);
+
+const char* LanguageWord(Platform::System::ConsoleLanguage language)
+{
+    for (u32 index = 0; index < LanguageCount; index++)
+    {
+        if (LanguageValues[index] == language)
+        {
+            return LanguageWords[index];
+        }
+    }
+    return LanguageWords[0];
+}
+
+void LoadLanguage()
+{
+    if (g_LanguageLoaded)
+    {
+        return;
+    }
+
+    g_LanguageLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        char word[16] = {};
+        if (std::sscanf(line, "language %15s", word) != 1)
+        {
+            continue;
+        }
+        for (char& letter : word)
+        {
+            letter = static_cast<char>(std::tolower(static_cast<unsigned char>(letter)));
+        }
+
+        // A word this build has no language for leaves the game in English, which every disc carries
+        g_Language = Platform::System::LanguageEnglish;
+        for (u32 index = 0; index < LanguageCount; index++)
+        {
+            if (std::strcmp(word, LanguageWords[index]) == 0)
+            {
+                g_Language = LanguageValues[index];
+            }
+        }
+    }
+
+    std::fclose(file);
+    std::fprintf(stderr, "settings: language %s\n", LanguageWord(g_Language));
+}
+
 // The word the file's `antialias` line is written with
 const char* AntiAliasWord(AntiAlias mode)
 {
@@ -168,6 +236,12 @@ AntiAlias HostSettingsAntiAlias()
 {
     LoadAntiAlias();
     return g_AntiAlias;
+}
+
+Platform::System::ConsoleLanguage HostSettingsLanguage()
+{
+    LoadLanguage();
+    return g_Language;
 }
 
 void HostSettingsApplyOnce()
@@ -312,7 +386,8 @@ void HostSettingsKeep()
 
     // The antialiasing is the file's own line, written back as it was read: the port has no screen to set it on, so editing
     // the file is the way, and a run that rewrote the file must not lose the choice
-    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\nantialias %s\n", static_cast<int>(stereo),
-                 static_cast<int>(widescreen), static_cast<int>(g_RenderRate), AntiAliasWord(g_AntiAlias));
+    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\nantialias %s\nlanguage %s\n", static_cast<int>(stereo),
+                 static_cast<int>(widescreen), static_cast<int>(g_RenderRate), AntiAliasWord(g_AntiAlias),
+                 LanguageWord(g_Language));
     std::fclose(file);
 }

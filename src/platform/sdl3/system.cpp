@@ -1,6 +1,8 @@
 // Start-up: like the null platform's (everything already runs), plus the sound processor's driver.
 // The retail start-up (ps2/system.cpp:65) opens the sound driver with Sound::InitialiseRemote in its service startup; the
 // host's must too, or Platform::Audio's SDL stream never opens and every sound plays to nothing.
+#include "settings.h"
+
 #include "platform/sound.h"
 #include "platform/system.h"
 
@@ -23,7 +25,8 @@ void Platform::System::StartServices()
 
 Platform::System::ConsoleLanguage Platform::System::Language()
 {
-    return LanguageEnglish;
+    // The player's choice from the settings file (its `language` line): the game puts it in place once, as it starts
+    return HostSettingsLanguage();
 }
 
 Platform::System::DateTime Platform::System::LocalTime()

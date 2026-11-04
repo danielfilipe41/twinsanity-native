@@ -33,6 +33,7 @@ run on Windows itself yet, and Wine's `WineDbg`/desktop still show its share of 
 PLATFORM=sdl3 TARGET=windows python3 configure.py
 ninja game                                      # build/win32/game-with-data.exe
 cd disc && wine ../build/win32/game-with-data.exe
+wine ../build/win32/game-with-data.exe --disc "D:\Crash Twinsanity (Europe).iso"   # the disc image, no extraction
 ```
 
 ## The Windows-specific parts of the port
