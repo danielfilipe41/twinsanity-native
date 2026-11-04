@@ -4,8 +4,6 @@
 
 #include "platform/stream.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -57,15 +55,6 @@ constexpr u16 EffectPresets[EffectModes][32] = {
 
 // The full setting of the game's delay and feedback knobs
 constexpr s32 FullSetting = 127;
-
-// TS_AUDIOLOG or TS_SOUNDLOG: what the module is asked to do, so a run's own sound can be followed - which sound was loaded
-// where, what every play was handed, when a voice was let go of and what the memory came to. A measurement (a sound that is
-// too loud, a voice that never comes back) is a line this log does not answer for
-bool ModuleLogOn()
-{
-    static const bool on = std::getenv("TS_AUDIOLOG") != nullptr || std::getenv("TS_SOUNDLOG") != nullptr;
-    return on;
-}
 
 // A volume ramp's step in the mix's level: the whole range in about ten milliseconds, which is what the module's own smooth
 // volume change is for (a step and a start the game hears as a fade, never as a click)
@@ -256,52 +245,6 @@ void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
     // is far more often than either needs
     FillStreams();
     TrackStreams();
-
-    // Once a second: how many voices the processor is holding, so voices that never come back show as a climb. A voice the game
-    // cannot get free is a play it never makes, which is a menu that has gone quiet
-    if (ModuleLogOn())
-    {
-        m_loggedFrames += frames;
-        if (m_loggedFrames >= 48000)
-        {
-            m_loggedFrames = 0;
-            s32 active = 0;
-            for (s32 voice = 0; voice < VoiceCount; voice++)
-            {
-                if (device.VoiceActive(voice))
-                {
-                    active++;
-                }
-            }
-
-            s32 held = 0;
-            for (s32 voice = 0; voice < VoiceCount; voice++)
-            {
-                if (m_channels[voice].state != ChannelState::Off)
-                {
-                    held++;
-                }
-            }
-
-            // Which ones, not just how many: a stream's four voices dropping to three is one side of a track gone silent,
-            // and the numbers alone do not say which
-            char which[160];
-            s32 at = 0;
-            which[0] = 0;
-            for (s32 voice = 0; voice < VoiceCount && at < static_cast<s32>(sizeof(which)) - 8; voice++)
-            {
-                if (device.VoiceActive(voice))
-                {
-                    at += std::snprintf(which + at, sizeof(which) - static_cast<size_t>(at), "%s%d", at > 0 ? " " : "",
-                                        voice);
-                }
-            }
-
-            std::fprintf(stderr,
-                         "audio: %d of %d voices sounding [%s], %d the game has not been told are free, %u/%u memory used\n",
-                         active, VoiceCount, which, held, m_memory.Used(), m_memory.Ceiling() - MemoryBase);
-        }
-    }
 }
 
 // ---- the processor's whole state ----
@@ -348,11 +291,6 @@ void SdlAudio::Spu2::SoundModule::PauseAll()
             device.SetVoiceHeld(m_streams[stream.childChannel].voice, true);
         }
     }
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: paused (the sounds let go, the music held where it is)\n");
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::ResumeAll()
@@ -374,11 +312,6 @@ void SdlAudio::Spu2::SoundModule::ResumeAll()
             device.SetVoiceHeld(voice, false);
         }
     }
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: resumed\n");
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::LendToMovie()
@@ -387,19 +320,11 @@ void SdlAudio::Spu2::SoundModule::LendToMovie()
     // track is stopped: the game's music player is still in its playing state when the module comes back, and nothing in the
     // game will re-start a track it thinks is playing
     m_lent = true;
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: lent to a movie (no key-ons until it is reclaimed)\n");
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::ReclaimFromMovie()
 {
     m_lent = false;
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: reclaimed from the movie\n");
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::CompactSoundMemory()
@@ -441,7 +366,6 @@ void SdlAudio::Spu2::SoundModule::CompactSoundMemory()
 
     // A voice reading a block that moved goes with it, or it would read whatever lands there next: the noise a level's loads
     // and unloads leave behind
-    u32 moved = 0;
     for (const MemoryMove& move : m_memory.Moves())
     {
         s32 delta = static_cast<s32>(move.to) - static_cast<s32>(move.from);
@@ -458,15 +382,8 @@ void SdlAudio::Spu2::SoundModule::CompactSoundMemory()
             {
                 device.MoveVoice(voice, delta);
                 channel.lastNext = static_cast<u32>(static_cast<s32>(channel.lastNext) + delta);
-                moved++;
             }
         }
-    }
-
-    if (ModuleLogOn() && !m_memory.Moves().empty())
-    {
-        std::fprintf(stderr, "audio: compacted the memory: %u block(s) moved, %u voice(s) followed, %u words used\n",
-                     static_cast<u32>(m_memory.Moves().size()), moved, m_memory.Used());
     }
 }
 
@@ -524,15 +441,6 @@ s32 SdlAudio::Spu2::SoundModule::SetVoiceVolume(s32 voice, s16 left, s16 right)
     if (voice < 0 || voice >= VoiceCount)
     {
         return -1;
-    }
-
-    // A play the game has taken to silence while it still sounds: this is how a sound stops in the middle of itself, so the log
-    // says which voice and where the app was
-    if (ModuleLogOn() && left == 0 && right == 0 && m_channels[voice].state != ChannelState::Off &&
-        m_channels[voice].levelLeft != 0)
-    {
-        std::fprintf(stderr, "audio: voice %d cut to silence (was %d/%d, sound %u)\n", voice, m_channels[voice].rawLeft,
-                     m_channels[voice].rawRight, m_channels[voice].sound);
     }
 
     TargetChannel(voice, left, right, false);
@@ -719,35 +627,6 @@ u32 SdlAudio::Spu2::SoundModule::LoadSoundBank(u32 sound, const u8* data, u32 si
     m_sounds[sound].address = address;
     m_sounds[sound].words = words;
     m_sounds[sound].blocks = bytes / BlockBytes;
-    if (ModuleLogOn())
-    {
-        // What the data itself says: the first block's shift, filter and flags, and how many blocks claim an end or a loop. The
-        // disc's sounds are not all terminated with a flag - the module's own length is what ends them - so this says whether a
-        // sound leans on the flag or on its size
-        u32 blocks = m_sounds[sound].blocks;
-        u32 ends = 0;
-        u32 loops = 0;
-        for (u32 block = 0; block < blocks; block++)
-        {
-            u8 flags = static_cast<u8>(static_cast<u16>(SoundProcessor().Memory()[address + block * BlockWords]) >> 8);
-            if ((flags & BlockLoopEnd) != 0)
-            {
-                ends++;
-            }
-
-            if ((flags & BlockLoop) != 0)
-            {
-                loops++;
-            }
-        }
-
-        u16 first = static_cast<u16>(SoundProcessor().Memory()[address]);
-        std::fprintf(stderr,
-                     "audio: load sound %u %u bytes -> %u words at %u (header %u, %u blocks, first shift %u filter %u flags "
-                     "%02x, %u end %u loop, memory %u/%u free)\n",
-                     sound, bytes, words, address, skip, blocks, first & 0xF, (first >> 4) & 0xF, (first >> 8) & 0xFF, ends,
-                     loops, m_memory.Free(), m_memory.Ceiling() - MemoryBase);
-    }
 
     return address;
 }
@@ -775,12 +654,6 @@ void SdlAudio::Spu2::SoundModule::ReleaseSound(u32 sound)
 
     if (m_sounds[sound].used)
     {
-        if (ModuleLogOn())
-        {
-            std::fprintf(stderr, "audio: release sound %u (%u words at %u)\n", sound, m_sounds[sound].words,
-                         m_sounds[sound].address);
-        }
-
         // A voice still reading this block would be left reading whatever the memory is handed out for next, which is heard as
         // noise: the game has let the samples go, so the voice is let go with them
         Device& device = SoundProcessor();
@@ -795,24 +668,11 @@ void SdlAudio::Spu2::SoundModule::ReleaseSound(u32 sound)
             device.SetVoiceRelease(voice, 0x0D);
             device.KeyOff(voice);
             channel.sound = NoSound;
-            if (ModuleLogOn())
-            {
-                std::fprintf(stderr, "audio: voice %d let go with the sound it was playing\n", voice);
-            }
         }
 
         m_memory.Release(sound);
         m_sounds[sound] = Sound();
     }
-    else if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: release sound %u, which was not in the memory\n", sound);
-    }
-}
-
-void SdlAudio::Spu2::SoundModule::SetSoundCaller(const void* caller)
-{
-    m_soundCaller = caller;
 }
 
 s32 SdlAudio::Spu2::SoundModule::PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 pitch, u32 attack,
@@ -837,12 +697,6 @@ s32 SdlAudio::Spu2::SoundModule::PlaySound(u32 sound, u32 voiceAndGroup, s16 lef
     // The module's key-ons are off while a movie has it, and a sound whose samples are not in the memory cannot play
     if (m_lent || !m_sounds[sound].used)
     {
-        if (ModuleLogOn())
-        {
-            std::fprintf(stderr, "audio: play sound %u voice %u REFUSED (%s)\n", sound, voice,
-                         m_lent ? "the module is lent to a movie" : "its samples are not in the memory");
-        }
-
         return 0;
     }
 
@@ -853,15 +707,6 @@ s32 SdlAudio::Spu2::SoundModule::PlaySound(u32 sound, u32 voiceAndGroup, s16 lef
     // One pass unless the game asked for more: a count of 0 has to mean a pass here too, or a sound whose own data carries a
     // loop flag goes round for good (the processor loops a block for as long as its flag says) and its voice is never let go
     channel.passesLeft = loops <= 1 ? 1 : loops;
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr,
-                     "audio: play sound %u voice %u vol %d/%d pitch %u attack %u release %u loops %u group %d from %p%s\n",
-                     sound, voice, left, right, pitch, attack, release, loops,
-                     static_cast<s32>((voiceAndGroup & 0xFFFF0000) >> GroupShift), m_soundCaller,
-                     device.VoiceActive(static_cast<s32>(voice)) ? " ON A VOICE ALREADY PLAYING" : "");
-    }
 
     u16 attackDecay = 0;
     u16 sustainRelease = 0;
@@ -1063,12 +908,6 @@ s32 SdlAudio::Spu2::SoundModule::StreamMusic(s32 file, s32 channel, u32 voiceAnd
     device.SetVoiceDataEnd(static_cast<s32>(voice), 0);
     device.SetVoiceNoise(static_cast<s32>(voice), false);
 
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: stream channel %d file %d offset %u size %u rate pitch %u voice %u loop %d ring %u\n",
-                     channel, file, stream.offset, stream.size, pitch, voice, stream.looping ? 1 : 0, ringAddress);
-    }
-
     return channel;
 }
 
@@ -1081,10 +920,6 @@ void SdlAudio::Spu2::SoundModule::InterleaveMusic(s32 channel, u32 blockSize)
 
     // The track's data alternates in blocks between the two sides of the pair
     m_streams[channel].blockSize = blockSize;
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: stream channel %d interleaved in %u byte chunks\n", channel, blockSize);
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::AddMusicChannel(s32 childChannel, s32 parent, u32 voiceAndGroup, u32 soundAddress)
@@ -1134,12 +969,6 @@ void SdlAudio::Spu2::SoundModule::AddMusicChannel(s32 childChannel, s32 parent, 
     device.SetVoiceLoopStart(static_cast<s32>(voice), stream.ringAddress);
     device.SetVoiceDataEnd(static_cast<s32>(voice), 0);
     device.SetVoiceNoise(static_cast<s32>(voice), false);
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: stream channel %d is the second side of channel %d on voice %u at ring %u\n", childChannel,
-                     parent, voice, stream.ringAddress);
-    }
 }
 
 void SdlAudio::Spu2::SoundModule::SetMusicEnd(s32 channel, u32 end)
@@ -1233,11 +1062,6 @@ s32 SdlAudio::Spu2::SoundModule::PlayMusic(s32 channel)
     {
         stream.data.resize(stream.size);
         Platform::Stream::Read(0, stream.file, stream.offset, stream.size, stream.data.data());
-        if (ModuleLogOn())
-        {
-            std::fprintf(stderr, "audio: stream channel %d read its region again at the play (%zu bytes)\n", channel,
-                         stream.data.size());
-        }
     }
 
     PrimeStream(channel);
@@ -1252,14 +1076,6 @@ s32 SdlAudio::Spu2::SoundModule::PlayMusic(s32 channel)
         stream.playing = false;
         stream.started = false;
 
-        if (ModuleLogOn())
-        {
-            std::fprintf(stderr,
-                         "audio: stream channel %d has no data to play (nothing was read: %zu bytes in memory of %u, ring %u "
-                         "words, file %d)\n",
-                         channel, stream.data.size(), stream.size, stream.ringWords, stream.file);
-        }
-
         return -1;
     }
 
@@ -1272,12 +1088,6 @@ s32 SdlAudio::Spu2::SoundModule::PlayMusic(s32 channel)
     device.KeyOn(voice);
     stream.playing = true;
     stream.started = true;
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: stream channel %d plays on voice %d with volume %d/%d group %u\n", channel, voice,
-                     m_channels[voice].rawLeft, m_channels[voice].rawRight, stream.group >> GroupShift);
-    }
 
     // The interleaved pair starts together, the way the module starts a stream's child with its parent
     if (stream.childChannel >= 0)
@@ -1344,25 +1154,10 @@ void SdlAudio::Spu2::SoundModule::StopMusic(s32 channel)
     }
 
     MusicStream& stream = m_streams[channel];
-    Device& device = SoundProcessor();
     LetStreamVoiceGo(channel);
     if (stream.childChannel >= 0)
     {
         LetStreamVoiceGo(stream.childChannel);
-    }
-
-    if (ModuleLogOn())
-    {
-        s32 held = 0;
-        for (s32 index = 0; index < VoiceCount; index++)
-        {
-            if (device.VoiceActive(index))
-            {
-                held++;
-            }
-        }
-
-        std::fprintf(stderr, "audio: stream channel %d stopped (%d of %d voices still sounding)\n", channel, held, VoiceCount);
     }
 }
 
@@ -1380,11 +1175,6 @@ void SdlAudio::Spu2::SoundModule::EndStream(s32 channel)
         other.playing = false;
         other.started = false;
         other.voice = -1;
-    }
-
-    if (ModuleLogOn())
-    {
-        std::fprintf(stderr, "audio: stream channel %d ended\n", channel);
     }
 }
 
@@ -1552,20 +1342,6 @@ void SdlAudio::Spu2::SoundModule::TrackStreams()
 
         if (!device.VoiceActive(stream.voice))
         {
-            // A looped track's voice has no business stopping on its own: its ring always has a block that comes back
-            // round. If one does, the ring is not the shape the filler thinks it is, and the side goes silent for good.
-            // Said once, since it would otherwise be said once a mix for the rest of the session
-            if (!stream.finished && stream.looping && !stream.stoppedLogged)
-            {
-                stream.stoppedLogged = true;
-                if (ModuleLogOn())
-                {
-                    std::fprintf(stderr,
-                                 "audio: stream channel %d voice %d STOPPED ON ITS OWN at %u (ring %u, wrote to %u)\n", channel,
-                                 stream.voice, device.VoiceNext(stream.voice), stream.ringAddress, stream.writeBlock);
-                }
-            }
-
             if (stream.finished && !stream.looping)
             {
                 EndStream(channel);

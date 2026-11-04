@@ -133,57 +133,6 @@ Each of these checks has been seen to fail: a check that cannot fail is not a ch
 rebuilt — the compaction one used a pattern whose period was exactly the distance the memory moves by, so a voice reading the
 wrong blocks read the same bytes.
 
-## When it sounds wrong
-
-```sh
-cd disc
-TS_AUDIOLOG=1 ../build/host/sdl3/game-with-data 2> audio.log
-```
-
-The log answers for what the module is asked and what it did. `TS_AUDIOLOG` turns the game's own sound log on as well as the
-module's, so one file holds both sides of a sound that went missing: whether the game ever asked for it, and what the module did
-with it.
-
-- `sound: play id <n> loaded <n> size <n> offset <n> group <n> kind <n> last <n>` — the game handing a sound over; the sound's
-  name comes with the voice it landed on (`sound: voice <n> mixer id <n> (<name>) ...`), because a bank read keeps no names.
-- `sound: placed id <n> volume <n> pitch <n> group <n> kind <n> last <n>` / `sound: by-id ...` / `sound: instance-by-id ...` —
-  the same handover for the other ways the game asks for a sound: at a place in the world, by an id alone, or as an instance
-  (lit, looping or followed) sound.
-- `sound: play id <n> no free voice (kind <n>)` — the game dropped it before the module saw it: every voice of that kind was
-  busy. Nothing in the module can cause this on its own, but a voice the module never reports free will.
-- `sound: placed id <n> NOT HEARD (... drawn <n> now <n>)` / `WITHOUT SAMPLES` — a sound with a position in the world that the
-  game turned down itself: its chunk was not drawn in the last two frames, or its samples are not loaded.
-- `sound: placed id <n> INAUDIBLE at <x> <y> <z> (volume <n>)` — the distance and the panning left nothing to hear (retail's
-  `SoundAtPlace` says so at 0.005 of the volume), which is the one drop that happens after a voice was found.
-- `sound: dosound slot <s> of <n>, slot value <v>, sound <id>` / `... (THE SLOT IS EMPTY)` — a sound's command picking one of its
-  slots and what that slot held: an empty slot asks for nothing at all, and is the one way a sound goes missing with no play
-  line to show for it.
-- `sound: gem <n> picked up (frame <n>)` / `sound: crystal picked up (frame <n>)` — a marker in the run of log lines, so the
-  requests that follow it belong to the pickup exactly.
-- `load sound <id> <bytes> -> <words> at <address> (header <n>, memory <free>/<total>)` — what a bank read put where, and how
-  much memory is left. A load that fails to find room shows up as a play that then does nothing.
-- `play sound <id> voice <n> vol <L>/<R> pitch <p> attack <a> release <r> loops <n> group <g> from <address>` — exactly what
-  the game handed the module, and `ON A VOICE ALREADY PLAYING` when a play landed on a sounding voice. The address is the
-  game's own call site, so a sound nobody can account for is traced rather than guessed at:
-  `addr2line -f -e build/host/sdl3/game-with-data <address>` names the function that asked for it.
-- `play sound <id> voice <n> REFUSED (...)` — the module turned it down: its samples are not in the memory, or a movie has the
-  module.
-- `voice <n> cut to silence (was <L>/<R>, sound <s>)` — the game took a sounding voice to zero, which is how a sound stops in the
-  middle of itself.
-- `stream channel <n> file <f> offset <o> size <s> rate pitch <p> voice <n> loop <l> ring <r>` — a track's start.
-- `stream channel <n> has no data to play (nothing was read: <n> bytes in memory of <n>, ring <n> words, file <n>)` — the
-  region's read came back empty, so no voice is keyed on and the game is told the track is over rather than left believing it
-  plays. The numbers say which of the two it was: nothing in memory (the read found no file) or nothing to write into (the ring).
-- `stream channel <n> read its region again at the play (<n> bytes)` — the set-up's read found no file, so the region was taken
-  again as the track was played. Retail reads the region as it plays, so a bank that was not open at the set-up costs it
-  nothing; this port reads the whole region up front, which is why the play repeats it when it is missing.
-- `stream channel <n> ended` / `stopped (<n> of 48 voices still sounding)` / `STOPPED ON ITS OWN` (said once per side: a looping
-  track's voice stopping by itself is a fault, since its ring always has a block that comes back round).
-- `compacted the memory: <n> block(s) moved, <n> voice(s) followed, <n> words used` — only when something actually moved. A voice
-  that should have followed one and did not is the shape of a noise burst.
-
-`TS_AUDIODUMP=<file>` writes the mixed stream's raw s16 stereo at 48 kHz, which is what to compare by ear or by measurement.
-
 ## What is not settled
 
 - **The one that went quiet was found, and it was two faults.** A playthrough's log named it: `stream channel 5 voice 3 STOPPED
@@ -210,18 +159,16 @@ with it.
   module lets a track go at.
 - **Two sounds measured by ear, not yet by number**: the gear sounds (reported loud) and the hogs (reported like noise). Hogs
   are the compaction class of bug above, so they should be measurably better now. The gears are **a repeating instance sound** —
-  a playthrough's log shows the same sound re-played every pass on a fresh voice with the volume creeping up as the player
-  approaches, which is `soundobjects.cpp`'s `StateWaiting` re-key. Whether that is simply what the game asks for is not
-  answerable from the log alone; the play line now shows the sound's id, volume, pitch and the game's call site, and the banks
-  keep no names, so an id is what to compare against retail by ear.
+  a playthrough's log showed the same sound re-played every pass on a fresh voice with the volume creeping up as the player
+  approaches, which is `soundobjects.cpp`'s `StateWaiting` re-key. Whether that is simply what the game asks for is still open:
+  the log gave the sound's id and the game's call site but the banks keep no names, so an id is what to compare against retail by
+  ear.
 - **The gem's chime is scripted, and where it is is now known**: a gem's own pickup path (`AddGemCommand::ExecuteOn` →
   `ShowGemWidget` → `OLEG::PlayPickupEffect`) is a HUD sparkle and nothing else, which the retail binary confirms — its `AddGem`
   command's only call is the visual effect. The chime is a `DoSound` command instead: the six-gem table in `CRASH.BD`
   (`0x592f04`–`0x592fa4`) is followed at `0x592fc4` by one whose flags (`0x007800f1`) name a single slot and the random-slot
   kind, and whose `soundSlots[0]` is `1` — the picked-up object's second sound slot. Our command logic matches retail's for that
-  path, so the open question is whether the object the command runs on has that slot, and whether the command runs at all: the
-  `sound: gem <n> picked up` marker, the `sound: dosound slot ...` line and the drops below it (`NOT HEARD`, `WITHOUT SAMPLES`,
-  `no free voice`, `INAUDIBLE`, `(THE SLOT IS EMPTY)`) answer both between them.
+  path, so the open question is whether the object the command runs on has that slot, and whether the command runs at all.
 - **The effect's depth, delay and feedback mapping** (the game's knobs over libsd's preset registers) is this port's reading of
   what the module did with them; the register sets themselves are the disc's.
 - **The volume ramp** is ten milliseconds either way, which is the module's smooth volume opcode's job, not a number read off the
@@ -290,7 +237,7 @@ duplicate `KeyOn` in the play path undid the window every time, which showed up 
 ### Side effects worth knowing about
 
 - **Voices are the game's to hand out.** The module never picks a voice and never steals one. A play on a voice that is still
-  sounding re-keys it, which is what the module does too — the log says `ON A VOICE ALREADY PLAYING` when it happens.
+  sounding re-keys it, which is what the module does too.
 - **The memory is the game's to ask about.** Nothing is compacted or moved behind its back; the only moves are the ones its own
   36-frame `CompactSoundMemory` asks for, and each one says what it moved.
 - **A track's own loop point is not ours.** The module clears the region's flags as it lays blocks into a ring and writes its
@@ -311,9 +258,8 @@ duplicate `KeyOn` in the play path undid the window every time, which showed up 
 
 It reports whether the region opens with the bank tools' header, how many blocks it is, **how many blocks carry an end or loop
 flag** (the number that would have shown the bug above immediately), whether the block headers are plausible, the region's RMS
-and peak, its length at the rate it was made at, and its energy over time; `--wav` writes what it sounds like. The offsets come
-from the port's own log: `bank <id> from file <n> (<path>) at <offset>, <size> bytes` and
-`stream channel <c> file <f> offset <o> size <s>`. Use the **path** the log names, not a guess at which `.mb` it was: the port's
-file ids are not the disc's order, and a region parsed out of the wrong file reads as noise (the tool says so, with the count of
-block headers that are not a plausible shift and filter) and tells you nothing about the sound.
+and peak, its length at the rate it was made at, and its energy over time; `--wav` writes what it sounds like. The offset and
+size are the region the game's own bank table names, and the file is that bank's: a region parsed out of the wrong file reads as
+noise (the tool says so, with the count of block headers that are not a plausible shift and filter) and tells you nothing about
+the sound.
 

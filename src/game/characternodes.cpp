@@ -12,9 +12,6 @@
 #include "game/place.h"
 #include "game/player.h"
 #include "game/reference.h"
-#include "debug.h"
-
-#include <cstdio>
 
 #include <cstddef>
 #include <cstdint>
@@ -78,12 +75,6 @@ void ReleaseFollowed(FollowNode* node)
 void RestartCamera(FollowNode* node, ChunkData* chunk)
 {
     InstanceContext* camera = node->MakeCamera(chunk);
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: camera restarted in chunk %p -> %p (instance %p)\n", static_cast<void*>(chunk),
-                     static_cast<void*>(camera),
-                     static_cast<void*>(node->cameraInstance != nullptr ? node->cameraInstance->object : nullptr));
-    }
 
     RestartFollowCamera(&node->camera, g_AgentNodesGameController, camera, node->owner);
     RestoreCameraDefaults(node);

@@ -116,11 +116,16 @@ bgfx::RendererType::Enum RendererFromEnvironment(bool* fallback)
     return bgfx::RendererType::OpenGL;
 }
 
+// The anti-aliasing every frame draws with: BgfxSetAntiAliasing puts the settings file's choice here before BgfxInit, and
+// nothing sets it in a headless proof, which draws as it always has
+AntiAlias g_antiAliasing = AntiAlias::Off;
+
 bool g_initialized = false;
 
 // Sets the frame's view order. Views 0..27 are the retail buckets in their own order; the host's own passes are
 // placed where the retail pass they stand in for draws: the scene fog (32), the shadow volumes' offscreen depth (33),
-// the coverage pass (25) just before the resolve it feeds, and the screen effects' readback blit (34).
+// the coverage pass (25) just before the resolve it feeds, and the screen effects' readback blit (34). The antialiasing
+// passes (35..37) follow the composite at 31, which is the frame they clean up.
 void OrderViews()
 {
     static constexpr bgfx::ViewId Order[] = {
@@ -129,7 +134,7 @@ void OrderViews()
         33, 25, 21,
         22, 23, 24,
         26, 27,
-        34, 28, 30, 31, 29,
+        34, 28, 30, 31, 35, 36, 37, 29,
     };
     static bool ordered = false;
     if (ordered)
@@ -140,6 +145,16 @@ void OrderViews()
     ordered = true;
     bgfx::setViewOrder(0, static_cast<bgfx::ViewId>(sizeof(Order) / sizeof(Order[0])), Order);
 }
+}
+
+AntiAlias HostAntiAliasing()
+{
+    return g_antiAliasing;
+}
+
+void BgfxSetAntiAliasing(AntiAlias mode)
+{
+    g_antiAliasing = mode;
 }
 
 bool BgfxInit(SDL_Window* window)
@@ -215,6 +230,21 @@ bool BgfxInit(SDL_Window* window)
     std::fprintf(stderr, "bgfx: renderer %s (NDC depth [%d, 1], origin %s left)\n",
                  bgfx::getRendererName(bgfx::getRendererType()), caps->homogeneousDepth ? -1 : 0,
                  caps->originBottomLeft ? "bottom" : "top");
+    // What the frame's picture goes through, so a log says which antialiasing drew it (the settings file's antialias line)
+    const AntiAlias antiAliasing = HostAntiAliasing();
+    switch (antiAliasing)
+    {
+    case AntiAlias::Off:
+        std::fprintf(stderr, "bgfx: anti-aliasing off\n");
+        break;
+    case AntiAlias::Fxaa:
+        std::fprintf(stderr, "bgfx: anti-aliasing fxaa\n");
+        break;
+    case AntiAlias::Smaa:
+        std::fprintf(stderr, "bgfx: anti-aliasing smaa\n");
+        break;
+    }
+
     bgfx::reset(BGFX_RESET_NONE);
     bgfx::setDebug(BGFX_DEBUG_TEXT);
     bgfx::setViewClear(ClearView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, DebugClearColor);

@@ -9,12 +9,16 @@
 #if defined(__ANDROID__)
 #include "shaders/fs_draw2d_gles.bin.h"
 #include "shaders/fs_draw3d_gles.bin.h"
+#include "shaders/fs_fxaa_gles.bin.h"
 #include "shaders/fs_particle_gles.bin.h"
 #include "shaders/fs_scenecomposite_gles.bin.h"
 #include "shaders/fs_scenefog_gles.bin.h"
 #include "shaders/fs_screenfx_gles.bin.h"
 #include "shaders/fs_shadowresolve_gles.bin.h"
 #include "shaders/fs_shadowvolume_gles.bin.h"
+#include "shaders/fs_smaa_edge_gles.bin.h"
+#include "shaders/fs_smaa_weights_gles.bin.h"
+#include "shaders/fs_smaa_blend_gles.bin.h"
 #include "shaders/fs_stq_gles.bin.h"
 #include "shaders/vs_draw2d_gles.bin.h"
 #include "shaders/vs_draw3d_gles.bin.h"
@@ -28,12 +32,16 @@
 #else
 #include "shaders/fs_draw2d.bin.h"
 #include "shaders/fs_draw3d.bin.h"
+#include "shaders/fs_fxaa.bin.h"
 #include "shaders/fs_particle.bin.h"
 #include "shaders/fs_scenecomposite.bin.h"
 #include "shaders/fs_scenefog.bin.h"
 #include "shaders/fs_screenfx.bin.h"
 #include "shaders/fs_shadowresolve.bin.h"
 #include "shaders/fs_shadowvolume.bin.h"
+#include "shaders/fs_smaa_edge.bin.h"
+#include "shaders/fs_smaa_weights.bin.h"
+#include "shaders/fs_smaa_blend.bin.h"
 #include "shaders/fs_stq.bin.h"
 #include "shaders/vs_draw2d.bin.h"
 #include "shaders/vs_draw3d.bin.h"
@@ -48,12 +56,16 @@
 #if defined(__EMSCRIPTEN__)
 #include "shaders/fs_draw2d_wgsl.bin.h"
 #include "shaders/fs_draw3d_wgsl.bin.h"
+#include "shaders/fs_fxaa_wgsl.bin.h"
 #include "shaders/fs_particle_wgsl.bin.h"
 #include "shaders/fs_scenecomposite_wgsl.bin.h"
 #include "shaders/fs_scenefog_wgsl.bin.h"
 #include "shaders/fs_screenfx_wgsl.bin.h"
 #include "shaders/fs_shadowresolve_wgsl.bin.h"
 #include "shaders/fs_shadowvolume_wgsl.bin.h"
+#include "shaders/fs_smaa_edge_wgsl.bin.h"
+#include "shaders/fs_smaa_weights_wgsl.bin.h"
+#include "shaders/fs_smaa_blend_wgsl.bin.h"
 #include "shaders/fs_stq_wgsl.bin.h"
 #include "shaders/vs_draw2d_wgsl.bin.h"
 #include "shaders/vs_draw3d_wgsl.bin.h"
@@ -67,12 +79,16 @@
 #endif
 #include "shaders/fs_draw2d_spv.bin.h"
 #include "shaders/fs_draw3d_spv.bin.h"
+#include "shaders/fs_fxaa_spv.bin.h"
 #include "shaders/fs_particle_spv.bin.h"
 #include "shaders/fs_scenecomposite_spv.bin.h"
 #include "shaders/fs_scenefog_spv.bin.h"
 #include "shaders/fs_screenfx_spv.bin.h"
 #include "shaders/fs_shadowresolve_spv.bin.h"
 #include "shaders/fs_shadowvolume_spv.bin.h"
+#include "shaders/fs_smaa_edge_spv.bin.h"
+#include "shaders/fs_smaa_weights_spv.bin.h"
+#include "shaders/fs_smaa_blend_spv.bin.h"
 #include "shaders/fs_stq_spv.bin.h"
 #include "shaders/vs_draw2d_spv.bin.h"
 #include "shaders/vs_draw3d_spv.bin.h"
@@ -90,12 +106,16 @@
 #if defined(TWINSANITY_HAVE_DXBC)
 #include "shaders/fs_draw2d_dxbc.bin.h"
 #include "shaders/fs_draw3d_dxbc.bin.h"
+#include "shaders/fs_fxaa_dxbc.bin.h"
 #include "shaders/fs_particle_dxbc.bin.h"
 #include "shaders/fs_scenecomposite_dxbc.bin.h"
 #include "shaders/fs_scenefog_dxbc.bin.h"
 #include "shaders/fs_screenfx_dxbc.bin.h"
 #include "shaders/fs_shadowresolve_dxbc.bin.h"
 #include "shaders/fs_shadowvolume_dxbc.bin.h"
+#include "shaders/fs_smaa_edge_dxbc.bin.h"
+#include "shaders/fs_smaa_weights_dxbc.bin.h"
+#include "shaders/fs_smaa_blend_dxbc.bin.h"
 #include "shaders/fs_stq_dxbc.bin.h"
 #include "shaders/vs_draw2d_dxbc.bin.h"
 #include "shaders/vs_draw3d_dxbc.bin.h"
@@ -176,6 +196,10 @@ constexpr HostShaderBlobs ShaderBlobs[] = {
     {HOST_SHADER_GL_BLOB(fs_shadowresolve), fs_shadowresolve_spv, sizeof(fs_shadowresolve_spv) HOST_SHADER_WEBGPU_BLOB(fs_shadowresolve) HOST_SHADER_D3D_BLOB(fs_shadowresolve)},
     {HOST_SHADER_GL_BLOB(vs_scenecomposite), vs_scenecomposite_spv, sizeof(vs_scenecomposite_spv) HOST_SHADER_WEBGPU_BLOB(vs_scenecomposite) HOST_SHADER_D3D_BLOB(vs_scenecomposite)},
     {HOST_SHADER_GL_BLOB(fs_scenecomposite), fs_scenecomposite_spv, sizeof(fs_scenecomposite_spv) HOST_SHADER_WEBGPU_BLOB(fs_scenecomposite) HOST_SHADER_D3D_BLOB(fs_scenecomposite)},
+    {HOST_SHADER_GL_BLOB(fs_fxaa), fs_fxaa_spv, sizeof(fs_fxaa_spv) HOST_SHADER_WEBGPU_BLOB(fs_fxaa) HOST_SHADER_D3D_BLOB(fs_fxaa)},
+    {HOST_SHADER_GL_BLOB(fs_smaa_edge), fs_smaa_edge_spv, sizeof(fs_smaa_edge_spv) HOST_SHADER_WEBGPU_BLOB(fs_smaa_edge) HOST_SHADER_D3D_BLOB(fs_smaa_edge)},
+    {HOST_SHADER_GL_BLOB(fs_smaa_weights), fs_smaa_weights_spv, sizeof(fs_smaa_weights_spv) HOST_SHADER_WEBGPU_BLOB(fs_smaa_weights) HOST_SHADER_D3D_BLOB(fs_smaa_weights)},
+    {HOST_SHADER_GL_BLOB(fs_smaa_blend), fs_smaa_blend_spv, sizeof(fs_smaa_blend_spv) HOST_SHADER_WEBGPU_BLOB(fs_smaa_blend) HOST_SHADER_D3D_BLOB(fs_smaa_blend)},
 };
 static_assert(sizeof(ShaderBlobs) / sizeof(ShaderBlobs[0]) == static_cast<std::size_t>(Platform::Graphics::HostShader::Count),
               "every host shader has a blob row");

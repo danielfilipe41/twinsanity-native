@@ -38,6 +38,33 @@ fails the launch rather than quietly rendering another way.
 
 Android and macOS have no platform layer here yet: their rows are the renderers and shader backends the tables already hold.
 
+## Antialiasing
+
+The settings file's `antialias` line picks how the finished frame is cleaned up (see
+[Saves and settings](../README.md#saves-and-settings); there is no screen to set it on, so the line is edited by hand):
+
+| `antialias` | What draws |
+|---|---|
+| `off` (default) | nothing: the pictures the render checks compare against were drawn this way |
+| `fxaa` | one post pass over the composited frame, no look-up tables: the cheapest, and the softest |
+| `smaa` | three post passes with SMAA's area and search tables: sharper than FXAA, and it keeps subpixel detail |
+
+Both are post passes on the composited picture, so they cover everything the frame shows: the 3D geometry, the sprites and
+the menus' text. FXAA blends the whole span it finds an edge in, which is why it is the cheap one and the blurry one; SMAA
+finds each span's ends, so it anti-aliases the edge and leaves the rest of the picture alone.
+
+Hardware multisampling is not offered. It was built and measured: bgfx's multisample render targets
+(`BGFX_TEXTURE_RT_MSAA_X*`) on the scene target, 2x and 4x, resolving on every framebuffer switch the frame makes. The scene
+target is left and re-entered several times a frame (the sky, the shadow volumes, the screen effects and the fog each take
+the frame elsewhere and back), bgfx resolves colour and depth on every one of those switches, and on this port's GL driver
+that dropped a frame from over a hundred a second to under thirty -- with D24S8 and D32F depth alike, so the resolve itself
+is the cost, not the sample count. The two post passes cost one fullscreen pass (FXAA) or three (SMAA) at the window's
+resolution and nothing else.
+
+SMAA's two look-up tables are checked in as generated headers (`shaders/smaa_area_tex.bin.h`,
+`shaders/smaa_search_tex.bin.h`), like the shader blobs: `python3 tools/smaa/build_smaa_textures.py` regenerates them
+(it needs Pillow) and `--check` verifies them.
+
 ## Shader blobs
 
 The shaders are bgfx shaderc sources (`src/platform/sdl3/graphics/shaders/*.sc`) compiled into the C headers the platform

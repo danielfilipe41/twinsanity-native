@@ -6,6 +6,8 @@
 
 #include "common.h"
 
+#include "graphics/bgfx_context.h"
+
 // The sound processor's first reset: put the file's options into the game, if there is a file
 void HostSettingsApplyOnce();
 // Write the file when the options have changed
@@ -14,6 +16,10 @@ void HostSettingsKeep();
 // The audio callback must not call either: it would read the game's own state while the game thread writes it, and touch
 // the filesystem on the realtime thread
 void HostSettingsTick();
+// The picture's antialiasing, from the file's `antialias` line: off when the file has none, and off for a word this build
+// has no mode for. Read before the renderer makes its first frame's targets, like the rate, and written back as it was read
+AntiAlias HostSettingsAntiAlias();
+
 // The picture's rate: how often the host presents a frame (the game's logic stays at the disc's field rate). Read from the
 // file's `render` line before the renderer starts; 50, the field rate, when the file has none
 s32 HostSettingsRenderRate();

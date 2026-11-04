@@ -22,6 +22,10 @@
 
 #include "host_shaders.h"
 
+// SMAA's area and search look-up tables (tools/build_smaa_textures.py): the generated arrays the weights pass indexes
+#include "shaders/smaa_area_tex.bin.h"
+#include "shaders/smaa_search_tex.bin.h"
+
 using Platform::Graphics::HostCreateShader;
 using Platform::Graphics::HostShader;
 
@@ -867,6 +871,42 @@ f32 g_displayOffsetDown = 0.0f;
 bgfx::FrameBufferHandle g_compositeTarget = BGFX_INVALID_HANDLE;
 constexpr bgfx::ViewId HostCompositeView = 31;
 
+// ---- Anti-aliasing ----
+// The settings file's `antialias` line (bgfx_context.h's AntiAlias) asks for no antialiasing, FXAA or SMAA: post passes
+// over the composited frame that find its edges and blend across them. A post pass reads the composite's output, so the composite has to land in a
+// render target of its own first: that is g_aaInput, and the pass writes where the composite would have.
+constexpr bgfx::ViewId HostAaEdgesView = 35;
+constexpr bgfx::ViewId HostAaWeightsView = 36;
+constexpr bgfx::ViewId HostAaBlendView = 37;
+// SMAA's tables' sizes (tools/build_smaa_textures.py's arrays)
+constexpr u16 SmaaAreaWidth = 160;
+constexpr u16 SmaaAreaHeight = 560;
+constexpr u16 SmaaSearchWidth = 64;
+constexpr u16 SmaaSearchHeight = 16;
+
+// The composite's target while a post pass follows it, and the SMAA intermediates: the edges texture the weights pass
+// searches, and the weights the blend pass reads
+bgfx::FrameBufferHandle g_aaInput = BGFX_INVALID_HANDLE;
+bgfx::TextureHandle g_aaInputColour = BGFX_INVALID_HANDLE;
+bgfx::FrameBufferHandle g_aaEdges = BGFX_INVALID_HANDLE;
+bgfx::FrameBufferHandle g_aaWeights = BGFX_INVALID_HANDLE;
+bgfx::TextureHandle g_smaaArea = BGFX_INVALID_HANDLE;
+bgfx::TextureHandle g_smaaSearch = BGFX_INVALID_HANDLE;
+// What the post passes draw with, made on first use: one program per pass, the u_aaPt uniform all of them take, the
+// samplers two of them declare, and their fullscreen triangles
+bool g_aaMade = false;
+bgfx::ProgramHandle g_aaFxaa = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_aaSmaaEdges = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_aaSmaaWeights = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_aaSmaaBlend = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_aaPt = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_aaEdgesSampler = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_aaAreaSampler = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_aaSearchSampler = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_aaBlendSampler = BGFX_INVALID_HANDLE;
+bgfx::VertexBufferHandle g_aaTriangleTarget = BGFX_INVALID_HANDLE;
+bgfx::VertexBufferHandle g_aaTriangleScreen = BGFX_INVALID_HANDLE;
+
 struct CompositeVertex
 {
     f32 x;
@@ -923,7 +963,8 @@ void EnsureSceneTarget()
     g_sceneColour = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1,
                                           bgfx::TextureFormat::RGBA8,
                                           BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
-                                              BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+                                              BGFX_SAMPLER_MIP_POINT |
+                                              BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     // The scene's depth: the shadow pass samples it for the resolve's ramp (it is also the depth test the 3D passes
     // rely on, which is why the scene has to be one target rather than the backbuffer). The format has to be one the
     // renderer can both attach and sample, which D24S8 is not on every Vulkan driver (AMD's radv exposes it as
@@ -933,7 +974,7 @@ void EnsureSceneTarget()
                                                                  bgfx::TextureFormat::D32F,
                                                                  bgfx::TextureFormat::D16};
     constexpr u64 DepthFlags = BGFX_TEXTURE_RT | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
-                               BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+                           BGFX_SAMPLER_MIP_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
     for (bgfx::TextureFormat::Enum format : DepthFormats)
     {
         g_sceneDepth =
@@ -1014,6 +1055,141 @@ void EnsureCompositeTriangle(f32 offsetX, f32 offsetY)
     g_compositeTriangle = bgfx::createVertexBuffer(memory, CompositeLayout());
     g_compositeOffsetX = offsetX;
     g_compositeOffsetY = offsetY;
+}
+
+// The post passes' fullscreen triangle, in the composite's own layout (its vertex shader is what every one of them draws
+// with, so the vertex has to look like the composite's own): yDown selects the composite's mirroring, which is what a pass
+// landing on the backbuffer needs and what a pass writing a render target must not have
+bgfx::VertexBufferHandle MakeAaTriangle(bool yDown)
+{
+    const f32 ySign = yDown ? -1.0f : 1.0f;
+    const CompositeVertex triangle[3] = {
+        {-1.0f, ySign * -1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {3.0f, ySign * -1.0f, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {-1.0f, ySign * 3.0f, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    };
+    const bgfx::Memory* memory = bgfx::copy(triangle, sizeof(triangle));
+    return bgfx::createVertexBuffer(memory, CompositeLayout());
+}
+
+// A post pass's program: the composite's vertex shader (a fullscreen triangle whose texture fractions come from its clip
+// position) and the pass's own fragment shader
+bgfx::ProgramHandle MakeAaProgram(Platform::Graphics::HostShader fragment)
+{
+    bgfx::ShaderHandle vertex = HostCreateShader(HostShader::SceneCompositeVertex);
+    return bgfx::createProgram(vertex, HostCreateShader(fragment), true);
+}
+
+// The post passes' target and objects, made on first use and only what the mode asked for
+void EnsureAntiAliasing()
+{
+    if (g_aaMade)
+    {
+        return;
+    }
+
+    g_aaMade = true;
+
+    const u16 width = static_cast<u16>(BgfxWindowWidth);
+    const u16 height = static_cast<u16>(BgfxWindowHeight);
+    // Linear and clamped: a post pass reads its source at fractions of a texel
+    const u64 sampleFlags = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+    g_aaInput = bgfx::createFrameBuffer(width, height, bgfx::TextureFormat::RGBA8, sampleFlags);
+    g_aaInputColour = bgfx::getTexture(g_aaInput);
+    g_aaPt = bgfx::createUniform("u_aaPt", bgfx::UniformType::Vec4);
+    g_aaTriangleTarget = MakeAaTriangle(false);
+    g_aaTriangleScreen = MakeAaTriangle(Platform::Graphics::HostClipSpaceYDown());
+
+    const AntiAlias mode = HostAntiAliasing();
+    if (mode == AntiAlias::Fxaa)
+    {
+        g_aaFxaa = MakeAaProgram(HostShader::FxaaFragment);
+        return;
+    }
+    if (mode != AntiAlias::Smaa)
+    {
+        return;
+    }
+
+    g_aaSmaaEdges = MakeAaProgram(HostShader::SmaaEdgeFragment);
+    g_aaSmaaWeights = MakeAaProgram(HostShader::SmaaWeightsFragment);
+    g_aaSmaaBlend = MakeAaProgram(HostShader::SmaaBlendFragment);
+    g_aaEdgesSampler = bgfx::createUniform("s_edges", bgfx::UniformType::Sampler);
+    g_aaAreaSampler = bgfx::createUniform("s_area", bgfx::UniformType::Sampler);
+    g_aaSearchSampler = bgfx::createUniform("s_search", bgfx::UniformType::Sampler);
+    g_aaBlendSampler = bgfx::createUniform("s_blend", bgfx::UniformType::Sampler);
+    g_aaEdges = bgfx::createFrameBuffer(width, height, bgfx::TextureFormat::RGBA8, sampleFlags);
+    g_aaWeights = bgfx::createFrameBuffer(width, height, bgfx::TextureFormat::RGBA8, sampleFlags);
+    // SMAA's two tables, from the arrays the generator wrote: the area table the weights pass indexes by edge shape and
+    // distance, and the search table that says how far a pattern runs. Both are look-ups, so they clamp: wrapping would
+    // read another row's weights
+    g_smaaArea = bgfx::createTexture2D(SmaaAreaWidth, SmaaAreaHeight, false, 1, bgfx::TextureFormat::RGBA8, sampleFlags,
+                                       bgfx::copy(smaa_area_tex, sizeof(smaa_area_tex)));
+    g_smaaSearch = bgfx::createTexture2D(SmaaSearchWidth, SmaaSearchHeight, false, 1, bgfx::TextureFormat::R8,
+                                         sampleFlags, bgfx::copy(smaa_search_tex, sizeof(smaa_search_tex)));
+}
+
+// Submits the mode's passes, once the composite has filled g_aaInput
+void SubmitAntiAliasing()
+{
+    EnsureAntiAliasing();
+    EnsureComposite();
+    const AntiAlias mode = HostAntiAliasing();
+    const f32 point[4] = {1.0f / static_cast<f32>(BgfxWindowWidth), 1.0f / static_cast<f32>(BgfxWindowHeight),
+                          static_cast<f32>(BgfxWindowWidth), static_cast<f32>(BgfxWindowHeight)};
+    const u16 width = static_cast<u16>(BgfxWindowWidth);
+    const u16 height = static_cast<u16>(BgfxWindowHeight);
+    const u64 linear = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+
+    if (mode == AntiAlias::Fxaa)
+    {
+        // One pass, reading the frame at whole and half texels: point sampling would sample the same texels a linear tap at
+        // a texel centre does, but its subpixel offset is fractional, so the frame is bound linearly
+        bgfx::setViewMode(HostAaBlendView, bgfx::ViewMode::Sequential);
+        bgfx::setViewFrameBuffer(HostAaBlendView, g_compositeTarget);
+        bgfx::setViewRect(HostAaBlendView, 0, 0, width, height);
+        bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+        bgfx::setTexture(0, g_compositeSampler, g_aaInputColour, linear);
+        bgfx::setUniform(g_aaPt, point);
+        bgfx::setVertexBuffer(0, g_aaTriangleScreen);
+        bgfx::submit(HostAaBlendView, g_aaFxaa);
+        return;
+    }
+
+    // SMAA: edges, then weights, then the blend that lands where the composite would have
+    bgfx::setViewMode(HostAaEdgesView, bgfx::ViewMode::Sequential);
+    bgfx::setViewFrameBuffer(HostAaEdgesView, g_aaEdges);
+    bgfx::setViewRect(HostAaEdgesView, 0, 0, width, height);
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    // The edge detection reads the frame's own texels, so this one binds it point-sampled
+    bgfx::setTexture(0, g_compositeSampler, g_aaInputColour,
+                     BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    bgfx::setUniform(g_aaPt, point);
+    bgfx::setVertexBuffer(0, g_aaTriangleTarget);
+    bgfx::submit(HostAaEdgesView, g_aaSmaaEdges);
+
+    // The searches walk the edges texture a texel at a time and read the two tables at fractions, so all three bind
+    // linearly
+    bgfx::setViewMode(HostAaWeightsView, bgfx::ViewMode::Sequential);
+    bgfx::setViewFrameBuffer(HostAaWeightsView, g_aaWeights);
+    bgfx::setViewRect(HostAaWeightsView, 0, 0, width, height);
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    bgfx::setTexture(0, g_aaEdgesSampler, bgfx::getTexture(g_aaEdges), linear);
+    bgfx::setTexture(1, g_aaAreaSampler, g_smaaArea, linear);
+    bgfx::setTexture(2, g_aaSearchSampler, g_smaaSearch, linear);
+    bgfx::setUniform(g_aaPt, point);
+    bgfx::setVertexBuffer(0, g_aaTriangleTarget);
+    bgfx::submit(HostAaWeightsView, g_aaSmaaWeights);
+
+    bgfx::setViewMode(HostAaBlendView, bgfx::ViewMode::Sequential);
+    bgfx::setViewFrameBuffer(HostAaBlendView, g_compositeTarget);
+    bgfx::setViewRect(HostAaBlendView, 0, 0, width, height);
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    bgfx::setTexture(0, g_compositeSampler, g_aaInputColour, linear);
+    bgfx::setTexture(1, g_aaBlendSampler, bgfx::getTexture(g_aaWeights), linear);
+    bgfx::setUniform(g_aaPt, point);
+    bgfx::setVertexBuffer(0, g_aaTriangleScreen);
+    bgfx::submit(HostAaBlendView, g_aaSmaaBlend);
 }
 }
 
@@ -1167,14 +1343,28 @@ void HostCompositeScene()
         return;
     }
 
+    // With a post pass following, the composite lands in the pass's input instead of the backbuffer: the pass then writes
+    // where the composite would have (HostAaBlendView's target is g_compositeTarget, the proof's own or the backbuffer)
+    const AntiAlias antiAliasing = HostAntiAliasing();
+    const bool postPass = antiAliasing == AntiAlias::Fxaa || antiAliasing == AntiAlias::Smaa;
+    if (postPass)
+    {
+        EnsureAntiAliasing();
+    }
+
     bgfx::setViewMode(HostCompositeView, bgfx::ViewMode::Sequential);
-    bgfx::setViewFrameBuffer(HostCompositeView, g_compositeTarget);
+    bgfx::setViewFrameBuffer(HostCompositeView, postPass ? g_aaInput : g_compositeTarget);
     bgfx::setViewRect(HostCompositeView, 0, 0, BgfxWindowWidth, BgfxWindowHeight);
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_PT_TRISTRIP);
     bgfx::setTexture(0, g_compositeSampler, g_sceneColour,
                      BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     bgfx::setVertexBuffer(0, g_compositeTriangle);
     bgfx::submit(HostCompositeView, g_compositeProgram);
+
+    if (postPass)
+    {
+        SubmitAntiAliasing();
+    }
 }
 
 void HostRetireDrawPacket(const u8* packet)

@@ -4,7 +4,6 @@
 
 #include "soundmodule.h"
 
-#include "debug.h"
 #include "platform/audio.h"
 #include "platform/sound.h"
 #include "../settings.h"
@@ -13,7 +12,6 @@
 
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -27,29 +25,6 @@ constexpr s32 MixFrames = 1024;
 
 SDL_AudioStream* g_AudioStream = nullptr;
 SDL_Mutex* g_AudioLock = nullptr;
-
-// A dump of the mixed output (a debugging aid): TS_AUDIODUMP=<file> writes the stream's raw s16 stereo at 48 kHz
-std::FILE* g_AudioDump = nullptr;
-bool g_AudioDumpRead = false;
-
-std::FILE* AudioDump()
-{
-    if (!g_AudioDumpRead)
-    {
-        g_AudioDumpRead = true;
-        const char* path = std::getenv("TS_AUDIODUMP");
-        if (path != nullptr && path[0] != '\0')
-        {
-            g_AudioDump = std::fopen(path, "wb");
-            if (g_AudioDump != nullptr)
-            {
-                std::setvbuf(g_AudioDump, nullptr, _IONBF, 0);
-            }
-        }
-    }
-
-    return g_AudioDump;
-}
 
 SDL_Mutex* AudioLock()
 {
@@ -141,12 +116,6 @@ void SDLCALL FeedAudio(void* userdata, SDL_AudioStream* stream, int additional, 
         return;
     }
 
-    // SDL asking for a lot at once means the device already ran dry (its buffer drained while this thread was held up)
-    if (frames > MixFrames * 2 && std::getenv("TS_AUDIOLOG") != nullptr)
-    {
-        std::fprintf(stderr, "audio: stream asked for %d frames at once (the device ran dry)\n", frames);
-    }
-
     // The options the player set are written by the game thread's own tick (HostSettingsTick, Platform::Graphics::
     // BeginLogicFrame), not here: this callback must not read the game's state while the game thread writes it, nor
     // touch the filesystem while the device waits on it
@@ -154,7 +123,6 @@ void SDLCALL FeedAudio(void* userdata, SDL_AudioStream* stream, int additional, 
     // SDL asks for what the stream needs right now: filling less than asked leaves it short and the device underruns (the
     // audible pop). The request is served whole, one MixFrames chunk at a time, rather than truncated at a cap
     static s16 mixed[MixFrames * 2];
-    std::FILE* dump = AudioDump();
     while (frames > 0)
     {
         s32 chunk = frames > MixFrames ? MixFrames : frames;
@@ -164,10 +132,6 @@ void SDLCALL FeedAudio(void* userdata, SDL_AudioStream* stream, int additional, 
         UnlockAudio();
 
         SDL_PutAudioStreamData(stream, mixed, chunk * MixChannels * static_cast<s32>(sizeof(s16)));
-        if (dump != nullptr)
-        {
-            std::fwrite(mixed, sizeof(s16) * MixChannels, static_cast<size_t>(chunk), dump);
-        }
 
         frames -= chunk;
     }
@@ -241,14 +205,6 @@ void SdlAudio::MoviePcmStop()
 
 s32 Platform::Sound::InitialiseRemote()
 {
-    // The game sound code's own log (what every play was handed and every check that turned one down), if a run asks for it.
-    // TS_AUDIOLOG turns it on too: a sound that went missing is either dropped by the game before the module ever sees it (no
-    // voice free, the sound not loaded) or turned down by the module, and one log that has both sides says which on the line
-    if (std::getenv("TS_SOUNDLOG") != nullptr || std::getenv("TS_AUDIOLOG") != nullptr)
-    {
-        g_SoundLog = true;
-    }
-
     return StartAudio() ? 0 : -1;
 }
 
@@ -402,8 +358,6 @@ s32 Platform::Audio::PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right
                                u32 loops)
 {
     LockAudio();
-    // Where in the game this play came from: a sound nobody can account for is traced from the log to the call that made it
-    Module().SetSoundCaller(__builtin_return_address(0));
     s32 result = Module().PlaySound(sound, voiceAndGroup, left, right, pitch, attack, release, loops);
     UnlockAudio();
     return result;

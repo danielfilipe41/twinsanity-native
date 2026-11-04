@@ -194,9 +194,4 @@ u32 SoundMemory::Used() const
 
     return words;
 }
-
-u32 SoundMemory::Free() const
-{
-    return m_ceiling > Used() + MemoryBase ? m_ceiling - Used() - MemoryBase : 0;
-}
 }

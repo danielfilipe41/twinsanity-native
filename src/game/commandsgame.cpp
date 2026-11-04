@@ -1,9 +1,5 @@
 #include "game/commands.h"
 
-#include <cstdio>
-
-#include "debug.h"
-
 #include "game/agentparts.h"
 #include "game/agents.h"
 #include "game/animation.h"
@@ -377,12 +373,6 @@ void AddGemCommand::ExecuteOn(GameNode*)
     oleg->pickupSprite = static_cast<u8>(found + OLEG::SpriteGems);
     oleg->pickupGem.gem = found;
     ShowGemWidget(oleg);
-    if (g_SoundLog)
-    {
-        // A marker in the sound log: the chime a gem is picked up with is the object's own sound command, not this one, so the
-        // lines that follow say whether the game asked for it at all
-        std::fprintf(stderr, "sound: gem %d picked up (frame %u)\n", found, g_RenderedFrames);
-    }
 }
 
 // The crystal of the level play is in found, shown on the HUD
@@ -393,10 +383,6 @@ void AddCrystalCommand::ExecuteOn(GameNode*)
     MarkCrystal(CurrentLevel(&controller->progress));
     oleg->pickupSprite = OLEG::SpritePickupCrystal;
     ShowGemWidget(oleg);
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: crystal picked up (frame %u)\n", g_RenderedFrames);
-    }
 }
 
 // The played character's part gets a hit point, at most 3: a fourth makes it invincible

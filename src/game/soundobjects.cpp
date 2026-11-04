@@ -11,9 +11,6 @@
 #include "game/view.h"
 #include "platform/math.h"
 #include "retail/libc.h"
-#include "debug.h"
-
-#include <cstdio>
 
 // The sounds the game plays on instances and the music emitters, kept in pools handed out by index and followed every frame from
 // where the sound's listener is
@@ -651,35 +648,18 @@ s32 PlaySoundAtPosition(f32 volume, f32 pitch, GameSound* sound, u32 group, Chun
 {
     if (sound->flags.loaded == 0)
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: placed id %u WITHOUT SAMPLES\n", sound->soundId);
-        }
-
         return -1;
     }
 
     InstanceContext* listener = Listener();
     if (listener == nullptr || chunk == nullptr || !(g_RenderedFrames - chunk->drawnFrame < 2))
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: placed id %u NOT HEARD (listener %p reference %p chunk %p drawn %u now %u)\n",
-                         sound->soundId, static_cast<void*>(listener), static_cast<void*>(g_SoundListener),
-                         static_cast<void*>(chunk), chunk != nullptr ? chunk->drawnFrame : 0u, g_RenderedFrames);
-        }
-
         return -1;
     }
 
     SoundVoice* voice = FindFreeVoice(voiceKind, 0);
     if (voice == nullptr)
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: placed id %u no free voice\n", sound->soundId);
-        }
-
         return -1;
     }
 
@@ -699,14 +679,6 @@ s32 PlaySoundAtPosition(f32 volume, f32 pitch, GameSound* sound, u32 group, Chun
     s32 number = PlaySoundAt(volume, pitch, voice, sound, SoundGroupOf(static_cast<s32>(group)), &local, last);
     if (number == -1)
     {
-        if (g_SoundLog)
-        {
-            // The distance and the panning left nothing to hear: the one silent way out of a play that was asked for
-            std::fprintf(stderr, "sound: placed id %u INAUDIBLE at %g %g %g (volume %g)\n", sound->soundId,
-                         static_cast<double>(local.x), static_cast<double>(local.y), static_cast<double>(local.z),
-                         static_cast<double>(volume));
-        }
-
         ReleaseVoice(voice);
     }
     else
@@ -721,22 +693,11 @@ u32 PlayInstanceSoundAt(f32 volume, f32 pitch, GameSound* sound, u32 group, Inst
 {
     if (sound->flags.loaded == 0)
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: instance id %u WITHOUT SAMPLES\n", sound->soundId);
-        }
-
         return NoInstanceSound;
     }
 
     if (g_InstanceSounds.capacity - g_InstanceSounds.used <= 0 && last != -1)
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: instance id %u pool full (%d/%d)\n", sound->soundId, g_InstanceSounds.used,
-                         g_InstanceSounds.capacity);
-        }
-
         return NoInstanceSound;
     }
 
@@ -827,12 +788,6 @@ u32 PlayInstanceSoundById(f32 volume, f32 pitch, u32 id, u32 group, InstanceCont
 {
     // The school's kid herd (School_KidHerd_SFX) never repeats
     constexpr u32 KidHerdSound = 0x1BF;
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: instance-by-id %u volume %g pitch %g group %u kind %d last %d\n", id, volume, pitch,
-                     group, voiceKind, last);
-    }
-
     GameSound* sound = SoundById(static_cast<u16>(id));
     if (sound == nullptr)
     {
@@ -845,12 +800,6 @@ u32 PlayInstanceSoundById(f32 volume, f32 pitch, u32 id, u32 group, InstanceCont
 
 u32 PlayUnplacedSoundById(f32 volume, f32 pitch, u32 id, u32 group, InstanceContext* instance, s32 voiceKind)
 {
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: unplaced-by-id %u volume %g pitch %g group %u kind %d\n", id, volume, pitch, group,
-                     voiceKind);
-    }
-
     GameSound* sound = SoundById(static_cast<u16>(id));
     if (sound == nullptr)
     {
@@ -862,12 +811,6 @@ u32 PlayUnplacedSoundById(f32 volume, f32 pitch, u32 id, u32 group, InstanceCont
 
 u32 PlaySoundByIdAt(f32 volume, f32 pitch, u16 id, s32 group, ChunkData* chunk, const Vector4* position, s32 voiceKind, s32 last)
 {
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: placed-by-id %u volume %g pitch %g group %d kind %d last %d\n", id, volume, pitch, group,
-                     voiceKind, last);
-    }
-
     GameSound* sound = SoundById(id);
     if (sound == nullptr)
     {

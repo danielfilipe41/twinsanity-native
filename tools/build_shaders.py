@@ -51,6 +51,10 @@ SHADER_OF = {
     "fs_shadowresolve": "shadowresolve_varying.def.sc",
     "vs_scenecomposite": "scenecomposite_varying.def.sc",
     "fs_scenecomposite": "scenecomposite_varying.def.sc",
+    "fs_fxaa": "scenecomposite_varying.def.sc",
+    "fs_smaa_edge": "scenecomposite_varying.def.sc",
+    "fs_smaa_weights": "scenecomposite_varying.def.sc",
+    "fs_smaa_blend": "scenecomposite_varying.def.sc",
 }
 TYPE_OF = {"vs_": "vertex", "fs_": "fragment"}
 # (header name suffix, bin2c array suffix, shaderc profile) per platform, alongside the bgfx renderers that platform

@@ -47,7 +47,6 @@ public:
     const std::vector<MemoryMove>& Moves() const { return m_moves; }
 
     u32 Used() const;
-    u32 Free() const;
 
 private:
     struct Block

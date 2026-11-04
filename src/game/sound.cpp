@@ -15,11 +15,8 @@
 #include "game/reference.h"
 #include "game/resources.h"
 #include "game/stream.h"
-#include "debug.h"
 #include "platform/audio.h"
 #include "retail/libc.h"
-
-#include <cstdio>
 
 // The sound code's side of the sound processor: voices, reverbs, groups and music
 namespace
@@ -99,12 +96,6 @@ f32* GroupScales();
 
 extern "C" u32 PlaySound(f32 volume, f32 pitchScale, GameSound* sound, s32 group, s32 voiceKind, s32 last)
 {
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: play id %u loaded %u size %d offset %d group %d kind %d last %d\n", sound->soundId,
-                     sound->flags.loaded, sound->size, sound->offset, group, voiceKind, last);
-    }
-
     if (sound->flags.loaded == 0)
     {
         return 0;
@@ -113,11 +104,6 @@ extern "C" u32 PlaySound(f32 volume, f32 pitchScale, GameSound* sound, s32 group
     SoundVoice* voice = FindFreeVoice(voiceKind, 0);
     if (voice == nullptr)
     {
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: play id %u no free voice (kind %d)\n", sound->soundId, voiceKind);
-        }
-
         return 0;
     }
 
@@ -153,12 +139,6 @@ extern "C" void SetVoiceBank(const char* name)
 
 extern "C" u32 PlaySoundById(f32 volume, f32 pitchScale, u32 id, s32 group, s32 voiceKind, s32 last)
 {
-    if (g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: by-id %u volume %g pitch %g group %d kind %d last %d\n", id, volume, pitchScale, group,
-                     voiceKind, last);
-    }
-
     GameSound* sound = SoundById(static_cast<u16>(id));
     if (sound == nullptr)
     {
@@ -203,15 +183,6 @@ void ApplyGroupVolumes()
 
 void PlayOnVoice(SoundVoice* voice, GameSound* sound, u32 group, s32 last)
 {
-    if (g_SoundLog)
-    {
-        // The sound's name as well as its ID: an ID means nothing to whoever reads the log, and the sounds that are too loud
-        // or missing are named by the bank itself
-        std::fprintf(stderr, "sound: voice %d mixer id %u (%s) size %d group %u pitch %d vol %d/%d\n", VoiceNumber(voice),
-                     sound->soundId, sound->name.string != nullptr ? sound->name.string : "?", sound->size, group,
-                     voice->pitch, voice->left, voice->right);
-    }
-
     Platform::Audio::PlaySound(sound->soundId, static_cast<u32>(VoiceNumber(voice)) | group, static_cast<s16>(voice->left),
                                static_cast<s16>(voice->right), static_cast<u16>(voice->pitch), sound->parameter1,
                                SoundHighByte, static_cast<u32>(last == -1 ? 1 : last));
@@ -648,11 +619,6 @@ extern "C"
         u32 number = music->bits.track;
         player->track = number;
         MusicTrack* entry = FindMusicTrack(bank, number);
-        if (g_SoundLog)
-        {
-            std::fprintf(stderr, "sound: music track %u kind %d size %u offset %u rate %u group %u loops %u\n", number,
-                         entry->kind, entry->size, entry->offset, entry->rate, music->bits.group, music->bits.loops);
-        }
         if (entry->kind == MusicTrack::Mono)
         {
             player->bits.interleaved = 0;
@@ -1380,11 +1346,6 @@ GameSound* SoundById(u16 id)
         {
             sound = static_cast<GameSound*>(voices->items[copy & ResourceIndexMask]);
         }
-    }
-
-    if (sound == nullptr && g_SoundLog)
-    {
-        std::fprintf(stderr, "sound: id %u not found (capacity %u)\n", id, sounds->bits.capacity);
     }
 
     return sound;

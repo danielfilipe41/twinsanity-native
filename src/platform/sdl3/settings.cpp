@@ -70,6 +70,69 @@ void LoadRenderRate()
     std::fclose(file);
 }
 
+// The file's `antialias` line: the picture's antialiasing. Read once before the renderer makes the first frame's targets
+// (bgfx_context.cpp's ReadAntiAliasing), like the rate: the passes it selects have to exist before the frame that draws them
+bool g_AntiAliasLoaded = false;
+AntiAlias g_AntiAlias = AntiAlias::Off;
+
+void LoadAntiAlias()
+{
+    if (g_AntiAliasLoaded)
+    {
+        return;
+    }
+
+    g_AntiAliasLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        char word[16] = {};
+        if (std::sscanf(line, "antialias %15s", word) != 1)
+        {
+            continue;
+        }
+
+        if (std::strcmp(word, "fxaa") == 0)
+        {
+            g_AntiAlias = AntiAlias::Fxaa;
+        }
+        else if (std::strcmp(word, "smaa") == 0)
+        {
+            g_AntiAlias = AntiAlias::Smaa;
+        }
+        else
+        {
+            // "off", or a word this build has no mode for: the picture is drawn as it comes, which is never wrong
+            g_AntiAlias = AntiAlias::Off;
+        }
+    }
+
+    std::fclose(file);
+}
+
+// The word the file's `antialias` line is written with
+const char* AntiAliasWord(AntiAlias mode)
+{
+    switch (mode)
+    {
+    case AntiAlias::Fxaa:
+        return "fxaa";
+    case AntiAlias::Smaa:
+        return "smaa";
+    case AntiAlias::Off:
+    default:
+        return "off";
+    }
+}
+
 // The live options, as the game keeps them
 void LiveOptions(s16* left, s16* right, u32* stereo, u8* widescreen)
 {
@@ -99,6 +162,12 @@ s32 HostSettingsRenderRate()
 {
     LoadRenderRate();
     return g_RenderRate;
+}
+
+AntiAlias HostSettingsAntiAlias()
+{
+    LoadAntiAlias();
+    return g_AntiAlias;
 }
 
 void HostSettingsApplyOnce()
@@ -241,7 +310,9 @@ void HostSettingsKeep()
         std::fprintf(file, "group %u %d %d\n", group, static_cast<int>(left[group]), static_cast<int>(right[group]));
     }
 
-    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\n", static_cast<int>(stereo), static_cast<int>(widescreen),
-                 static_cast<int>(g_RenderRate));
+    // The antialiasing is the file's own line, written back as it was read: the port has no screen to set it on, so editing
+    // the file is the way, and a run that rewrote the file must not lose the choice
+    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\nantialias %s\n", static_cast<int>(stereo),
+                 static_cast<int>(widescreen), static_cast<int>(g_RenderRate), AntiAliasWord(g_AntiAlias));
     std::fclose(file);
 }

@@ -8,8 +8,6 @@ extern "C"
     volatile u32 g_DebugStep = 0;
     volatile s32 g_DebugValues[DebugValueCount] = {};
 
-    bool g_SoundLog = false;
-
     __attribute__((section(".data"))) volatile u32 g_DebugFixedTime = 0;
     volatile u32 g_DebugFrame = 0;
     volatile u32 g_DebugFreezeFrame = 0;

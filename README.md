@@ -20,7 +20,6 @@ Known issues:
 
 Future features:
 - Multiple save pages
-- SMAA and MSAA antialiasing
 - Cutscene skip
 - Support for other ISO regions (NTSC)
 - Mod support
@@ -119,6 +118,15 @@ scene is drawn again for each.
 
 ```sh
 echo 'render 120' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
+```
+
+`antialias <mode>` cleans up the finished picture: `off` when the file has none, `fxaa` (one post pass, the cheap one) or
+`smaa` (three passes, sharper and it leaves the picture's detail alone). Both work on the composited frame, so they smooth
+the 3D geometry, the sprites and the menus' text alike; hardware multisampling is not one of the choices, and
+[the antialiasing section](docs/BUILDING.md#antialiasing) says what it cost here.
+
+```sh
+echo 'antialias smaa' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
 ```
 
 A crash writes `crash.log` in the working directory and to stderr: the signal, registers, and the faulting frame with the

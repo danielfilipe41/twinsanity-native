@@ -111,8 +111,6 @@ struct MusicStream
     u32 nextChunk = 0;
     u32 chunkBlock = 0;
     bool finished = false;
-    // Whether the log has already said that this side's voice stopped on its own
-    bool stoppedLogged = false;
     // Whether the voice has been keyed on. A stream is the module's from the moment it is started (retail marks the channel
     // taken then), but its voice only sounds from the play: until then a voice that is not sounding is nothing wrong, and
     // reading it as a fault called every track's first frame a side that stopped on its own
@@ -151,9 +149,6 @@ public:
     void ReleaseSound(u32 sound);
     u32 LoadSoundBank(u32 sound, const u8* data, u32 size);
     s32 PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 pitch, u32 attack, u32 release, u32 loops);
-    // What in the game asked for the next play, so a log can say where a sound came from (the game's own address; a sound
-    // nobody can account for is traced to the call that made it rather than guessed at)
-    void SetSoundCaller(const void* caller);
 
     s32 PitchOfRate(s32 rate);
     u32 ChannelBufferAddress(s32 channel);
@@ -181,9 +176,8 @@ public:
     bool IsMusicPlaying(s32 channel);
     void StopMusic(s32 channel);
 
-    // For the proofs and the sound log
+    // For the proofs
     u32 MemoryUsed() const { return m_memory.Used(); }
-    u32 MemoryFree() const { return m_memory.Free(); }
     ChannelState StateOf(s32 voice) const;
     // Whether one of the music's streams is playing on this voice: such a voice is not one of the game's channels, and the
     // group volume has to reach it all the same
@@ -248,13 +242,9 @@ private:
     u32 m_pendingSize = 0;
 
     bool m_paused = false;
-    // Frames mixed since the log last said how many voices are held
-    u32 m_loggedFrames = 0;
     // The module's key-ons are off while a movie has it, but nothing it holds is let go: the game's state machine keeps
     // asking about the same tracks when it gets the module back
     bool m_lent = false;
-    // The game's address that asked for the next play, logged so a sound can be traced to the call that made it
-    const void* m_soundCaller = nullptr;
 };
 
 SoundModule& Module();

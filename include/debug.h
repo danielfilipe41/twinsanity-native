@@ -2,10 +2,6 @@
 
 #include "common.h"
 
-// Whether the sound code's own log prints (a host run's TS_SOUNDLOG turns it on at start-up): every play prints what it was
-// handed and every check that turned one down prints why. Off in a normal run
-extern "C" bool g_SoundLog;
-
 // The test hooks' lists: results to watch, game controller states logged, frames of random numbers kept, inputs given
 constexpr u32 DebugValueCount = 16;
 constexpr u32 DebugStateCount = 64;

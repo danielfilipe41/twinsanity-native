@@ -4,6 +4,7 @@
 #include "graphics/bgfx_context.h"
 
 #include "platform/gamedata.h"
+#include "settings.h"
 
 #include <SDL3/SDL.h>
 
@@ -45,6 +46,10 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+    // The picture's antialiasing: the settings file's `antialias` line, read before the renderer's first frame makes the
+    // post passes' targets
+    BgfxSetAntiAliasing(HostSettingsAntiAlias());
 
     if (!BgfxInit(window))
     {

@@ -29,6 +29,10 @@ enum class HostShader
     ShadowResolveFragment,
     SceneCompositeVertex,
     SceneCompositeFragment,
+    FxaaFragment,
+    SmaaEdgeFragment,
+    SmaaWeightsFragment,
+    SmaaBlendFragment,
     Count,
 };
 

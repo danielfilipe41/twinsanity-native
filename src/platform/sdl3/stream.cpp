@@ -7,7 +7,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -325,14 +324,6 @@ void ReadSoundBank(s32 channel, u32 bank, s32 file, u32 offset, u32 size)
     // Retail loads the bank's samples straight into the sound processor's memory (ps2/stream.cpp's LoadToSpu, the module
     // writing at g_MsSoundBankAddress and MsSetBankAddress giving them their sound's ID). The host reads them and hands them
     // to the module, which puts them in its own memory and registers them under the sound's ID.
-    if (std::getenv("TS_AUDIOLOG") != nullptr || std::getenv("TS_SOUNDLOG") != nullptr)
-    {
-        // Where on the disc the sound is, so its own bytes can be looked at offline. The path is here because the offset is
-        // only meaningful against the right file: the port's file ids are not the disc's order
-        std::fprintf(stderr, "audio: bank %u from file %d (%s) at %u, %u bytes\n", bank, file,
-                     g_OpenFiles[file].path.c_str(), offset, size);
-    }
-
     ReadJob job;
     job.file = file;
     job.descriptor = g_OpenFiles[file].fd;

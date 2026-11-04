@@ -38,9 +38,6 @@
 #include "platform/graphics.h"
 #include "platform/stream.h"
 #include "retail/libc.h"
-#include "debug.h"
-
-#include <cstdio>
 
 #include <cstddef>
 #include <cstdint>
@@ -411,19 +408,6 @@ u32 GameController::Update(u32 keepFreed)
     {
         auto* follow = static_cast<FollowNode*>(GetGameNode(&player->nodes, NodeFollow));
         ReferencedObject* camera = follow->cameraInstance != nullptr ? follow->cameraInstance->object : nullptr;
-        if (g_SoundLog)
-        {
-            // Where the sound code's listener comes from, whenever it changes: a placed sound without one is dropped
-            static ReferencedObject* logged = nullptr;
-            if (logged != camera)
-            {
-                logged = camera;
-                std::fprintf(stderr, "sound: listener <- %p (player %p follow %p cameraInstance %p)\n",
-                             static_cast<void*>(camera), static_cast<void*>(player), static_cast<void*>(follow),
-                             static_cast<void*>(follow != nullptr ? follow->cameraInstance : nullptr));
-            }
-        }
-
         SetSoundListener(camera);
     }
 

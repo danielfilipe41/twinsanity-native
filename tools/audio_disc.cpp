@@ -9,9 +9,6 @@
 // Build and run (from the repo root):
 //   ninja audio-disc
 //   ./build/host/audio_disc disc/CRASH6/ENGLISH.MB <offset> <size> [--rate 32000] [--wav /tmp/sound.wav]
-//
-// The offsets come from the port's own log: TS_AUDIOLOG=1 prints "bank <id> from file <n> at <offset>, <size> bytes" and
-// "stream channel <c> file <f> offset <o> size <s>".
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
