@@ -313,6 +313,9 @@ void HostSetMaterialTexture(HostMaterial* material, bgfx::TextureHandle texture)
 
 bgfx::TextureHandle HostMaterialBoundTexture(const HostMaterial* material)
 {
+    // A drawn material is one the game still uses, so a freed one (a chunk wipe's) that a draw still resolves keeps its
+    // place in the platform's quarantine (graphics.cpp's TouchFreedMaterial)
+    TouchFreedMaterial(material);
     bgfx::TextureHandle texture = HostMaterialTexture(material);
     if (!bgfx::isValid(texture) && material != nullptr && material->gameTexture != nullptr)
     {

@@ -279,6 +279,9 @@ inline bgfx::TextureHandle HostMaterialTexture(const HostMaterial* material)
 // HostTextures holds for the game texture its first textured shader reads (ReadTexture's). SubmitQuad binds the
 // white texture in its place when this is invalid
 bgfx::TextureHandle HostMaterialBoundTexture(const HostMaterial* material);
+// Notes that a draw resolved this material, so a freed one the game still draws through keeps its place in the platform's
+// material quarantine (graphics.cpp); callers are the bind paths, not the game
+void TouchFreedMaterial(const void* host);
 // A material's state as the 3D/2D draws set it (BgfxStateOfMaterial): the bgfx state flags a draw with the material
 // submits, its alpha test's comparison and reference (the fragment shader's u_materialAlpha) and its pass state the
 // caller keeps (whether the belt-and-braces alpha state is on). The draws build one of these from each submodel's

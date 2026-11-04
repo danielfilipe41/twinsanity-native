@@ -19,37 +19,18 @@ real. Nothing from the game is included in the repository. You need your own cop
 Currently finishing up the Linux port, the entire game is considered playable and 100% of the gems can be collected
 
 Known issues:
-- Pop-in is noticeable; a distance setting is planned.
-- Missing any settings related to a pc port.
-- Sometimes the level image goes white when entering a new chunk or boss battle
-- Gear sounds seem too loud for some reason?
-- Hogs or whatever they are sounds straight up like noise polution
-- Wumpa tree's leaves are not rendering 
 
-The sound was rebuilt on the disc's own module and the sound processor's own arithmetic ([docs/AUDIO.md](docs/AUDIO.md)); these
-were the symptoms of the old one, and of the rewrite while it was being settled, and are expected to be gone, but they were
-reported from a playthrough and want another to confirm:
-- Minor audio cutting issues
-- Music goes silent sometimes in a boss battle
-- After a FMV cutscene sometimes music stops playing
-- Audio issues get worse the more you play in one session without reopening the game
-- Sounds sometimes get stuck and keep repeating forever
-- After dying sometimes music doesn't start playing again
-- The wrong music plays after a death on Slip Slide Icecapades
-- Menu sounds silent, and a menu sound coming out at the wrong pitch
-- The music playing several times over at once, and a track not stopping when it should
-
-The two at the top of this page (gear sounds too loud, hogs sounding like noise) are still open. Hogs are most likely the
-compaction fault the second audit found — the memory moved a sound's table entry but not its samples, so it played whatever used
-to be at that address — which is now fixed and wants an ear. For the gears, `TS_AUDIOLOG` prints every sound's id, its volume,
-its pitch and the game's own call site; the banks keep no names, so an id is what a gear has to be pinned by. See
-[docs/AUDIO.md](docs/AUDIO.md) for the lines to look at.
-
-Gem pickups make no sound in this port, and the gem's own pickup code has no sound call in it — no build of the game has one
-there, and the retail binary's `AddGem` command is proven to call only the visual pickup effect. Retail's chime is scripted
-instead: the level's behaviour table in `CRASH.BD` ends in a sound command that asks the picked-up gem's object for its second
-sound slot. Whether that command runs, and whether its slot holds an id, is now printed by `TS_AUDIOLOG` (see
-[docs/AUDIO.md](docs/AUDIO.md)) — the run that settles it is a gem picked up with the log on.
+Future Features:
+- Multiple Save Pages
+- SMAA and MSAA antialiasing
+- Cutscene Skip
+- Support for other iso regions (ntsc)
+- Mod Support
+- Actual Pc Port settings
+- Pop-in distance setting/Lod settings
+- More Plataforms (Windows, MacOS, Android, Web)
+- Vulkan and Webgpu support
+- HD texture Support
 
 ## Getting the game
 

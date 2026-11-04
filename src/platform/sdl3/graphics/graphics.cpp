@@ -23,8 +23,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <memory>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -85,6 +87,103 @@ void* MakeResource(u32 id, u32 size)
     void* memory = std::calloc(1, size);
     static_cast<u32*>(memory)[1] = id;
     return memory;
+}
+// A material the game's tables freed while something still draws through it, and the texture whose upload it still names.
+//
+// Every chunk unload runs ReleaseGraphicsResources (src/game/graphicstables.cpp), which frees every material and texture in
+// the game's shared tables whatever references they carry, and a chunk transition runs it once per chunk unloaded. Some
+// draws survive that with a pointer they took earlier: the pause screen's level title card is one -- OLEG read the picture
+// once (Shape2D::Read) and keeps its material, and its own "already read" state stops it being read again. The console
+// needs nothing to make that work: the freed bytes are still in the heap and the picture's pixels are still in the GS's
+// memory, which the material's TEX0 address still names, so the draw keeps showing the same picture. The host frees the
+// bytes for the next chunk's materials to reuse (the card then drew whichever material landed in the recycled block -- a
+// rock's texture, or none at all: the white card) and destroys the upload. Keeping both reproduces the console, and keeping
+// them out of circulation is what makes the pointer the game holds stay *this* material rather than a later one's.
+//
+// What leaves is decided by use, not age: a material is touched every time a draw resolves its texture
+// (HostMaterialBoundTexture -> TouchFreedMaterial), so the entries that stay are the ones the game still draws through, and
+// the ones that go are the chunk materials whose wipes nobody looks at again. The quarantine is that list, bounded at
+// QuarantinedMaterials with the least recently drawn leaving first.
+struct FreedMaterial
+{
+    void* resource;
+    void* host;
+    // The first shader's texture (HostMaterial's gameTexture): its upload is kept while this entry lives
+    GameTexture* texture;
+};
+
+constexpr size_t QuarantinedMaterials = 8192;
+// A safety valve on the uploads retained for them, in case a session strands many large textures: the oldest goes first
+constexpr size_t QuarantinedTextures = 1024;
+
+std::list<FreedMaterial> g_freedMaterials;
+// The quarantined materials by their host pointer, for the draws' touch and the eviction's erase
+std::unordered_map<const void*, std::list<FreedMaterial>::iterator> g_freedByHost;
+// How many quarantined materials name each texture: it keeps its upload while any does
+std::unordered_map<const GameTexture*, u32> g_texturePins;
+// The textures whose resource died while a quarantined material still named them: their bytes and their upload are kept
+std::vector<GameTexture*> g_freedTextures;
+
+bool TexturePinned(const GameTexture* texture)
+{
+    const auto found = g_texturePins.find(texture);
+    return found != g_texturePins.end() && found->second != 0;
+}
+
+// A freed texture's upload and bytes let go: nothing that still draws names it
+void ReleaseFreedTexture(GameTexture* texture)
+{
+    // Another quarantined material still draws with it: it keeps its place in g_freedTextures
+    if (TexturePinned(texture))
+    {
+        return;
+    }
+
+    for (size_t at = 0; at < g_freedTextures.size(); at++)
+    {
+        if (g_freedTextures[at] != texture)
+        {
+            continue;
+        }
+
+        g_freedTextures.erase(g_freedTextures.begin() + static_cast<long>(at));
+        Platform::Graphics::HostTextures().InvalidateTransfer(texture);
+        std::free(texture);
+        return;
+    }
+
+    // Still the game's (the table holds it): its own DeleteTexture invalidates it
+}
+
+// The least recently drawn material out of the quarantine: its bytes go, and its texture's upload with them when nothing
+// else names it
+void ReleaseOldestFreedMaterial()
+{
+    if (g_freedMaterials.empty())
+    {
+        return;
+    }
+
+    FreedMaterial freed = g_freedMaterials.front();
+    g_freedMaterials.pop_front();
+    g_freedByHost.erase(freed.host);
+    if (freed.texture != nullptr)
+    {
+        const auto pin = g_texturePins.find(freed.texture);
+        if (pin != g_texturePins.end() && pin->second > 1)
+        {
+            pin->second--;
+        }
+        else
+        {
+            g_texturePins.erase(freed.texture);
+        }
+
+        ReleaseFreedTexture(freed.texture);
+    }
+
+    std::free(freed.host);
+    std::free(freed.resource);
 }
 // The PS2 resources' bytes the null platform reads past instead of uploading (src/platform/ps2/renderer/resources.cpp): a
 // texture's data is its size, the GS's header, 0x20 bytes of the tools' memory and its image
@@ -1741,8 +1840,42 @@ GameTexture* Platform::Graphics::NewTexture(u32 id)
     return static_cast<GameTexture*>(MakeResource(id, TextureResourceSize));
 }
 
+// A draw resolved this material: it's still in use, so it leaves the quarantine last (see the quarantine's note above)
+void Platform::Graphics::TouchFreedMaterial(const void* host)
+{
+    const auto found = g_freedByHost.find(host);
+    if (found != g_freedByHost.end())
+    {
+        g_freedMaterials.splice(g_freedMaterials.end(), g_freedMaterials, found->second);
+    }
+}
+
 void Platform::Graphics::DeleteTexture(GameTexture* texture)
 {
+    if (texture == nullptr)
+    {
+        return;
+    }
+
+    // A material the tables freed still draws with this texture (the quarantine above): keep the upload the console's
+    // texture memory would keep, and the resource's bytes, until that material leaves the quarantine
+    if (TexturePinned(texture))
+    {
+        g_freedTextures.push_back(texture);
+        while (g_freedTextures.size() > QuarantinedTextures)
+        {
+            // The oldest still drawn by a quarantined material keeps its place: the materials' own bound limits these
+            if (TexturePinned(g_freedTextures.front()))
+            {
+                break;
+            }
+
+            ReleaseFreedTexture(g_freedTextures.front());
+        }
+
+        return;
+    }
+
     // The uploads the resource owns go with it
     HostTextures().InvalidateTransfer(texture);
     std::free(texture);
@@ -1791,21 +1924,47 @@ MaterialResource* Platform::Graphics::NewMaterial(u32 id)
 
 void Platform::Graphics::DeleteMaterial(MaterialResource* material)
 {
-    if (material->material != nullptr)
+    if (material == nullptr)
     {
-        // The reference ReadMaterial took of its shaders' texture goes with the material
-        auto* host = reinterpret_cast<HostMaterial*>(material->material);
-        if (host->gameTexture != nullptr)
-        {
-            ReleaseTexture(host->gameTexture);
-        }
+        return;
+    }
+
+    auto* host = reinterpret_cast<HostMaterial*>(material->material);
+    GameTexture* texture = nullptr;
+    if (host != nullptr)
+    {
         // The shader animation goes with it (its frames and its disk node, DestroyShaderAnimation), and so do the later
         // shaders' textures
+        texture = host->gameTexture;
         RemoveMaterialAnimation(host);
         RemoveMaterialPassTextures(host);
     }
-    std::free(material->material);
-    std::free(material);
+
+    // Kept rather than freed: a draw that took this material before the chunk wipe still draws through it, as it does on
+    // the console (the quarantine note above). Its texture's upload is pinned by the same entry
+    FreedMaterial freed;
+    freed.resource = static_cast<void*>(material);
+    freed.host = host;
+    freed.texture = texture;
+    g_freedMaterials.push_back(freed);
+    g_freedByHost[host] = std::prev(g_freedMaterials.end());
+    if (texture != nullptr)
+    {
+        g_texturePins[texture]++;
+    }
+
+    while (g_freedMaterials.size() > QuarantinedMaterials)
+    {
+        ReleaseOldestFreedMaterial();
+    }
+
+    // The reference ReadMaterial took of its shaders' texture goes with the material, as on the console -- after the entry
+    // is in the quarantine, so a texture this was the last reference to finds itself pinned when the table's own DeleteTexture
+    // runs and keeps its upload rather than dropping to the white stand-in
+    if (texture != nullptr)
+    {
+        ReleaseTexture(texture);
+    }
 }
 
 void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream)

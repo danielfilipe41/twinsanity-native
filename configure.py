@@ -283,6 +283,14 @@ def main_host():
             + " ".join(obj for obj in src_objects if not obj.endswith("entry.cpp.o"))
             + " " + " ".join(data_objects) + " build/host/tools/texture_material_proof.o",
             "build texture-material-proof: phony build/host/texture_material_proof",
+            # The picture-cache proof: a real level-title .psm through the game's own Shape2D::Read twice, the second time
+            # with its texture still cached -- the state the pause screen's level card went white in (the material parsed out
+            # of the texture's bytes, which is a cached material with no texture). `ninja picture-cache-proof`
+            "build build/host/tools/picture_cache_proof.o: cxx tools/picture_cache_proof.cpp",
+            f"build build/host/picture_cache_proof: link "
+            + " ".join(obj for obj in src_objects if not obj.endswith("entry.cpp.o"))
+            + " " + " ".join(data_objects) + " build/host/tools/picture_cache_proof.o",
+            "build picture-cache-proof: phony build/host/picture_cache_proof",
             # The particle pages' picture proof: the default chunk's particle section's three page records and the
             # texture each page's material samples (through the game's own g_MaterialTable.Acquire and ReadMaterial),
             # written out as a PPM so the page's art can be looked at; `ninja page-proof`
