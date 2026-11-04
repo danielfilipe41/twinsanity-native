@@ -4,8 +4,8 @@
 // decodes to planar YUV and presents through bgfx view 27 (the Movies bucket), converting to RGBA
 // on the CPU (BT.601 studio swing, clamped; one 640x480 convert per frame) because the shared 2D program only samples
 // RGBA. LentMemorySize bytes are lent until Close and ignored (heap vectors, so nullptr is safe); the selected PCM
-// sub-stream goes to the mixer's movie PCM at Open, looping like retail's ring until Close.
-#include "../audio/spu_mixer.h"
+// sub-stream goes to the movie's own PCM at Open, playing like retail's ring until Close.
+#include "../audio/audio.h"
 #include "../graphics/host_graphics.h"
 #include "../graphics/draws_host.h"
 #include "movie_debug.h"

@@ -1,12 +1,14 @@
 #include "platform/stream.h"
 #include "platform/files.h"
 
-#include "audio/spu_mixer.h"
+#include "audio/soundmodule.h"
+#include "audio/audio.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 // The sdl3 host's side of Platform::Stream: reads from the disc files on the host filesystem through Platform::Files
@@ -19,6 +21,9 @@ struct FileInfo
 {
     s32 fd;
     u32 size;
+    // Kept so a bank read can say which disc file its offset belongs to: a sound looked at offline at the wrong offset is a
+    // sound that reads as noise and says nothing about the sound
+    std::string path;
 };
 
 std::vector<FileInfo> g_OpenFiles;
@@ -35,7 +40,7 @@ s32 GetFreeSlot()
             return static_cast<s32>(i);
         }
     }
-    g_OpenFiles.push_back({-1, 0});
+    g_OpenFiles.push_back({-1, 0, {}});
     return static_cast<s32>(g_OpenFiles.size() - 1);
 }
 }
@@ -62,10 +67,15 @@ State GetState()
 
 void AttachBuffer(s32 channel, u32 size, u32 soundAddress, u32 soundSize)
 {
-    (void)channel;
     (void)size;
-    (void)soundAddress;
-    (void)soundSize;
+    // A channel that plays music out of the sound processor's memory is given the ring the player reserved there: the module
+    // streams the track's blocks through it (the game's own file stream, whose buffer this is, reads nothing itself)
+    if (soundAddress != 0 && soundSize != 0)
+    {
+        SdlAudio::LockAudio();
+        SdlAudio::Spu2::Module().SetChannelBuffer(channel, soundAddress, soundSize);
+        SdlAudio::UnlockAudio();
+    }
 }
 
 void DetachBuffer(s32 channel)
@@ -103,7 +113,7 @@ s32 OpenFile(const char* path)
 
     g_LastFileSize = static_cast<u32>(end);
     s32 slot = GetFreeSlot();
-    g_OpenFiles[slot] = {fd, g_LastFileSize};
+    g_OpenFiles[slot] = {fd, g_LastFileSize, path};
     return slot;
 }
 
@@ -143,12 +153,22 @@ void ReadSoundBank(s32 channel, u32 bank, s32 file, u32 offset, u32 size)
         return;
     }
 
-    // Retail loads the bank's samples straight into the sound processor's memory (ps2/stream.cpp's LoadToSpu, the
-    // module writing at g_MsSoundBankAddress and MsSetBankAddress giving them their sound's ID). The host reads them
-    // and hands them to the mixer, which puts them at its own address and registers them.
+    // Retail loads the bank's samples straight into the sound processor's memory (ps2/stream.cpp's LoadToSpu, the module
+    // writing at g_MsSoundBankAddress and MsSetBankAddress giving them their sound's ID). The host reads them and hands them
+    // to the module, which puts them in its own memory and registers them under the sound's ID.
+    if (std::getenv("TS_AUDIOLOG") != nullptr || std::getenv("TS_SOUNDLOG") != nullptr)
+    {
+        // Where on the disc the sound is, so its own bytes can be looked at offline. The path is here because the offset is
+        // only meaningful against the right file: the port's file ids are not the disc's order
+        std::fprintf(stderr, "audio: bank %u from file %d (%s) at %u, %u bytes\n", bank, file, g_OpenFiles[file].path.c_str(),
+                     offset, size);
+    }
+
     std::vector<u8> samples(size);
     Read(channel, file, offset, size, samples.data());
-    SdlAudio::LoadSoundBankSamples(bank, samples.data(), size);
+    SdlAudio::LockAudio();
+    SdlAudio::Spu2::Module().LoadSoundBank(bank, samples.data(), size);
+    SdlAudio::UnlockAudio();
 }
 
 bool IsReading(s32 channel)

@@ -205,8 +205,11 @@ void PlayOnVoice(SoundVoice* voice, GameSound* sound, u32 group, s32 last)
 {
     if (g_SoundLog)
     {
-        std::fprintf(stderr, "sound: voice %d mixer id %u size %d group %u pitch %d vol %d/%d\n", VoiceNumber(voice),
-                     sound->soundId, sound->size, group, voice->pitch, voice->left, voice->right);
+        // The sound's name as well as its ID: an ID means nothing to whoever reads the log, and the sounds that are too loud
+        // or missing are named by the bank itself
+        std::fprintf(stderr, "sound: voice %d mixer id %u (%s) size %d group %u pitch %d vol %d/%d\n", VoiceNumber(voice),
+                     sound->soundId, sound->name.string != nullptr ? sound->name.string : "?", sound->size, group,
+                     voice->pitch, voice->left, voice->right);
     }
 
     Platform::Audio::PlaySound(sound->soundId, static_cast<u32>(VoiceNumber(voice)) | group, static_cast<s16>(voice->left),

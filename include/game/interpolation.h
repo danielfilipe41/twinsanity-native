@@ -23,6 +23,9 @@ void BeginLogicStep();
 void SetRedraw(bool redraw);
 bool IsRedraw();
 
+// The current logic step number (incremented in BeginLogicStep)
+u32 GetCurrentStep();
+
 // The camera's place matrix as the step left it (the view's update calls it once a step)
 void SampleCamera(const void* camera, const Matrix4x4* matrix);
 // The camera's matrix eased between its samples: false when there is nothing to ease (no camera, a new one, a jump, or a

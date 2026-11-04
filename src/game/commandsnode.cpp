@@ -1,5 +1,9 @@
 #include "game/commands.h"
 
+#include <cstdio>
+
+#include "debug.h"
+
 #include "game/agents.h"
 #include "game/animation.h"
 #include "game/attachments.h"
@@ -1551,6 +1555,13 @@ void DoSoundCommand::ExecuteOn(GameNode* node)
     {
         s32 slot = RandomBelow(static_cast<s32>(flags.slotCount));
         sound = SoundOfSlot(agent, soundSlots[slot]);
+        if (g_SoundLog)
+        {
+            // Which of the command's slots it took and what that slot held: a command whose slot is empty asks for nothing at
+            // all, and that is the one way a sound goes missing without a play line to show for it
+            std::fprintf(stderr, "sound: dosound slot %d of %u, slot value %u, sound %u%s\n", slot, flags.slotCount,
+                         soundSlots[slot], sound, sound == NoSoundId ? " (THE SLOT IS EMPTY)" : "");
+        }
     }
     else
     {

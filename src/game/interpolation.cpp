@@ -97,6 +97,11 @@ void HostFrame::SetAlpha(f32 alpha)
     g_Alpha = alpha;
 }
 
+u32 HostFrame::GetCurrentStep()
+{
+    return g_Step;
+}
+
 void HostFrame::BeginLogicStep()
 {
     // The sample a step's own draw wrote is the one the display frames after it ease from; an instance that step didn't

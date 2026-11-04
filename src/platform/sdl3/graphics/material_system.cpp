@@ -480,7 +480,10 @@ HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseStat
     HostMaterialState result;
     result.state = state;
     result.alphaReference[0] = alphaTest != 0 ? static_cast<f32>(alphaMethod) : static_cast<f32>(HostAlphaAlways);
-    result.alphaReference[1] = static_cast<f32>(alphaReference) / 128.0f;
+    // The reference in the same units as the sample: the fragment shader compares texture alpha (0-255 byte as 0-1 float)
+    // against this reference, so it must also be the 0-255 byte as 0-1 float. Using /128.0f made the reference twice as
+    // high as it should be, causing alpha-tested surfaces (leaves, foliage) to fail the test and not render
+    result.alphaReference[1] = static_cast<f32>(alphaReference) / 255.0f;
     result.alphaReference[2] = 0.0f;
     // The alpha test's failure action (AFAIL), carried for the draws' second pass over the rejected samples
     result.alphaReference[3] = static_cast<f32>(settings[5]);

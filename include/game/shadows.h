@@ -175,6 +175,11 @@ struct ChunkShadows
     ShadowEntry* current;
     u32* currentCount;
     u32 capacity;
+#ifndef __mips__
+    u32 firstStep;
+    u32 secondStep;
+    u32* currentStep;
+#endif
 
     static ChunkShadows* Construct(ChunkShadows* shadows, s32 capacity) RETAIL(FUN_001cc310);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001cc3f8);
@@ -186,7 +191,9 @@ struct ChunkShadows
     // the lists swapped
     void Draw(const Vector4* planes, const Matrix4x4* unused, const Matrix4x4* view) RETAIL(FUN_001ca788);
 };
+#ifdef __mips__
 CHECK_SIZE(ChunkShadows, 0x1C);
+#endif
 
 // The entries Draw draws: the current list, or on a display frame between two game steps the one the step's own frame
 // drew (that frame's draw swapped the lists, leaving its list the other one)

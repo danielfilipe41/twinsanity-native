@@ -21,16 +21,35 @@ Currently finishing up the Linux port, the entire game is considered playable an
 Known issues:
 - Pop-in is noticeable; a distance setting is planned.
 - Missing any settings related to a pc port.
-- Minor audio cutting issues
 - Sometimes the level image goes white when entering a new chunk or boss battle
-- Music goes silent sometimes in a boss battle 
 - Gear sounds seem too loud for some reason?
-- After a fmv custscene sometimes music stops playing 
-- Audio issues get worse the more i play in one session without reopening the game
 - Hogs or whatever they are sounds straight up like noise polution
+- Wumpa tree's leaves are not rendering 
+
+The sound was rebuilt on the disc's own module and the sound processor's own arithmetic ([docs/AUDIO.md](docs/AUDIO.md)); these
+were the symptoms of the old one, and of the rewrite while it was being settled, and are expected to be gone, but they were
+reported from a playthrough and want another to confirm:
+- Minor audio cutting issues
+- Music goes silent sometimes in a boss battle
+- After a FMV cutscene sometimes music stops playing
+- Audio issues get worse the more you play in one session without reopening the game
 - Sounds sometimes get stuck and keep repeating forever
-- After dying sometimes music doesnt start playing again
+- After dying sometimes music doesn't start playing again
 - The wrong music plays after a death on Slip Slide Icecapades
+- Menu sounds silent, and a menu sound coming out at the wrong pitch
+- The music playing several times over at once, and a track not stopping when it should
+
+The two at the top of this page (gear sounds too loud, hogs sounding like noise) are still open. Hogs are most likely the
+compaction fault the second audit found — the memory moved a sound's table entry but not its samples, so it played whatever used
+to be at that address — which is now fixed and wants an ear. For the gears, `TS_AUDIOLOG` prints every sound's id, its volume,
+its pitch and the game's own call site; the banks keep no names, so an id is what a gear has to be pinned by. See
+[docs/AUDIO.md](docs/AUDIO.md) for the lines to look at.
+
+Gem pickups make no sound in this port, and the gem's own pickup code has no sound call in it — no build of the game has one
+there, and the retail binary's `AddGem` command is proven to call only the visual pickup effect. Retail's chime is scripted
+instead: the level's behaviour table in `CRASH.BD` ends in a sound command that asks the picked-up gem's object for its second
+sound slot. Whether that command runs, and whether its slot holds an id, is now printed by `TS_AUDIOLOG` (see
+[docs/AUDIO.md](docs/AUDIO.md)) — the run that settles it is a gem picked up with the log on.
 
 ## Getting the game
 
@@ -196,6 +215,7 @@ How the decomp and its tools work is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.m
 | `include/` | Game types, platform interfaces and asm macros |
 | `tools/` | Split, build, checks and PCSX2 runners |
 | `docs/DEVELOPMENT.md` | How the decomp and its tools work |
+| `docs/AUDIO.md` | The sound: the module, the sound processor's arithmetic and how it is checked |
 | `docs/RETAIL_BUGS.md` | Retail bugs that the C++ keeps |
 | `splat.yaml`, `symbol_addrs.txt` | Split settings and the executable's symbols |
 

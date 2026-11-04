@@ -699,6 +699,14 @@ s32 PlaySoundAtPosition(f32 volume, f32 pitch, GameSound* sound, u32 group, Chun
     s32 number = PlaySoundAt(volume, pitch, voice, sound, SoundGroupOf(static_cast<s32>(group)), &local, last);
     if (number == -1)
     {
+        if (g_SoundLog)
+        {
+            // The distance and the panning left nothing to hear: the one silent way out of a play that was asked for
+            std::fprintf(stderr, "sound: placed id %u INAUDIBLE at %g %g %g (volume %g)\n", sound->soundId,
+                         static_cast<double>(local.x), static_cast<double>(local.y), static_cast<double>(local.z),
+                         static_cast<double>(volume));
+        }
+
         ReleaseVoice(voice);
     }
     else
@@ -877,8 +885,7 @@ void StopInstanceSound(s32 index)
     }
 
     InstanceSound* item = &g_InstanceSounds.items[index];
-    if (!item || !item->voice) return;
-    if (item->bits.state == InstanceSound::StatePlaying && item->voice->bits.playing != 0)
+    if (item->voice && item->bits.state == InstanceSound::StatePlaying && item->voice->bits.playing != 0)
     {
         SetVoiceVolume(0.0f, 0.0f, item->voice);
     }
@@ -894,9 +901,8 @@ void SetInstanceSoundVolume(f32 volume, s32 index)
     }
 
     InstanceSound* item = &g_InstanceSounds.items[index];
-    if (!item || !item->voice) return;
     item->volume = volume;
-    if (item->bits.state == InstanceSound::StatePlaying)
+    if (item->voice && item->bits.state == InstanceSound::StatePlaying)
     {
         item->voice->volume = volume;
     }
@@ -910,9 +916,8 @@ void SetInstanceSoundPitch(f32 pitch, s32 index)
     }
 
     InstanceSound* item = &g_InstanceSounds.items[index];
-    if (!item || !item->voice) return;
     item->pitch = pitch;
-    if (item->bits.state == InstanceSound::StatePlaying)
+    if (item->voice && item->bits.state == InstanceSound::StatePlaying)
     {
         item->voice->pitchScale = pitch;
     }

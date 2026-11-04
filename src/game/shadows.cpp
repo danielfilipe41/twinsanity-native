@@ -554,6 +554,13 @@ void CastPlainShadow(ShadowPlain* plain, const Vector4* from, const Matrix4x4* p
 
 ShadowEntry* ChunkShadows::Add(u8 kind, const f32* offset, const f32* size)
 {
+#ifndef __mips__
+    // Stamp this list with the current logic step when the first entry is added
+    if (*currentCount == 0)
+    {
+        *currentStep = HostFrame::GetCurrentStep();
+    }
+#endif
     u32 count = *currentCount;
     ShadowEntry* entry = &current[count];
     if (!(count < capacity))
@@ -599,6 +606,11 @@ ChunkShadows* ChunkShadows::Construct(ChunkShadows* shadows, s32 capacity)
     shadows->second = second;
     shadows->currentCount = &shadows->firstCount;
     shadows->current = shadows->first;
+#ifndef __mips__
+    shadows->firstStep = 0;
+    shadows->secondStep = 0;
+    shadows->currentStep = &shadows->firstStep;
+#endif
     return shadows;
 }
 
@@ -627,12 +639,18 @@ void ChunkShadows::Swap()
         currentCount = &secondCount;
         current = second;
         secondCount = 0;
+#ifndef __mips__
+        currentStep = &secondStep;
+#endif
         return;
     }
 
     current = first;
     currentCount = &firstCount;
     firstCount = 0;
+#ifndef __mips__
+    currentStep = &firstStep;
+#endif
 }
 
 u32 ShadowDrawCount(const ChunkShadows* shadows)
@@ -640,6 +658,12 @@ u32 ShadowDrawCount(const ChunkShadows* shadows)
 #ifndef __mips__
     if (HostFrame::IsRedraw())
     {
+        // Only draw the other list if it's from the current logic step (not stale)
+        u32 otherStep = shadows->current == shadows->first ? shadows->secondStep : shadows->firstStep;
+        if (otherStep != HostFrame::GetCurrentStep())
+        {
+            return 0;  // Stale list, don't draw
+        }
         return shadows->current == shadows->first ? shadows->secondCount : shadows->firstCount;
     }
 #endif
@@ -754,12 +778,18 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
         currentCount = &secondCount;
         current = second;
         secondCount = 0;
+#ifndef __mips__
+        currentStep = &secondStep;
+#endif
     }
     else
     {
         current = first;
         currentCount = &firstCount;
         firstCount = 0;
+#ifndef __mips__
+        currentStep = &firstStep;
+#endif
     }
 }
 

@@ -150,7 +150,6 @@ void MoviePlayer::Destroy(u32 destroyFlags)
 u32 MoviePlayer::Start()
 {
     Platform::Movie::BeginPresenting(PlatformPlayer(), PresentMovieFrame);
-    GameMovieController::LendSound();
     // The movie has the screen, and the renderer's DMA memory
     Platform::Graphics::WaitIdle();
     Platform::Graphics::ResetBuckets(true);
@@ -183,9 +182,15 @@ u32 MoviePlayer::Start()
     StringDestroy(&file);
     if (!opened)
     {
+        // A player that never opened has nothing lent to it: retail takes the sound for the movie on the way out of a start-up
+        // that worked, past both of its own failed-open returns. A borrow left here would refuse every game sound, and keep the
+        // music's buffer out of the game's hands, for the rest of the session
+        ReclaimMusicBuffers();
         return 0;
     }
 
+    // The sound is the movie's from here (the music's buffer went with the open, so this is what is left of it)
+    GameMovieController::LendSound();
     Platform::Movie::StartSound(PlatformPlayer(), GroupVolumeLevel(MovieGroup));
     return 1;
 }

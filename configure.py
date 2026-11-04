@@ -298,22 +298,37 @@ def main_host():
                                  "arguments": ["g++"] + HOST_CXXFLAGS + sdl_cflags + bgfx_cflags +
                                  ["-c", "-o", "build/host/sdl3/src/platform/sdl3/graphics/bgfx_test.cpp.o",
                                   "src/platform/sdl3/graphics/bgfx_test.cpp"]})
-        # The audio mixer headless proof: the SPU mixer driven with real disc data (a bank sound's voice and a music
-        # track's region), its output measured (RMS, peak, non-silence, clipping, frame-boundary jumps) and printed;
-        # `ninja audio-mixer-proof` then run build/host/audio_mixer_proof from the repo root
+        # The sound processor's headless checks: the interpolation table, the ADPCM decoder, the envelope and volume registers,
+        # the mix's saturation, the effect network, the sound memory's compaction, the module's channels and the music's
+        # streamed rings, all against the numbers the hardware's own arithmetic gives; `ninja audio-proof` then run
+        # build/host/audio_proof from the repo root. It needs no disc and no game.
         lines += [
-            "build build/host/tools/audio_mixer_proof.o: cxx tools/audio_mixer_proof.cpp",
-            f"build build/host/audio_mixer_proof: link build/host/tools/audio_mixer_proof.o "
-            "build/host/sdl3/src/platform/sdl3/audio/spu_mixer.cpp.o "
-            "build/host/sdl3/src/platform/sdl3/audio/adpcm.cpp.o "
-            "build/host/sdl3/src/platform/sdl3/settings.cpp.o",
-            "build audio-mixer-proof: phony build/host/audio_mixer_proof",
+            "build build/host/tools/audio_spu2_proof.o: cxx tools/audio_spu2_proof.cpp",
+            "build build/host/audio_proof: link build/host/tools/audio_spu2_proof.o "
+            "build/host/sdl3/src/platform/sdl3/audio/spu2.cpp.o "
+            "build/host/sdl3/src/platform/sdl3/audio/soundmemory.cpp.o "
+            "build/host/sdl3/src/platform/sdl3/audio/soundmodule.cpp.o",
+            "build audio-proof: phony build/host/audio_proof",
             "",
         ]
-        compile_commands.append({"directory": HERE.as_posix(), "file": "tools/audio_mixer_proof.cpp",
-                                 "output": "build/host/tools/audio_mixer_proof.o",
+        compile_commands.append({"directory": HERE.as_posix(), "file": "tools/audio_spu2_proof.cpp",
+                                 "output": "build/host/tools/audio_spu2_proof.o",
                                  "arguments": ["g++"] + HOST_CXXFLAGS + sdl_cflags + bgfx_cflags +
-                                 ["-c", "-o", "build/host/tools/audio_mixer_proof.o", "tools/audio_mixer_proof.cpp"]})
+                                 ["-c", "-o", "build/host/tools/audio_spu2_proof.o", "tools/audio_spu2_proof.cpp"]})
+        # The disc's own sound, read and decoded by itself: a region of a bank file or of the music file walked block by block,
+        # its shape and level reported and its samples written to a wav if asked; `ninja audio-disc` then run
+        # build/host/audio_disc <file> <offset> <size> from the repo root. It says what the data is, where the port's own checks
+        # say what the engine does with it.
+        lines += [
+            "build build/host/tools/audio_disc.o: cxx tools/audio_disc.cpp",
+            "build build/host/audio_disc: link build/host/tools/audio_disc.o",
+            "build audio-disc: phony build/host/audio_disc",
+            "",
+        ]
+        compile_commands.append({"directory": HERE.as_posix(), "file": "tools/audio_disc.cpp",
+                                 "output": "build/host/tools/audio_disc.o",
+                                 "arguments": ["g++"] + HOST_CXXFLAGS +
+                                 ["-c", "-o", "build/host/tools/audio_disc.o", "tools/audio_disc.cpp"]})
         # The saves proof: drives the host Platform::Saves (src/platform/null/saves.cpp, the card as a directory of the
         # host's filesystem) through the game's save sequence (Initialise/Format/CreateSave/Write/Read/FindFile/MeasureSave),
         # the error paths and a fresh-process re-read, printing PASS/FAIL a step; `ninja saves-proof` then run
