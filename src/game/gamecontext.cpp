@@ -14,7 +14,7 @@
 #include "game/cutscenereader.h"
 #include "game/decals.h"
 #include "game/instancefactory.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/navigation.h"
 #include "game/pads.h"
 #include "game/particles.h"

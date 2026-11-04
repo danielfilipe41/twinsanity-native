@@ -147,15 +147,9 @@ void SDLCALL FeedAudio(void* userdata, SDL_AudioStream* stream, int additional, 
         std::fprintf(stderr, "audio: stream asked for %d frames at once (the device ran dry)\n", frames);
     }
 
-    // Once a second the options the player set are written back to the host's settings file. It reads the game's own values
-    // and touches the file, so it happens outside the audio lock
-    static u32 settingsSince = 0;
-    settingsSince += static_cast<u32>(frames);
-    if (settingsSince >= static_cast<u32>(MixRate))
-    {
-        settingsSince = 0;
-        HostSettingsKeep();
-    }
+    // The options the player set are written by the game thread's own tick (HostSettingsTick, Platform::Graphics::
+    // BeginLogicFrame), not here: this callback must not read the game's state while the game thread writes it, nor
+    // touch the filesystem while the device waits on it
 
     // SDL asks for what the stream needs right now: filling less than asked leaves it short and the device underruns (the
     // audible pop). The request is served whole, one MixFrames chunk at a time, rather than truncated at a cap
@@ -437,8 +431,12 @@ void Platform::Audio::ReadMusic(s32 file, u32 offset, u32 size)
 
 s32 Platform::Audio::StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once)
 {
+    // The track's region is read here, with the device lock not held: a disc read under it parks the mixer for the read's
+    // length, and the device underruns while it waits. The stream's start then only installs bytes it was handed
+    std::vector<u8> prepared;
+    Module().PrepareStream(file, &prepared);
     LockAudio();
-    s32 result = Module().StreamMusic(file, channel, voiceAndGroup, pitch, once);
+    s32 result = Module().StreamMusic(file, channel, voiceAndGroup, pitch, once, &prepared);
     UnlockAudio();
     return result;
 }

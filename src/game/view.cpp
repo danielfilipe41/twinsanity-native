@@ -3,7 +3,7 @@
 #include "game/camerarig.h"
 #include "game/controllers.h"
 #include "game/instances.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/place.h"
 #include "game/reference.h"
 

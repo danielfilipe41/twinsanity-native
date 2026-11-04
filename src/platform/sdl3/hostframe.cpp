@@ -1,5 +1,6 @@
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 
+#include "game/math.h"
 #include "game/instances.h"
 #include "game/place.h"
 
@@ -33,6 +34,8 @@ struct RememberedPose
     bool hasPrevious;
 };
 std::unordered_map<const void*, RememberedPose> g_Poses;
+// The logic step each chunk shadow list was cast in, by the list's address (a chunk's two lists are separate allocations)
+std::unordered_map<const ShadowEntry*, u32> g_ShadowSteps;
 // A remembered instance seen no step for this many is dropped (its memory may be another instance's by now)
 constexpr u32 ForgottenSteps = 512;
 
@@ -100,6 +103,23 @@ void HostFrame::SetAlpha(f32 alpha)
 u32 HostFrame::GetCurrentStep()
 {
     return g_Step;
+}
+
+void HostFrame::SetShadowStep(const ShadowEntry* list, u32 step)
+{
+    g_ShadowSteps[list] = step;
+}
+
+u32 HostFrame::ShadowStep(const ShadowEntry* list)
+{
+    auto found = g_ShadowSteps.find(list);
+    return found == g_ShadowSteps.end() ? 0 : found->second;
+}
+
+void HostFrame::ForgetShadowSteps(const ShadowEntry* first, const ShadowEntry* second)
+{
+    g_ShadowSteps.erase(first);
+    g_ShadowSteps.erase(second);
 }
 
 void HostFrame::BeginLogicStep()

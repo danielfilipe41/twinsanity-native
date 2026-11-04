@@ -598,5 +598,11 @@ u32 HostFrameCounter()
 {
     return 0;
 }
+
+// A drawn material tells the platform's quarantine it's still in use (material_system.cpp -> graphics.cpp's
+// TouchFreedMaterial). The proof never frees a material, so nothing is quarantined for a draw to keep: a no-op.
+void TouchFreedMaterial(const void*)
+{
+}
 }
 }

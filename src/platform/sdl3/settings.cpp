@@ -4,6 +4,9 @@
 #include "game/renderer.h"
 #include "game/sound.h"
 
+#include "platform/saves.h"
+
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,19 +24,14 @@ s16 g_KeptRight[Groups] = {};
 u32 g_KeptStereo = 0;
 u8 g_KeptWidescreen = 0;
 
-// The saves' base (Platform::Saves computes its own, which this can't reach): $XDG_DATA_HOME/twinsanity, else
-// ~/.local/share/twinsanity
+// The saves' base, which Platform::Saves owns: the settings file sits beside the cards, and deriving the directory in
+// one place keeps the two from diverging when where user data lives changes
 void SettingsPath(char* path)
 {
-    const char* dataHome = std::getenv("XDG_DATA_HOME");
-    if (dataHome != nullptr && dataHome[0] != '\0')
-    {
-        std::snprintf(path, PathLength, "%s/twinsanity/settings.txt", dataHome);
-        return;
-    }
-
-    const char* home = std::getenv("HOME");
-    std::snprintf(path, PathLength, "%s/.local/share/twinsanity/settings.txt", home != nullptr ? home : "/tmp");
+    // The base is bounded so the file name always fits (the compiler sees a plain char[512] overrunning the buffer)
+    char base[PathLength - sizeof("/settings.txt")];
+    Platform::Saves::DataDirectory(base, sizeof(base));
+    std::snprintf(path, PathLength, "%s/settings.txt", base);
 }
 
 // The picture's rate when the file has none: the disc's field rate, so the host presents exactly when the game steps
@@ -167,6 +165,28 @@ void HostSettingsApplyOnce()
     // The global alone: the music players read it as they play, and SetMusicStereo walks them (there are none this early)
     g_MusicStereo = stereo;
     g_WidescreenTv = widescreen;
+}
+
+void HostSettingsTick()
+{
+    // Once a second, on the game thread: the values it keeps are the game's own, which only that thread writes
+    static std::chrono::steady_clock::time_point next;
+    static bool started = false;
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (!started)
+    {
+        started = true;
+        next = now + std::chrono::seconds(1);
+        return;
+    }
+
+    if (now < next)
+    {
+        return;
+    }
+
+    next = now + std::chrono::seconds(1);
+    HostSettingsKeep();
 }
 
 void HostSettingsKeep()

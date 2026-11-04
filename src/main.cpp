@@ -3,7 +3,7 @@
 #include "game/context.h"
 #include "game/controllers.h"
 #include "game/filestream.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/instances.h"
 #include "game/stream.h"
 #include "game/memory.h"

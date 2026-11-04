@@ -79,12 +79,23 @@ struct DrawCacheEntry
     bool used;
 };
 
-// The uploads held: one entry per live packet, never evicted. bgfx records draws and runs them at bgfx::frame(), so
-// evicting an entry would destroy buffers that already-queued draws still bind. A deque keeps entries' addresses
-// stable as it grows, which the draws need while a packet is parsed.
+// The uploads held, one entry per live packet. An entry is never destroyed while a draw may still bind it: deleting a
+// packet's owner only retires its entries, and their bgfx buffers go a couple of frames later
+// (HostCollectRetiredDrawBuffers), once the frames that could still bind them have run. A deque keeps entries'
+// addresses stable as it grows, which the draws need while a packet is parsed.
 std::deque<DrawCacheEntry> g_entries;
 bool g_entriesMade = false;
 Platform::Graphics::HostDrawCounters g_counters = {};
+
+// A retired upload waiting for the frames that could still bind it to run
+struct RetiredDrawBuffers
+{
+    bgfx::VertexBufferHandle vertices;
+    bgfx::IndexBufferHandle indexes;
+    u32 frame;
+};
+std::vector<RetiredDrawBuffers> g_retiredBuffers;
+u32 g_drawFrame = 0;
 
 // The host vertex layouts: position + UV + colour + normal, the skin's with
 // the joint index/weight bytes (raw indices, normalized weights)
@@ -187,6 +198,9 @@ void MakeEntries()
     }
 
     g_entriesMade = true;
+    // The handles in the retire list are the bgfx instance's that is gone with it
+    g_retiredBuffers.clear();
+    g_drawFrame = 0;
     for (DrawCacheEntry& entry : g_entries)
     {
         entry.packet = nullptr;
@@ -472,12 +486,6 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     }
 
     MakeShared();
-    MakeEntries();    if (packet == nullptr || packetSize == 0 || mvp == nullptr)
-    {
-        return false;
-    }
-
-    MakeShared();
     MakeEntries();
     DrawCacheEntry* entry = FindEntry(packet, packetSize, false);
     if (entry == nullptr)
@@ -562,9 +570,6 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
                         u64 state, const f32* alphaRef, const HostBlendPart* blendPart, const s32* blendShapeIds)
 {
     if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
-    {
-        return false;
-    }    if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
     {
         return false;
     }
@@ -1133,5 +1138,66 @@ void HostCompositeScene()
                      BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     bgfx::setVertexBuffer(0, g_compositeTriangle);
     bgfx::submit(HostCompositeView, g_compositeProgram);
+}
+
+void HostRetireDrawPacket(const u8* packet)
+{
+    if (packet == nullptr)
+    {
+        return;
+    }
+
+    for (DrawCacheEntry& entry : g_entries)
+    {
+        if (!entry.used || entry.packet != packet)
+        {
+            continue;
+        }
+
+        // The upload goes, but not yet: a draw submitted this frame may still bind it
+        if (bgfx::isValid(entry.vertices) || bgfx::isValid(entry.indexes))
+        {
+            RetiredDrawBuffers retired;
+            retired.vertices = entry.vertices;
+            retired.indexes = entry.indexes;
+            retired.frame = g_drawFrame;
+            g_retiredBuffers.push_back(retired);
+        }
+
+        entry.packet = nullptr;
+        entry.packetSize = 0;
+        entry.used = false;
+        entry.indexCount = 0;
+        entry.checksum = 0;
+        entry.vertices.idx = bgfx::kInvalidHandle;
+        entry.indexes.idx = bgfx::kInvalidHandle;
+    }
+}
+
+void HostCollectRetiredDrawBuffers()
+{
+    // Called once a frame, after bgfx::frame(): an upload retired in frame N is let go at N + 2, by which point the
+    // encoder that bound it and the frame it ran in are both done
+    g_drawFrame++;
+    for (size_t index = 0; index < g_retiredBuffers.size();)
+    {
+        const RetiredDrawBuffers& retired = g_retiredBuffers[index];
+        if (g_drawFrame < retired.frame + 2)
+        {
+            index++;
+            continue;
+        }
+
+        if (bgfx::isValid(retired.vertices))
+        {
+            bgfx::destroy(retired.vertices);
+        }
+        if (bgfx::isValid(retired.indexes))
+        {
+            bgfx::destroy(retired.indexes);
+        }
+
+        g_retiredBuffers.erase(g_retiredBuffers.begin() + static_cast<long>(index));
+    }
 }
 }

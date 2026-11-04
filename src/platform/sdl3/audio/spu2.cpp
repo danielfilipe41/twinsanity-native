@@ -317,12 +317,8 @@ void SdlAudio::Spu2::Envelope::KeyOff()
 
 void SdlAudio::Spu2::Voice::Start()
 {
-    // A start address that is not on a block is taken to the next one (the hardware cannot read from it)
-    if (start & 7)
-    {
-        start = (start + BlockAlign) + 8;
-    }
-
+    // The start is already on a block: every write of it goes through SetVoiceStart, which masks it with BlockAlign.
+    // (The old round-to-the-next-block branch here could never run, and added the mask itself rather than a block size)
     envelope.KeyOn();
     manualLoopStart = 0;
     sampleAddress = 0;

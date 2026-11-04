@@ -697,8 +697,11 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
     f32 uv[4];
     TableUv(*host, textureWidth, textureHeight, uv);
 
-    // Every block of the chain the game handed in, every record of each (the PS2's DMA NEXT tags walked them)
-    std::vector<HostParticleInstance> instances;
+    // Every block of the chain the game handed in, every record of each (the PS2's DMA NEXT tags walked them). The
+    // buffer is reused: a block is built once a frame, and a fresh vector reserved each time was an allocation in the
+    // effect path for no reason
+    static std::vector<HostParticleInstance> instances;
+    instances.clear();
     instances.reserve(BlockParticles);
     for (u8* at = block; at != nullptr; at = NextBlock(HeadOf(at)))
     {

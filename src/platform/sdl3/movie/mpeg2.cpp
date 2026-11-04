@@ -673,6 +673,21 @@ u32 FindStart(const u8* data, u32 from, u32 size, u32* code)
     }
     return size;
 }
+
+// The end of an unbounded PES packet (its length field 0, which some muxes use for the video): the next start code at a
+// packet level (0xB9 and up). The elementary stream's own codes (a picture's 0x00, slices 0x01-0xAF, the sequence 0xB3
+// and its extensions 0xB5, the GOP 0xB8) are all below that
+uint32_t FindPacketBoundary(const u8* data, u32 from, u32 size)
+{
+    for (u32 i = from; i + 3 < size; i++)
+    {
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && data[i + 3] >= 0xB9)
+        {
+            return i;
+        }
+    }
+    return size;
+}
 }
 
 Demux::Demux(const u8* data, u32 size) : m_data(data), m_size(size), m_position(0)
@@ -706,17 +721,18 @@ bool Demux::Next(const ::std::function<void(const VideoPacket&)>& video,
         m_position += 4;
         return true;
     }
-    // Pack header: 0x000001BA + 10 bytes (MPEG-2), optional system header
-    m_position += 4 + 10;
-    if (m_position > m_size)
+    // Pack header: 0x000001BA + 10 bytes (MPEG-2), then the stuffing its last byte counts (0xFF bytes, at most 7)
+    if (m_position + 14 > m_size)
     {
         m_position = m_size;
         return false;
     }
-    // Stuffing bytes (0xFF) after the pack header
-    while (m_position < m_size && m_data[m_position] == 0xFF)
+    const u32 stuffing = static_cast<u32>(m_data[m_position + 13] & 0x07);
+    m_position += 14 + stuffing;
+    if (m_position > m_size)
     {
-        m_position++;
+        m_position = m_size;
+        return false;
     }
     // System header 0x000001BB: skip by its header_length
     {
@@ -769,7 +785,9 @@ bool Demux::Next(const ::std::function<void(const VideoPacket&)>& video,
         u32 streamId = id;
         u32 packetLength = (static_cast<u32>(m_data[m_position + 4]) << 8) | m_data[m_position + 5];
         u32 headerAt = m_position + 6;
-        u32 packetEnd = headerAt + packetLength;
+        // A length of 0 is "unbounded" (some muxes send the video's packets that way): it runs to the next packet-level
+        // start code
+        u32 packetEnd = packetLength == 0 ? FindPacketBoundary(m_data, headerAt, m_size) : headerAt + packetLength;
         if (packetEnd > m_size)
         {
             packetEnd = m_size;

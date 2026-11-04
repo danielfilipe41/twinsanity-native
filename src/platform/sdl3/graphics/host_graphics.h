@@ -10,6 +10,7 @@
 
 #include <bgfx/bgfx.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace Platform::Graphics
@@ -250,6 +251,11 @@ private:
         bool used;
     };
     std::vector<Entry> entries;
+    // The live entry's slot by its transfer (the GameTexture*), so a draw's lookup is a hash probe instead of a scan of
+    // every texture the session has decoded
+    std::unordered_map<const void*, size_t> byTransfer;
+    // The slots InvalidateTransfer emptied: a later upload takes one rather than growing the vector
+    std::vector<size_t> freeSlots;
 };
 
 // The uploads (used once bgfx is up, like the shared 2D objects)

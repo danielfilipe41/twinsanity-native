@@ -165,7 +165,9 @@ struct ShadowEntry
 };
 CHECK_SIZE(ShadowEntry, 0x60);
 
-// A chunk's shadows (made with the chunk): two lists of 100 taking turns, each frame's cast into one while the other is drawn
+// A chunk's shadows (made with the chunk): two lists of 100 taking turns, each frame's cast into one while the other is drawn.
+// The logic step each list was cast in is the platform's (HostFrame::ShadowStep): the console draws one list a step and has
+// nothing to tell apart, so only the host keeps it
 struct ChunkShadows
 {
     ShadowEntry* first;
@@ -175,11 +177,6 @@ struct ChunkShadows
     ShadowEntry* current;
     u32* currentCount;
     u32 capacity;
-#ifndef __mips__
-    u32 firstStep;
-    u32 secondStep;
-    u32* currentStep;
-#endif
 
     static ChunkShadows* Construct(ChunkShadows* shadows, s32 capacity) RETAIL(FUN_001cc310);
     void Destroy(u32 destroyFlags) RETAIL(FUN_001cc3f8);

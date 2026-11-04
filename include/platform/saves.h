@@ -60,6 +60,10 @@ constexpr s32 ErrorNoSave = -4;
 // The game's region and product codes ("BE", "SLES-52568"). Returns false when the storage couldn't be set up
 bool Initialise(const char* region, const char* product);
 
+// The directory the host's cards live under ($XDG_DATA_HOME/twinsanity, ~/.local/share/twinsanity without it). The
+// host's settings file sits beside them and derives its path from this, so where user data lives has one definition
+void DataDirectory(char* path, u32 size);
+
 // Moves the operation on (the storage of the port and slot checked while none runs) and copies the storage's info to info (when
 // it's given). Returns the operation running
 Operation Update(s32 port, s32 slot, StorageInfo* info);

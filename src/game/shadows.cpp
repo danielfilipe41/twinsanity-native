@@ -3,7 +3,7 @@
 #include "game/animation.h"
 #include "game/chunkdata.h"
 #include "game/graphicstables.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/lights.h"
 #include "game/memory.h"
 #include "game/place.h"
@@ -554,13 +554,12 @@ void CastPlainShadow(ShadowPlain* plain, const Vector4* from, const Matrix4x4* p
 
 ShadowEntry* ChunkShadows::Add(u8 kind, const f32* offset, const f32* size)
 {
-#ifndef __mips__
-    // Stamp this list with the current logic step when the first entry is added
+    // Stamp this list with the current logic step when the first entry is added (a no-op on the console, which draws the
+    // step's own list)
     if (*currentCount == 0)
     {
-        *currentStep = HostFrame::GetCurrentStep();
+        HostFrame::SetShadowStep(current, HostFrame::GetCurrentStep());
     }
-#endif
     u32 count = *currentCount;
     ShadowEntry* entry = &current[count];
     if (!(count < capacity))
@@ -606,16 +605,16 @@ ChunkShadows* ChunkShadows::Construct(ChunkShadows* shadows, s32 capacity)
     shadows->second = second;
     shadows->currentCount = &shadows->firstCount;
     shadows->current = shadows->first;
-#ifndef __mips__
-    shadows->firstStep = 0;
-    shadows->secondStep = 0;
-    shadows->currentStep = &shadows->firstStep;
-#endif
+    // A list's address may be a freed chunk's: neither list is any step's yet
+    HostFrame::SetShadowStep(shadows->first, 0);
+    HostFrame::SetShadowStep(shadows->second, 0);
     return shadows;
 }
 
 void ChunkShadows::Destroy(u32 destroyFlags)
 {
+    // The lists are gone: the steps remembered for their addresses must not outlive them (a later chunk's list may take one)
+    HostFrame::ForgetShadowSteps(first, second);
     if (first != nullptr)
     {
         MemoryDeallocate_(first);
@@ -639,34 +638,29 @@ void ChunkShadows::Swap()
         currentCount = &secondCount;
         current = second;
         secondCount = 0;
-#ifndef __mips__
-        currentStep = &secondStep;
-#endif
         return;
     }
 
     current = first;
     currentCount = &firstCount;
     firstCount = 0;
-#ifndef __mips__
-    currentStep = &firstStep;
-#endif
 }
 
 u32 ShadowDrawCount(const ChunkShadows* shadows)
 {
-#ifndef __mips__
+    // A display frame between two steps redraws the list the step's own frame drew. The console has no such frame (its
+    // IsRedraw is always false), so this is the step's own count there
     if (HostFrame::IsRedraw())
     {
         // Only draw the other list if it's from the current logic step (not stale)
-        u32 otherStep = shadows->current == shadows->first ? shadows->secondStep : shadows->firstStep;
-        if (otherStep != HostFrame::GetCurrentStep())
+        const ShadowEntry* other = shadows->current == shadows->first ? shadows->second : shadows->first;
+        if (HostFrame::ShadowStep(other) != HostFrame::GetCurrentStep())
         {
             return 0;  // Stale list, don't draw
         }
         return shadows->current == shadows->first ? shadows->secondCount : shadows->firstCount;
     }
-#endif
+
     return *shadows->currentCount;
 }
 
@@ -678,14 +672,12 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
     // and leaves the lists alone: swapping again would empty that step's shadows for the next one
     ShadowEntry* list = current;
     u32 count = *currentCount;
-#ifndef __mips__
     bool redraw = HostFrame::IsRedraw();
     if (redraw)
     {
         list = current == first ? second : first;
         count = current == first ? secondCount : firstCount;
     }
-#endif
     for (u32 index = 0; index < count; index++)
     {
         ShadowEntry* entry = &list[index];
@@ -731,9 +723,7 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
         // Down from the shape's offset by its size, clipped to the view planes only: no surface is tested here (retail's
         // Draw calls no collision either), so what is left after the clip is the length the volume is drawn with. A redraw
         // reuses the length the step's own frame clipped it to: clipping that again would shorten the volume every pass
-#ifndef __mips__
         if (!redraw)
-#endif
         {
             Vector4 start = g_DefaultBox.min;
             start.w = 1.0f;
@@ -766,30 +756,22 @@ void ChunkShadows::Draw(const Vector4* planes, const Matrix4x4*, const Matrix4x4
         DrawShadowEntry(entry, &toScreen, &toCamera, &world);
     }
 
-#ifndef __mips__
     if (redraw)
     {
         return;
     }
-#endif
 
     if (current == first)
     {
         currentCount = &secondCount;
         current = second;
         secondCount = 0;
-#ifndef __mips__
-        currentStep = &secondStep;
-#endif
     }
     else
     {
         current = first;
         currentCount = &firstCount;
         firstCount = 0;
-#ifndef __mips__
-        currentStep = &firstStep;
-#endif
     }
 }
 

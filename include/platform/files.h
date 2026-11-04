@@ -32,4 +32,8 @@ s32 Read(s32 file, void* buffer, s32 size);
 s32 Write(s32 file, const void* buffer, s32 size);
 // Returns the new position
 s32 Seek(s32 file, s32 offset, Whence whence);
+// Reads size bytes at offset without moving the descriptor's read position. The stream channels read in the background,
+// two of them possibly from one file, so a read that moved the shared position would race: this leaves it alone. Returns
+// the bytes read, negative on failure
+s32 ReadAt(s32 file, u32 offset, void* buffer, s32 size);
 }

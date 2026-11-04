@@ -20,6 +20,20 @@ struct HostFile
 std::vector<HostFile> g_Files;
 u32 g_LastSize = 0;
 
+// A failed or short read, said once in a while: the null platform has no sound processor memory to drop it into, so a
+// silent failure here would look like an empty track or an empty bank
+void ReportReadFailure(s32 file, u32 offset, u32 wanted, s32 got)
+{
+    static u32 reported = 0;
+    if (reported >= 8)
+    {
+        return;
+    }
+
+    reported++;
+    std::fprintf(stderr, "stream (null): file %d: %u bytes at %u, got %d\n", file, wanted, offset, got);
+}
+
 std::string HostPath(const char* path)
 {
     std::string converted(path);
@@ -113,8 +127,12 @@ void Platform::Stream::Read(s32 channel, s32 file, u32 offset, u32 size, void* d
         return;
     }
 
-    Platform::Files::Seek(g_Files[file].descriptor, static_cast<s32>(offset), Platform::Files::SeekSet);
-    Platform::Files::Read(g_Files[file].descriptor, destination, static_cast<s32>(size));
+    const s32 got =
+        Platform::Files::ReadAt(g_Files[file].descriptor, offset, destination, static_cast<s32>(size));
+    if (got != static_cast<s32>(size))
+    {
+        ReportReadFailure(file, offset, size, got);
+    }
 }
 
 void Platform::Stream::ReadSoundBank(s32 channel, u32 bank, s32 file, u32 offset, u32 size)

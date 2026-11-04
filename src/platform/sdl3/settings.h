@@ -8,8 +8,12 @@
 
 // The sound processor's first reset: put the file's options into the game, if there is a file
 void HostSettingsApplyOnce();
-// Once a second, from the mixer: write the file when the options have changed
+// Write the file when the options have changed
 void HostSettingsKeep();
+// The game thread's once-a-second tick (Platform::Graphics::BeginLogicFrame): HostSettingsKeep when a second has passed.
+// The audio callback must not call either: it would read the game's own state while the game thread writes it, and touch
+// the filesystem on the realtime thread
+void HostSettingsTick();
 // The picture's rate: how often the host presents a frame (the game's logic stays at the disc's field rate). Read from the
 // file's `render` line before the renderer starts; 50, the field rate, when the file has none
 s32 HostSettingsRenderRate();

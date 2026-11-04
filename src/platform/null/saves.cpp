@@ -210,9 +210,11 @@ void FormatStep()
 
 void CreateSaveStep()
 {
-    if (!ValidName(g_Context.save))
+    // The same length limit WriteStep enforces: a save directory this created for a longer name could never be
+    // written to, and the game would show a save it cannot use
+    if (::strlen(g_Context.save) >= SaveNameLimit || !ValidName(g_Context.save))
     {
-        Finish(0, 0, ENOENT);
+        Finish(0, 0, ENAMETOOLONG);
         return;
     }
     if (FreeKilobytes() < DirectoryClusters)
@@ -234,9 +236,9 @@ void CreateSaveStep()
 // save measures -1, and the operation succeeds
 void MeasureSaveStep()
 {
-    if (!ValidName(g_Context.save))
+    if (::strlen(g_Context.save) >= SaveNameLimit || !ValidName(g_Context.save))
     {
-        Finish(0, 0, ENOENT);
+        Finish(0, 0, ENAMETOOLONG);
         return;
     }
     std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
@@ -271,9 +273,10 @@ void MeasureSaveStep()
 // The file's size (-1 when it isn't there) and its directory entry
 void FindFileStep()
 {
-    if (!ValidName(g_Context.save) || !ValidName(g_Context.file))
+    if (::strlen(g_Context.save) >= SaveNameLimit || ::strlen(g_Context.file) >= FileNameLimit ||
+        !ValidName(g_Context.save) || !ValidName(g_Context.file))
     {
-        Finish(0, 0, ENOENT);
+        Finish(0, 0, ENAMETOOLONG);
         return;
     }
     std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
@@ -534,4 +537,14 @@ u32 Platform::Saves::FileKilobytes(u32 size)
 u32 Platform::Saves::SaveBytes(u32 kilobytes, u32 files)
 {
     return (kilobytes + (files + 1) / 2 + DirectoryClusters) << ClusterShift;
+}
+
+void Platform::Saves::DataDirectory(char* path, u32 size)
+{
+    if (path == nullptr || size == 0)
+    {
+        return;
+    }
+
+    ::snprintf(path, size, "%s", BasePath().c_str());
 }

@@ -31,11 +31,14 @@
 
 namespace
 {
-// The frame's memory (AllocFrameMemory): a bump arena of chunks that live until the frame is drawn, then are let go (the PS2's
-// own is the frame buckets' DMA chain). A chunk never moves once made, so the pointers handed out stay valid
+// The frame's memory (AllocFrameMemory): a bump arena of chunks that live until the frame is drawn (the PS2's own is the
+// frame buckets' DMA chain). A chunk never moves once made, so the pointers handed out stay valid. The chunks themselves
+// are kept between frames: a step begins by starting the write position over at the first one, so the arena costs no
+// allocator work per frame (the previous frame's bytes are not read again)
 constexpr size_t FrameMemoryChunk = 1u << 20;
 
 std::vector<std::unique_ptr<u8[]>> g_FrameMemory;
+std::vector<size_t> g_FrameMemorySizes;
 size_t g_FrameMemoryChunk = 0;
 size_t g_FrameMemoryUsed = 0;
 
@@ -44,7 +47,7 @@ u32 g_frameCounter = 0;
 
 void ResetFrameMemory()
 {
-    g_FrameMemory.clear();
+    // The chunks stay (the arena is the process's): the frame only starts writing at the first one again
     g_FrameMemoryChunk = 0;
     g_FrameMemoryUsed = 0;
 }
@@ -58,11 +61,33 @@ u8* AllocFrameMemoryArena(size_t bytes)
         bytes = 0x10;
     }
 
-    if (g_FrameMemory.empty() || g_FrameMemoryUsed + bytes > FrameMemoryChunk)
+    // The first chunk with room from the write position on. A chunk too small for the request is grown in place when
+    // nothing has been written into it this frame (its old bytes belong to a frame that has already presented)
+    for (;;)
     {
-        size_t chunk = bytes > FrameMemoryChunk ? bytes : FrameMemoryChunk;
-        g_FrameMemory.push_back(std::unique_ptr<u8[]>(new u8[chunk]));
-        g_FrameMemoryChunk = g_FrameMemory.size() - 1;
+        if (g_FrameMemoryChunk >= g_FrameMemory.size())
+        {
+            const size_t size = bytes > FrameMemoryChunk ? bytes : FrameMemoryChunk;
+            g_FrameMemory.push_back(std::unique_ptr<u8[]>(new u8[size]));
+            g_FrameMemorySizes.push_back(size);
+            g_FrameMemoryUsed = 0;
+            break;
+        }
+
+        if (g_FrameMemoryUsed + bytes <= g_FrameMemorySizes[g_FrameMemoryChunk])
+        {
+            break;
+        }
+
+        if (g_FrameMemoryUsed == 0)
+        {
+            const size_t size = bytes > FrameMemoryChunk ? bytes : FrameMemoryChunk;
+            g_FrameMemory[g_FrameMemoryChunk].reset(new u8[size]);
+            g_FrameMemorySizes[g_FrameMemoryChunk] = size;
+            break;
+        }
+
+        g_FrameMemoryChunk++;
         g_FrameMemoryUsed = 0;
     }
 
@@ -87,6 +112,36 @@ void* MakeResource(u32 id, u32 size)
     void* memory = std::calloc(1, size);
     static_cast<u32*>(memory)[1] = id;
     return memory;
+}
+
+// A resource read from the stream is trusted only within these bounds: a damaged or truncated disc read must not turn
+// into a multi-gigabyte allocation, a null write or a loop over a count the file made up
+constexpr u32 MaxResourceSubModels = 1024;
+constexpr u32 MaxResourceBlendParts = 1024;
+constexpr u32 MaxResourceShapes = 255;
+constexpr u32 MaxResourcePacketBytes = 0x4000000; // 64 MiB
+
+// A submodel's or part's bytes: null when the size is not one a resource can have or the allocator fails, so the read
+// skips the bytes rather than writing through nothing
+void* AllocResourceBytes(u32 size)
+{
+    if (size == 0 || size > MaxResourcePacketBytes)
+    {
+        return nullptr;
+    }
+
+    return std::malloc(size);
+}
+
+// Past a size a signed Skip takes as one step
+void SkipResourceBytes(Stream* stream, u64 bytes)
+{
+    while (bytes > 0)
+    {
+        const u32 step = bytes > 0x1000000 ? 0x1000000 : static_cast<u32>(bytes);
+        stream->Skip(static_cast<s32>(step));
+        bytes -= step;
+    }
 }
 // A material the game's tables freed while something still draws through it, and the texture whose upload it still names.
 //
@@ -129,6 +184,10 @@ bool TexturePinned(const GameTexture* texture)
     const auto found = g_texturePins.find(texture);
     return found != g_texturePins.end() && found->second != 0;
 }
+
+// The material's later passes' alpha test (defined with the table further down): the quarantine's release is the last
+// reference to it
+static void MaterialPassAlphaRemove(const void* material);
 
 // A freed texture's upload and bytes let go: nothing that still draws names it
 void ReleaseFreedTexture(GameTexture* texture)
@@ -182,6 +241,8 @@ void ReleaseOldestFreedMaterial()
         ReleaseFreedTexture(freed.texture);
     }
 
+    // Nothing can draw through the material's bytes any more, so its later passes' alpha test goes with it
+    MaterialPassAlphaRemove(freed.host);
     std::free(freed.host);
     std::free(freed.resource);
 }
@@ -484,32 +545,46 @@ u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShade
 }
 
 // A material's later shaders' own alpha test, beside the material (its storage is a fixed 0x70 bytes with no room):
-// the GS writes ATST and AREF from the shader being drawn, so pass k's test is not the first shader's
-static constexpr u32 MaterialPassAlphaSlots = 512;
-struct MaterialPassAlpha { const void* material; u8 method[Platform::Graphics::HostMaterialPasses - 1];
-                           u8 reference[Platform::Graphics::HostMaterialPasses - 1]; };
-static MaterialPassAlpha g_materialPassAlpha[MaterialPassAlphaSlots];
-static u32 g_materialPassAlphaCount;
+// the GS writes ATST and AREF from the shader being drawn, so pass k's test is not the first shader's.
+//
+// A map, not a fixed table: an entry lives from ReadMaterial until the quarantine lets the material's bytes go, and a
+// level that streams thousands of materials would otherwise fill a fixed table and silently draw every later pass with
+// a cleared test (NEVER at reference 0, which writes nothing)
+struct MaterialPassAlpha
+{
+    u8 method[Platform::Graphics::HostMaterialPasses - 1];
+    u8 reference[Platform::Graphics::HostMaterialPasses - 1];
+};
+static std::unordered_map<const void*, MaterialPassAlpha> g_materialPassAlpha;
+
+static void MaterialPassAlphaRemove(const void* material)
+{
+    if (material != nullptr)
+    {
+        g_materialPassAlpha.erase(material);
+    }
+}
 
 static MaterialPassAlpha* MaterialPassAlphaSlot(const void* material, bool create)
 {
-    for (u32 i = 0; i < g_materialPassAlphaCount; i++)
-    {
-        if (g_materialPassAlpha[i].material == material)
-        {
-            return &g_materialPassAlpha[i];
-        }
-    }
-
-    if (!create || g_materialPassAlphaCount >= MaterialPassAlphaSlots)
+    if (material == nullptr)
     {
         return nullptr;
     }
 
-    MaterialPassAlpha* slot = &g_materialPassAlpha[g_materialPassAlphaCount++];
-    std::memset(slot, 0, sizeof(*slot));
-    slot->material = material;
-    return slot;
+    const auto found = g_materialPassAlpha.find(material);
+    if (found != g_materialPassAlpha.end())
+    {
+        return &found->second;
+    }
+
+    if (!create)
+    {
+        return nullptr;
+    }
+
+    // Value-initialised: a material with no later shaders has every byte clear
+    return &g_materialPassAlpha[material];
 }
 
 static void MaterialPassAlphaStore(const void* material, u32 pass, u8 method, u8 reference)
@@ -1090,6 +1165,9 @@ void Platform::Graphics::BeginLogicFrame()
     // A game step's own frame begins: everything the one before it allocated is done with (its display frames have all
     // presented by now), so the frame's memory starts over here rather than under the first present
     ResetFrameMemory();
+    // The options the player changed are written back here, on the game thread: the audio callback must not read the
+    // game's own state (which the game thread writes) or touch the filesystem
+    HostSettingsTick();
 }
 
 void* Platform::Graphics::AllocFrameMemory(u32 count, u32 size)
@@ -1115,6 +1193,9 @@ void Platform::Graphics::FinishFrame()
                      stats->numTextures, stats->numPrograms);
     }
     bgfx::frame();
+    // The uploads of packets whose model died: the frame that could still bind them is submitted and run, so their
+    // bgfx buffers can be let go now (never immediately: that was why the cache kept every entry for the session)
+    HostCollectRetiredDrawBuffers();
 }
 
 u32 Platform::Graphics::HostFrameCounter()
@@ -1864,13 +1945,23 @@ void Platform::Graphics::DeleteTexture(GameTexture* texture)
         g_freedTextures.push_back(texture);
         while (g_freedTextures.size() > QuarantinedTextures)
         {
-            // The oldest still drawn by a quarantined material keeps its place: the materials' own bound limits these
-            if (TexturePinned(g_freedTextures.front()))
+            // The oldest one no quarantined material still draws goes. A pinned one keeps its place rather than
+            // holding the whole list up: the materials' own bound limits how many pinned textures there can be
+            size_t victim = 0;
+            while (victim < g_freedTextures.size() && TexturePinned(g_freedTextures[victim]))
+            {
+                victim++;
+            }
+
+            if (victim == g_freedTextures.size())
             {
                 break;
             }
 
-            ReleaseFreedTexture(g_freedTextures.front());
+            GameTexture* released = g_freedTextures[victim];
+            g_freedTextures.erase(g_freedTextures.begin() + static_cast<long>(victim));
+            HostTextures().InvalidateTransfer(released);
+            std::free(released);
         }
 
         return;
@@ -2067,6 +2158,28 @@ RigidModelData* Platform::Graphics::NewModel(u32 id)
 
 void Platform::Graphics::DeleteModel(RigidModelData* model)
 {
+    if (model == nullptr)
+    {
+        return;
+    }
+
+    // Every submodel's bytes go (ReadModel copied each one off the stream), along with the draw cache's upload of them:
+    // a packet address the allocator hands out again must not find the old model's vertices. The game's tables drop a
+    // model when a chunk unloads, so leaving these behind leaked a chunk's meshes on every transition
+    auto* data = reinterpret_cast<HostRigidModelData*>(model);
+    if (data->packets != nullptr)
+    {
+        for (u32 index = 0; index < data->subModelCount; index++)
+        {
+            HostRetireDrawPacket(data->packets[index]);
+            std::free(const_cast<u8*>(data->packets[index]));
+        }
+    }
+
+    std::free(data->vertexCounts);
+    std::free(data->sizes);
+    std::free(data->extraSizes);
+    std::free(const_cast<u8**>(data->packets));
     std::free(model);
 }
 
@@ -2079,42 +2192,61 @@ void Platform::Graphics::ReadModel(RigidModelData* model, Stream* stream)
     auto* data = reinterpret_cast<HostRigidModelData*>(model);
     s32 subModelCount;
     stream->ReadS32(&subModelCount);
-    if (subModelCount < 0)
+    const u32 readCount = subModelCount < 0 ? 0 : static_cast<u32>(subModelCount);
+    // Only the submodels the host draws are stored; the records past the cap are still consumed so the stream keeps the
+    // file's own position (a damaged count must not desync everything read after it any further than it already is)
+    const u32 stored = readCount < MaxResourceSubModels ? readCount : MaxResourceSubModels;
+    data->subModelCount = stored;
+    if (stored != 0)
     {
-        subModelCount = 0;
+        data->vertexCounts = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
+        data->sizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
+        data->extraSizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
+        data->packets = static_cast<const u8**>(std::calloc(stored, sizeof(u8*)));
+        if (data->vertexCounts == nullptr || data->sizes == nullptr || data->extraSizes == nullptr ||
+            data->packets == nullptr)
+        {
+            // Nothing to draw into: the records are read and skipped below, and the model draws nothing
+            data->subModelCount = 0;
+        }
     }
 
-    data->subModelCount = static_cast<u32>(subModelCount);
-    if (data->subModelCount == 0)
-    {
-        return;
-    }
-
-    data->vertexCounts = static_cast<u32*>(std::calloc(data->subModelCount, sizeof(u32)));
-    data->sizes = static_cast<u32*>(std::calloc(data->subModelCount, sizeof(u32)));
-    data->extraSizes = static_cast<u32*>(std::calloc(data->subModelCount, sizeof(u32)));
-    data->packets = static_cast<const u8**>(std::calloc(data->subModelCount, sizeof(u8*)));
-    for (u32 index = 0; index < data->subModelCount; index++)
+    for (u32 index = 0; index < readCount; index++)
     {
         s32 vertexCount;
         stream->ReadS32(&vertexCount);
         s32 size;
         stream->ReadS32(&size);
-        data->vertexCounts[index] = static_cast<u32>(vertexCount);
-        data->sizes[index] = static_cast<u32>(size);
+        const bool keep = index < data->subModelCount;
+        if (keep)
+        {
+            data->vertexCounts[index] = static_cast<u32>(vertexCount);
+            data->sizes[index] = static_cast<u32>(size);
+        }
+
         if (size > 0)
         {
-            auto* packet = static_cast<u8*>(std::malloc(static_cast<size_t>(size)));
-            stream->Read(packet, static_cast<u32>(size), 1);
-            data->packets[index] = packet;
+            auto* packet = keep ? static_cast<u8*>(AllocResourceBytes(static_cast<u32>(size))) : nullptr;
+            if (packet != nullptr)
+            {
+                stream->Read(packet, static_cast<u32>(size), 1);
+                data->packets[index] = packet;
+            }
+            else
+            {
+                SkipResourceBytes(stream, static_cast<u32>(size));
+            }
         }
 
         s32 extraSize;
         stream->ReadS32(&extraSize);
-        data->extraSizes[index] = static_cast<u32>(extraSize);
+        if (keep)
+        {
+            data->extraSizes[index] = static_cast<u32>(extraSize);
+        }
         if (extraSize > 0)
         {
-            stream->Skip(extraSize);
+            SkipResourceBytes(stream, static_cast<u32>(extraSize));
         }
     }
 }
@@ -2194,6 +2326,15 @@ void Platform::Graphics::DeleteSkin(Skin* skin)
         ReleaseMaterial(host->materials[index]);
     }
     std::free(host->materials);
+    // Its submodels' bytes and the draw cache's uploads of them (DeleteModel's own reason)
+    if (host->packets != nullptr)
+    {
+        for (u32 index = 0; index < host->count; index++)
+        {
+            HostRetireDrawPacket(host->packets[index]);
+            std::free(const_cast<u8*>(host->packets[index]));
+        }
+    }
     std::free(host->vertexCounts);
     std::free(host->sizes);
     std::free(const_cast<u8**>(host->packets));
@@ -2208,34 +2349,52 @@ void Platform::Graphics::ReadSkin(Skin* skin, Stream* stream)
     auto* host = reinterpret_cast<HostSkin*>(skin);
     s32 count;
     stream->ReadS32(&count);
-    host->count = count < 0 ? 0 : static_cast<u32>(count);
-    if (host->count == 0)
+    const u32 readCount = count < 0 ? 0 : static_cast<u32>(count);
+    const u32 stored = readCount < MaxResourceSubModels ? readCount : MaxResourceSubModels;
+    host->count = stored;
+    if (stored != 0)
     {
-        return;
+        host->materials = static_cast<MaterialResource**>(std::calloc(stored, sizeof(MaterialResource*)));
+        host->vertexCounts = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
+        host->sizes = static_cast<u32*>(std::calloc(stored, sizeof(u32)));
+        host->packets = static_cast<const u8**>(std::calloc(stored, sizeof(u8*)));
+        if (host->materials == nullptr || host->vertexCounts == nullptr || host->sizes == nullptr ||
+            host->packets == nullptr)
+        {
+            host->count = 0;
+        }
     }
 
-    host->materials = static_cast<MaterialResource**>(std::calloc(host->count, sizeof(MaterialResource*)));
-    host->vertexCounts = static_cast<u32*>(std::calloc(host->count, sizeof(u32)));
-    host->sizes = static_cast<u32*>(std::calloc(host->count, sizeof(u32)));
-    host->packets = static_cast<const u8**>(std::calloc(host->count, sizeof(u8*)));
-    for (u32 index = 0; index < host->count; index++)
+    for (u32 index = 0; index < readCount; index++)
     {
         s32 id;
         stream->ReadS32(&id);
-        u32 key = static_cast<u32>(id);
-        host->materials[index] = g_MaterialTable.Acquire(&key, nullptr);
         s32 size;
         stream->ReadS32(&size);
         s32 vertexCount;
         stream->ReadS32(&vertexCount);
-        host->sizes[index] = static_cast<u32>(size);
-        host->vertexCounts[index] = static_cast<u32>(vertexCount);
-        host->vertexTotal += static_cast<u32>(vertexCount);
+        const bool keep = index < host->count;
+        if (keep)
+        {
+            u32 key = static_cast<u32>(id);
+            host->materials[index] = g_MaterialTable.Acquire(&key, nullptr);
+            host->sizes[index] = static_cast<u32>(size);
+            host->vertexCounts[index] = static_cast<u32>(vertexCount);
+            host->vertexTotal += static_cast<u32>(vertexCount);
+        }
+
         if (size > 0)
         {
-            auto* packet = static_cast<u8*>(std::malloc(static_cast<size_t>(size)));
-            stream->Read(packet, static_cast<u32>(size), 1);
-            host->packets[index] = packet;
+            auto* packet = keep ? static_cast<u8*>(AllocResourceBytes(static_cast<u32>(size))) : nullptr;
+            if (packet != nullptr)
+            {
+                stream->Read(packet, static_cast<u32>(size), 1);
+                host->packets[index] = packet;
+            }
+            else
+            {
+                SkipResourceBytes(stream, static_cast<u32>(size));
+            }
         }
     }
 }
@@ -2263,6 +2422,17 @@ void Platform::Graphics::DeleteBlendSkin(BlendSkin* skin)
                 auto* blendPart = subModel->parts[part];
                 if (blendPart != nullptr)
                 {
+                    // Its packet and every shape's bytes were copied off the stream (ReadBlendSkin), so they go with
+                    // the part. Only the table of shape addresses was freed before, which leaked the data they point at
+                    HostRetireDrawPacket(blendPart->packet);
+                    std::free(const_cast<u8*>(blendPart->packet));
+                    if (blendPart->shapeAddresses != nullptr)
+                    {
+                        for (u32 shape = 0; shape < blendPart->shapeCount; shape++)
+                        {
+                            std::free(reinterpret_cast<u8*>(static_cast<size_t>(blendPart->shapeAddresses[shape])));
+                        }
+                    }
                     std::free(blendPart->shapeAddresses);
                     std::free(blendPart->shapeSizes);
                     std::free(blendPart->shapeCounts);
@@ -2287,69 +2457,133 @@ void Platform::Graphics::ReadBlendSkin(BlendSkin* skin, Stream* stream)
     stream->ReadS32(&count);
     s32 shapeCount;
     stream->ReadS32(&shapeCount);
-    host->count = count < 0 ? 0 : static_cast<u32>(count);
-    host->shapeCount = shapeCount < 0 ? 0 : static_cast<u32>(shapeCount);
-    if (host->count == 0)
+    const u32 readCount = count < 0 ? 0 : static_cast<u32>(count);
+    const u32 stored = readCount < MaxResourceSubModels ? readCount : MaxResourceSubModels;
+    host->count = stored;
+    // A part's shape count is a byte (HostBlendPart::shapeCount), so a file naming more than 255 is capped
+    host->shapeCount = shapeCount < 0 ? 0
+                                      : (static_cast<u32>(shapeCount) < MaxResourceShapes
+                                             ? static_cast<u32>(shapeCount)
+                                             : MaxResourceShapes);
+    if (stored != 0)
     {
-        return;
+        host->materials = static_cast<MaterialResource**>(std::calloc(stored, sizeof(MaterialResource*)));
+        host->subModels = static_cast<HostBlendSubModel**>(std::calloc(stored, sizeof(HostBlendSubModel*)));
+        if (host->materials == nullptr || host->subModels == nullptr)
+        {
+            host->count = 0;
+        }
     }
 
-    host->materials = static_cast<MaterialResource**>(std::calloc(host->count, sizeof(MaterialResource*)));
-    host->subModels = static_cast<HostBlendSubModel**>(std::calloc(host->count, sizeof(HostBlendSubModel*)));
-    for (u32 index = 0; index < host->count; index++)
+    for (u32 index = 0; index < readCount; index++)
     {
-        auto* subModel = static_cast<HostBlendSubModel*>(std::calloc(1, sizeof(HostBlendSubModel)));
+        const bool keepModel = index < host->count;
+        auto* subModel = keepModel ? static_cast<HostBlendSubModel*>(std::calloc(1, sizeof(HostBlendSubModel)))
+                                   : nullptr;
         s32 partCount;
         stream->ReadS32(&partCount);
         s32 id;
         stream->ReadS32(&id);
-        u32 key = static_cast<u32>(id);
-        host->materials[index] = g_MaterialTable.Acquire(&key, nullptr);
-        subModel->count = partCount < 0 ? 0 : static_cast<u32>(partCount);
-        subModel->parts = static_cast<HostBlendPart**>(std::calloc(subModel->count, sizeof(HostBlendPart*)));
-        host->subModels[index] = subModel;
-        for (u32 part = 0; part < subModel->count; part++)
+        const u32 readParts = partCount < 0 ? 0 : static_cast<u32>(partCount);
+        const u32 storedParts =
+            readParts < MaxResourceBlendParts ? readParts : MaxResourceBlendParts;
+        if (keepModel)
         {
-            auto* blendPart = static_cast<HostBlendPart*>(std::calloc(1, sizeof(HostBlendPart)));
+            u32 key = static_cast<u32>(id);
+            host->materials[index] = g_MaterialTable.Acquire(&key, nullptr);
+            subModel->count = storedParts;
+            subModel->parts = static_cast<HostBlendPart**>(std::calloc(storedParts, sizeof(HostBlendPart*)));
+            if (subModel->parts == nullptr)
+            {
+                subModel->count = 0;
+            }
+            host->subModels[index] = subModel;
+        }
+
+        for (u32 part = 0; part < readParts; part++)
+        {
+            const bool wanted = keepModel && part < subModel->count;
+            auto* blendPart = wanted ? static_cast<HostBlendPart*>(std::calloc(1, sizeof(HostBlendPart))) : nullptr;
+            // A part the allocator refused is read and skipped like one past the cap (the draw finds a null part)
+            const bool keep = blendPart != nullptr;
             s32 packetSize;
             stream->ReadS32(&packetSize);
             s32 unused;
             stream->ReadS32(&unused);
-            blendPart->packetSize = static_cast<u32>(packetSize);
+            if (keep)
+            {
+                blendPart->packetSize = static_cast<u32>(packetSize);
+            }
+
             if (packetSize > 0)
             {
-                auto* packet = static_cast<u8*>(std::malloc(static_cast<size_t>(packetSize)));
-                stream->Read(packet, static_cast<u32>(packetSize), 1);
-                blendPart->packet = packet;
+                auto* packet = keep ? static_cast<u8*>(AllocResourceBytes(static_cast<u32>(packetSize))) : nullptr;
+                if (packet != nullptr)
+                {
+                    stream->Read(packet, static_cast<u32>(packetSize), 1);
+                    blendPart->packet = packet;
+                }
+                else
+                {
+                    SkipResourceBytes(stream, static_cast<u32>(packetSize));
+                }
             }
 
-            stream->Read(blendPart->shapeFactors, ShapeFactorsSize, 1);
-            blendPart->shapeCount = static_cast<u8>(host->shapeCount);
-            if (blendPart->shapeCount != 0)
+            u8 shapeFactors[ShapeFactorsSize];
+            stream->Read(shapeFactors, ShapeFactorsSize, 1);
+            const u8 shapes = static_cast<u8>(host->shapeCount);
+            if (keep)
             {
-                blendPart->shapeAddresses = static_cast<u32*>(std::calloc(blendPart->shapeCount, sizeof(u32)));
-                blendPart->shapeSizes = static_cast<u32*>(std::calloc(blendPart->shapeCount, sizeof(u32)));
-                blendPart->shapeCounts = static_cast<u32*>(std::calloc(blendPart->shapeCount, sizeof(u32)));
+                std::memcpy(blendPart->shapeFactors, shapeFactors, ShapeFactorsSize);
+                blendPart->shapeCount = shapes;
+                if (shapes != 0)
+                {
+                    blendPart->shapeAddresses = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
+                    blendPart->shapeSizes = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
+                    blendPart->shapeCounts = static_cast<u32*>(std::calloc(shapes, sizeof(u32)));
+                    if (blendPart->shapeAddresses == nullptr || blendPart->shapeSizes == nullptr ||
+                        blendPart->shapeCounts == nullptr)
+                    {
+                        // No table to record the shapes in: the part draws its packet alone
+                        blendPart->shapeCount = 0;
+                    }
+                }
             }
 
-            for (u32 shape = 0; shape < blendPart->shapeCount; shape++)
+            for (u32 shape = 0; shape < shapes; shape++)
             {
                 s32 shapeSize;
                 stream->ReadS32(&shapeSize);
                 s32 shapeShapes;
                 stream->ReadS32(&shapeShapes);
-                blendPart->shapeSizes[shape] = static_cast<u32>(shapeSize);
-                blendPart->shapeCounts[shape] = static_cast<u32>(shapeShapes);
-                u32 size = static_cast<u32>(shapeSize) << QuadwordShift;
-                if (size != 0)
+                const u64 bytes = static_cast<u64>(static_cast<u32>(shapeSize)) << QuadwordShift;
+                const bool record = keep && shape < blendPart->shapeCount;
+                if (record)
                 {
-                    auto* shapeBytes = static_cast<u8*>(std::malloc(size));
-                    stream->Read(shapeBytes, size, 1);
-                    blendPart->shapeAddresses[shape] = reinterpret_cast<u32>(shapeBytes);
+                    blendPart->shapeSizes[shape] = static_cast<u32>(shapeSize);
+                    blendPart->shapeCounts[shape] = static_cast<u32>(shapeShapes);
+                }
+
+                if (bytes != 0)
+                {
+                    auto* shapeBytes =
+                        record ? static_cast<u8*>(AllocResourceBytes(static_cast<u32>(bytes))) : nullptr;
+                    if (shapeBytes != nullptr)
+                    {
+                        stream->Read(shapeBytes, static_cast<u32>(bytes), 1);
+                        blendPart->shapeAddresses[shape] = reinterpret_cast<u32>(shapeBytes);
+                    }
+                    else
+                    {
+                        SkipResourceBytes(stream, bytes);
+                    }
                 }
             }
 
-            subModel->parts[part] = blendPart;
+            if (keep)
+            {
+                subModel->parts[part] = blendPart;
+            }
         }
     }
 }

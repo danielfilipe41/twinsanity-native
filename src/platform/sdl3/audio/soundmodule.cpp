@@ -966,7 +966,20 @@ void SdlAudio::Spu2::SoundModule::ReadMusic(s32 file, u32 offset, u32 size)
     m_pendingSize = size;
 }
 
-s32 SdlAudio::Spu2::SoundModule::StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once)
+void SdlAudio::Spu2::SoundModule::PrepareStream(s32 file, std::vector<u8>* data)
+{
+    data->clear();
+    if (file < 0 || m_pendingSize == 0)
+    {
+        return;
+    }
+
+    data->resize(m_pendingSize);
+    Platform::Stream::Read(0, file, m_pendingOffset, m_pendingSize, data->data());
+}
+
+s32 SdlAudio::Spu2::SoundModule::StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once,
+                                             std::vector<u8>* prepared)
 {
     if (channel < 0 || channel >= StreamChannels)
     {
@@ -1021,8 +1034,17 @@ s32 SdlAudio::Spu2::SoundModule::StreamMusic(s32 file, s32 channel, u32 voiceAnd
     // the ring's refills a copy rather than a read.
     if (stream.size != 0 && file >= 0)
     {
-        stream.data.resize(stream.size);
-        Platform::Stream::Read(0, file, stream.offset, stream.size, stream.data.data());
+        if (prepared != nullptr)
+        {
+            // Read by the caller before it took the lock (Platform::Audio::StreamMusic), so the mixer was never parked
+            // for the disc read's length
+            stream.data.swap(*prepared);
+        }
+        else
+        {
+            stream.data.resize(stream.size);
+            Platform::Stream::Read(0, file, stream.offset, stream.size, stream.data.data());
+        }
     }
 
     // The ring is the voice's: it loops back to its own first block, which is where the writer keeps laying the track

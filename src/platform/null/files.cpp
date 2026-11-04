@@ -1,21 +1,32 @@
-// Files: the host's file system under the working directory.
+// Files: the host's file system under the working directory, in standard C++ (std::filesystem for the paths, std::FILE for
+// the handles) so every host platform uses the same file. The game names paths with either slash in any case; the disc's
+// files are uppercase while the game asks lowercase, so a miss falls back to a case-insensitive walk of the components.
 #include "platform/files.h"
 
-#include <cerrno>
-#include <cstdlib>
-#include <dirent.h>
-#include <fcntl.h>
+#include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <mutex>
 #include <string>
-#include <unistd.h>
+#include <vector>
 
 namespace
 {
-// The game names paths with either slash in any case; the host takes slashes as they are. The disc's files are
-// uppercase (the PS2's ISO9660 reads case-insensitively) while the game asks lowercase: fall back to a
-// case-insensitive directory scan when the exact path misses
+// A handle's slot: its stream and the lock its operations take (the stream's read position is shared state; the stream
+// channels read through ReadAt, which doesn't move it)
+struct HostFile
+{
+    std::FILE* stream = nullptr;
+    std::mutex mutex;
+};
+
+// The handles, by the numbers the game is given. A closed handle's slot is null and reused by the next Open
+std::mutex g_TableMutex;
+std::vector<std::unique_ptr<HostFile>> g_Files;
+
 std::string HostPath(const char* path)
 {
-    std::string converted(path);
+    std::string converted(path != nullptr ? path : "");
     for (char& letter : converted)
     {
         if (letter == '\\')
@@ -55,114 +66,219 @@ bool MatchesLower(const std::string& candidate, const std::string& wanted)
     return true;
 }
 
-// Opens path case-insensitively: walks each component, scanning its directory for a case-insensitive match
-s32 OpenInsensitive(const std::string& path, s32 flags)
+// The path with each component resolved case-insensitively, or empty when one has no match: a component is taken as it
+// is when the file system has it (a case-insensitive one does, so the scan only runs where it's needed)
+std::string ResolveInsensitive(const std::string& path)
 {
-    std::string resolved;
-    u32 start = 0;
-    while (start <= path.size())
+    std::filesystem::path resolved;
+    for (const std::filesystem::path& part : std::filesystem::path(path))
     {
-        u32 slash = static_cast<u32>(path.find('/', start));
-        bool last = slash == static_cast<u32>(std::string::npos);
-        std::string want = last ? path.substr(start) : path.substr(start, slash - start);
-        std::string directory = resolved.empty() ? "." : resolved;
-        DIR* dir = ::opendir(directory.c_str());
-        if (dir == nullptr)
+        std::error_code error;
+        std::filesystem::path candidate = resolved / part;
+        if (std::filesystem::exists(candidate, error))
         {
-            return -1;
+            resolved = candidate;
+            continue;
         }
+
+        std::filesystem::path directory = resolved.empty() ? std::filesystem::path(".") : resolved;
         bool matched = false;
-        while (dirent* entry = ::readdir(dir))
+        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, error))
         {
-            if (MatchesLower(entry->d_name, want))
+            if (MatchesLower(entry.path().filename().string(), part.string()))
             {
-                resolved = directory == "." ? entry->d_name : directory + "/" + entry->d_name;
+                resolved = entry.path();
                 matched = true;
                 break;
             }
         }
-        ::closedir(dir);
         if (!matched)
         {
-            return -1;
+            return {};
         }
-        if (last)
-        {
-            break;
-        }
-        start = slash + 1;
     }
-    return ::open(resolved.c_str(), flags, 0666);
+    return resolved.string();
 }
 
-s32 HostFlags(s32 flags)
+bool Exists(const std::string& path)
 {
-    s32 access = flags & Platform::Files::OpenReadWrite;
-    s32 host = (access == Platform::Files::OpenRead)
-        ? O_RDONLY
-        : ((access == Platform::Files::OpenWrite) ? O_WRONLY : O_RDWR);
-    if ((flags & Platform::Files::OpenAppend) != 0)
-    {
-        host |= O_APPEND;
-    }
-    if ((flags & Platform::Files::OpenCreate) != 0)
-    {
-        host |= O_CREAT;
-    }
-    if ((flags & Platform::Files::OpenTruncate) != 0)
-    {
-        host |= O_TRUNC;
-    }
-    return host;
+    std::error_code error;
+    return std::filesystem::exists(path, error);
 }
 
-s32 HostWhence(Platform::Files::Whence whence)
+const char* HostMode(s32 flags)
+{
+    const bool read = (flags & Platform::Files::OpenRead) != 0;
+    const bool write = (flags & Platform::Files::OpenWrite) != 0;
+    const bool create = (flags & Platform::Files::OpenCreate) != 0;
+    const bool truncate = (flags & Platform::Files::OpenTruncate) != 0;
+    const bool append = (flags & Platform::Files::OpenAppend) != 0;
+    if (append)
+    {
+        return read ? "a+b" : "ab";
+    }
+    if (read && write)
+    {
+        return create ? "w+b" : "r+b";
+    }
+    if (write)
+    {
+        return (create || truncate) ? "wb" : "r+b";
+    }
+    return "rb";
+}
+
+int HostWhence(Platform::Files::Whence whence)
 {
     switch (whence)
     {
-        case Platform::Files::SeekSet:
-            return SEEK_SET;
-        case Platform::Files::SeekCurrent:
-            return SEEK_CUR;
-        case Platform::Files::SeekEnd:
-            return SEEK_END;
+    case Platform::Files::SeekSet:
+        return SEEK_SET;
+    case Platform::Files::SeekCurrent:
+        return SEEK_CUR;
+    case Platform::Files::SeekEnd:
+        return SEEK_END;
     }
     return SEEK_SET;
+}
+
+// The handle at a number, null when there's none (the table's lock guards the lookup; the handle itself outlives it)
+HostFile* HandleAt(s32 file)
+{
+    std::lock_guard<std::mutex> lock(g_TableMutex);
+    if (file < 0 || static_cast<size_t>(file) >= g_Files.size())
+    {
+        return nullptr;
+    }
+    return g_Files[file].get();
 }
 }
 
 void Platform::Files::Reset()
 {
+    // The handles stay open: the game keeps reading from them once the I/O processor is back
 }
 
 s32 Platform::Files::Open(const char* path, s32 flags)
 {
-    std::string host = HostPath(path);
-    s32 hostFlags = HostFlags(flags);
-    s32 file = ::open(host.c_str(), hostFlags, 0666);
-    if (file < 0 && (flags & Platform::Files::OpenCreate) == 0)
+    if (path == nullptr)
     {
-        file = OpenInsensitive(host, hostFlags);
+        return -1;
     }
-    return file;
+
+    const bool create = (flags & OpenCreate) != 0;
+    const bool writing = (flags & (OpenWrite | OpenTruncate)) != 0;
+    std::string host = HostPath(path);
+    // A write of a file that isn't there fails, as the PS2's open does; the case-insensitive name still finds it
+    if (!create && writing && !Exists(host))
+    {
+        host = ResolveInsensitive(host);
+        if (host.empty())
+        {
+            return -1;
+        }
+    }
+
+    std::FILE* stream = std::fopen(host.c_str(), HostMode(flags));
+    if (stream == nullptr && !create)
+    {
+        const std::string resolved = ResolveInsensitive(HostPath(path));
+        if (!resolved.empty())
+        {
+            stream = std::fopen(resolved.c_str(), HostMode(flags));
+        }
+    }
+    if (stream == nullptr)
+    {
+        return -1;
+    }
+
+    auto file = std::make_unique<HostFile>();
+    file->stream = stream;
+    std::lock_guard<std::mutex> lock(g_TableMutex);
+    s32 number = -1;
+    for (size_t slot = 0; slot < g_Files.size(); slot++)
+    {
+        if (!g_Files[slot])
+        {
+            number = static_cast<s32>(slot);
+            g_Files[slot] = std::move(file);
+            break;
+        }
+    }
+    if (number < 0)
+    {
+        number = static_cast<s32>(g_Files.size());
+        g_Files.push_back(std::move(file));
+    }
+    return number;
 }
 
 s32 Platform::Files::Close(s32 file)
 {
-    return ::close(file);
+    std::unique_ptr<HostFile> handle;
+    {
+        std::lock_guard<std::mutex> lock(g_TableMutex);
+        if (file < 0 || static_cast<size_t>(file) >= g_Files.size() || !g_Files[file])
+        {
+            return -1;
+        }
+        handle = std::move(g_Files[file]);
+    }
+
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    return std::fclose(handle->stream) == 0 ? 0 : -1;
 }
 
 s32 Platform::Files::Read(s32 file, void* buffer, s32 size)
 {
-    return static_cast<s32>(::read(file, buffer, static_cast<size_t>(size)));
+    HostFile* handle = HandleAt(file);
+    if (handle == nullptr || size < 0 || (buffer == nullptr && size != 0))
+    {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    return static_cast<s32>(std::fread(buffer, 1, static_cast<size_t>(size), handle->stream));
 }
 
 s32 Platform::Files::Write(s32 file, const void* buffer, s32 size)
 {
-    return static_cast<s32>(::write(file, buffer, static_cast<size_t>(size)));
+    HostFile* handle = HandleAt(file);
+    if (handle == nullptr || size < 0 || (buffer == nullptr && size != 0))
+    {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    return static_cast<s32>(std::fwrite(buffer, 1, static_cast<size_t>(size), handle->stream));
 }
 
 s32 Platform::Files::Seek(s32 file, s32 offset, Whence whence)
 {
-    return static_cast<s32>(::lseek(file, offset, HostWhence(whence)));
+    HostFile* handle = HandleAt(file);
+    if (handle == nullptr)
+    {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    if (std::fseek(handle->stream, static_cast<long>(offset), HostWhence(whence)) != 0)
+    {
+        return -1;
+    }
+    const long position = std::ftell(handle->stream);
+    return position < 0 ? -1 : static_cast<s32>(position);
+}
+
+s32 Platform::Files::ReadAt(s32 file, u32 offset, void* buffer, s32 size)
+{
+    HostFile* handle = HandleAt(file);
+    if (handle == nullptr || size < 0 || (buffer == nullptr && size != 0))
+    {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(handle->mutex);
+    if (std::fseek(handle->stream, static_cast<long>(offset), SEEK_SET) != 0)
+    {
+        return -1;
+    }
+    return static_cast<s32>(std::fread(buffer, 1, static_cast<size_t>(size), handle->stream));
 }

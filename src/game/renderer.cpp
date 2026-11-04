@@ -6,7 +6,7 @@
 #include "game/controllers.h"
 #include "game/font.h"
 #include "game/instances.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/lights.h"
 #include "game/math.h"
 #include "game/memory.h"

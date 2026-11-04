@@ -136,12 +136,23 @@ HostTextureUpload HostTextureCache::GetOrUpload(const HostTextureKey& key, const
                                                 const u8* packet, size_t packetSize)
 {
     HostTextureUpload miss = {BGFX_INVALID_HANDLE, false};
-    for (const Entry& entry : entries)
+    const auto found = byTransfer.find(key.transfer);
+    if (found != byTransfer.end())
     {
-        if (entry.used && TextureKeysMatch(entry.key, key))
+        Entry& indexed = entries[found->second];
+        if (indexed.used && TextureKeysMatch(indexed.key, key))
         {
-            HostTextureUpload hit = {entry.texture, true};
+            HostTextureUpload hit = {indexed.texture, true};
             return hit;
+        }
+
+        // The same transfer under another image (the block was reused in place): its old upload goes and the slot is
+        // the one the new image takes, so a transfer never holds two entries the draws could disagree about
+        if (indexed.used)
+        {
+            bgfx::destroy(indexed.texture);
+            indexed.texture.idx = bgfx::kInvalidHandle;
+            indexed.used = false;
         }
     }
 
@@ -214,64 +225,95 @@ HostTextureUpload HostTextureCache::GetOrUpload(const HostTextureKey& key, const
         return miss;
     }
 
-    Entry slot;
-    slot.key = key;
-    slot.texture = handle;
-    slot.width = static_cast<u16>(decoded.width);
-    slot.height = static_cast<u16>(decoded.height);
-    slot.used = true;
-    entries.push_back(slot);
+    // A slot InvalidateTransfer emptied, else a new one: the vector does not grow with every texture the session
+    // ever decoded, only with the most it held at once
+    size_t slot;
+    if (!freeSlots.empty())
+    {
+        slot = freeSlots.back();
+        freeSlots.pop_back();
+    }
+    else
+    {
+        slot = entries.size();
+        entries.push_back(Entry());
+    }
+
+    Entry& entry = entries[slot];
+    entry.key = key;
+    entry.texture = handle;
+    entry.width = static_cast<u16>(decoded.width);
+    entry.height = static_cast<u16>(decoded.height);
+    entry.used = true;
+    byTransfer[key.transfer] = slot;
     HostTextureUpload uploaded = {handle, false};
     return uploaded;
 }
 
 bgfx::TextureHandle HostTextureCache::Find(const void* transfer) const
 {
-    for (const Entry& entry : entries)
+    const auto found = byTransfer.find(transfer);
+    if (found == byTransfer.end())
     {
-        if (entry.used && entry.key.transfer == transfer)
-        {
-            return entry.texture;
-        }
+        return BGFX_INVALID_HANDLE;
     }
 
-    return BGFX_INVALID_HANDLE;
+    const Entry& entry = entries[found->second];
+    bgfx::TextureHandle handle = BGFX_INVALID_HANDLE;
+    if (entry.used)
+    {
+        handle = entry.texture;
+    }
+
+    return handle;
 }
 
 bool HostTextureCache::FindSize(const void* transfer, u32* width, u32* height) const
 {
-    for (const Entry& entry : entries)
+    const auto found = byTransfer.find(transfer);
+    if (found == byTransfer.end())
     {
-        if (entry.used && entry.key.transfer == transfer)
-        {
-            if (width != nullptr)
-            {
-                *width = entry.width;
-            }
-            if (height != nullptr)
-            {
-                *height = entry.height;
-            }
-
-            return true;
-        }
+        return false;
     }
 
-    return false;
+    const Entry& entry = entries[found->second];
+    if (!entry.used)
+    {
+        return false;
+    }
+
+    if (width != nullptr)
+    {
+        *width = entry.width;
+    }
+    if (height != nullptr)
+    {
+        *height = entry.height;
+    }
+
+    return true;
 }
 
 void HostTextureCache::InvalidateTransfer(const void* transfer)
 {
-    // The disk manager reused the block: every upload decoded from its old bytes dies
-    for (Entry& entry : entries)
+    // The disk manager reused the block: the upload decoded from its old bytes dies, and its slot is free for the next
+    // texture (the other uploads stay: draws queued this frame still bind them)
+    const auto found = byTransfer.find(transfer);
+    if (found == byTransfer.end())
     {
-        if (entry.used && entry.key.transfer == transfer)
-        {
-            bgfx::destroy(entry.texture);
-            entry.texture.idx = bgfx::kInvalidHandle;
-            entry.used = false;
-        }
+        return;
     }
+
+    Entry& entry = entries[found->second];
+    if (entry.used)
+    {
+        bgfx::destroy(entry.texture);
+        entry.texture.idx = bgfx::kInvalidHandle;
+        entry.used = false;
+        freeSlots.push_back(found->second);
+    }
+
+    byTransfer.erase(found);
 }
 
 void HostTextureCache::Clear()
@@ -285,6 +327,9 @@ void HostTextureCache::Clear()
             entry.used = false;
         }
     }
+
+    byTransfer.clear();
+    freeSlots.clear();
 }
 
 HostTextureCache& HostTextures()

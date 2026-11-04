@@ -7,7 +7,7 @@
 #include "game/controllers.h"
 #include "game/hull.h"
 #include "game/instances.h"
-#include "game/interpolation.h"
+#include "platform/hostframe.h"
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/objectcollision.h"

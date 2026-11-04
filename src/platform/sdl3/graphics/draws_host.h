@@ -267,6 +267,13 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
 // keep their RGB blend and lose only the alpha. Both the rigid and the skin draws call it
 u64 MarkedForCaster(u64 state);
 
+// A packet's owner is about to be deleted (DeleteModel and the skin deletes): every cache entry holding that packet is
+// retired, so a later packet the allocator puts at the same address cannot match the old geometry, and its upload is
+// destroyed a couple of frames later, once the frames that could still bind it have run. The bytes stay the caller's
+// to free. HostCollectRetiredDrawBuffers is the frame's own call (Platform::Graphics::FinishFrame)
+void HostRetireDrawPacket(const u8* packet);
+void HostCollectRetiredDrawBuffers();
+
 // The submodel's material's texture scroll, which the next 3D draw's vertex shader adds to every UV (retail's
 // Shader::scroll). Call before each HostDrawRigidPacket/HostDrawSkinPacket; a null material clears it
 void HostSetDrawScroll(const HostMaterial* material);

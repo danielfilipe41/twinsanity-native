@@ -164,7 +164,12 @@ public:
     // from the first call to the last, since the game only ever polls it afterwards.
     void SetChannelBuffer(s32 channel, u32 address, u32 words);
     void ReadMusic(s32 file, u32 offset, u32 size);
-    s32 StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once);
+    // The region ReadMusic named, read where the caller isn't holding the device lock (StreamMusic's own read would park
+    // the mixer for the disc read's length)
+    void PrepareStream(s32 file, std::vector<u8>* data);
+    // prepared: the region read by PrepareStream, taken over here; null reads it in place (the lock is held then)
+    s32 StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once,
+                    std::vector<u8>* prepared = nullptr);
     void InterleaveMusic(s32 channel, u32 blockSize);
     void AddMusicChannel(s32 child, s32 parent, u32 voiceAndGroup, u32 soundAddress);
     void SetMusicEnd(s32 channel, u32 end);
