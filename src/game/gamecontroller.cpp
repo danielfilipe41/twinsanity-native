@@ -465,7 +465,9 @@ u32 GameController::Starting(TimeClock*)
 
 void GameController::LoadTexts()
 {
-    u32 language = g_CurrentLanguage;
+    // The two text files come from the text slot; everything else of the language (the voice bank, the movies, the pictures,
+    // the credits) keeps the retail index
+    u32 language = g_CurrentTextLanguage;
     const char* name = g_LanguageNames[language];
     for (u32 file = 0; file < TextFiles; file++)
     {

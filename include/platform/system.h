@@ -27,7 +27,13 @@ enum ConsoleLanguage : s32
     LanguagePortuguese = 7,
 };
 
+// The console's language, which is the one the game's voices, movies, title cards and credits are in (and its texts, unless
+// TextLanguage names another)
 ConsoleLanguage Language();
+// The language the game's texts are read in, when it isn't the one the speech is: a disc whose text banks were moved between
+// slots (a translation patch). The same as Language() wherever nothing says otherwise
+ConsoleLanguage TextLanguage();
+
 
 struct DateTime
 {

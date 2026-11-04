@@ -16,6 +16,9 @@ namespace Platform::GameData
 // the player cancelled, or what they chose has neither the files nor an image of the disc
 bool Locate(const char* named = nullptr, void* window = nullptr);
 
+// Where this run's files came from: the folder, the disc image, or "." for the working directory. Null before Locate
+const char* LocatedPath();
+
 // The host's own folder picker: a dialog on the SDL3 hosts, nothing on the ones without one, so a host that has no picker
 // answers false and the run then comes from the working directory or TWINSANITY_DATA. `path` is what the player chose (a
 // filesystem path, or whatever the host calls a location); false when they cancelled

@@ -8,7 +8,8 @@ backend and is where the port work happens now.
 The PC build uses SDL3 for the window, input and audio, and bgfx for rendering. The game code is the same C++ as the PS2
 build (minor some tweaks and things necessary for some features); it reaches the hardware through the platform layer, so the renderer, audio, files and pads can be replaced one system at a time. The 32-bit build keeps the retail pointer layouts and absolute addresses.
 
-Nothing from the game is included in the repository. You need your own copy of the PAL disc.
+Nothing from the game is included in the repository. You need your own copy of the disc: any of its four releases plays (see
+[Other regions](#other-regions)), and the European one is the only one that can be built with.
 
 ## Status
 
@@ -17,11 +18,12 @@ cross-builds from Linux and runs under Wine; every other platform has its backen
 
 Known issues:
 - Only Linux and, under Wine, Windows run the game (see [Building](docs/BUILDING.md)).
+- Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
+- Build only supported with PAL SLES file
 
 Future features:
 - Multiple save pages
 - Cutscene skip
-- Support for other ISO regions (NTSC)
 - Mod support
 - PC port settings, including pop-in distance / LOD
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
@@ -58,7 +60,7 @@ A folder with one image in it is taken as it is; a folder with several asks whic
 dialog. The answer is kept beside the saves (in `gamedata.txt`), so the next run opens straight from it, and a path that no
 longer has the files asks again.
 
-`--disc <path>` answers for one run and is not kept, folder or image:
+`--disc <path>` answers with a folder or an image, and is kept like the picker's answer, so the next run needs no option:
 
 ```sh
 cd disc && ../build/host/sdl3/game-with-data
@@ -69,7 +71,56 @@ cd disc && ../build/host/sdl3/game-with-data
 `TWINSANITY_DATA` does the same from the environment (a folder, an image, or a folder of images) -- also the way a host whose
 picker hands over something that isn't a path (Android's content URIs) is given its files.
 
+`--verify-disc` reads the whole image once and says which release it is, by the size, CRC-32 and SHA-1 redump.org publishes
+for each of the disc's four dumps; a modified copy is reported as one (it plays as the original does):
+
+```sh
+../build/host/sdl3/game-with-data --disc "Crash Twinsanity (Europe).iso" --verify-disc
+# verify-disc: 2558263296 bytes, CRC-32 9055a7bc, SHA-1 7cd787a8cb35d1bcde63ad742746d2222813145e
+# verify-disc: the European (PAL) release (SLES-52568 v1.01), an original retail dump
+```
+
 For the PS2 build to run in PCSX2, point `disc_image` (or `TWINSANITY_ISO`) at the ISO.
+
+### Other regions
+
+The port's code is the European release's, and another region's **disc** plays with it: the game asks for files by the
+European names, and the platform answers with the disc's own. Each other disc's whole archive was read against the European
+one's, and exactly 23 of each one's names differ: its one language where the game says `English` (`American` on the North
+American discs, `Japanese` on the Japanese one — its texts, its title pictures, its legal screen, its credits and its voice
+bank), and its font where the game asks for `Startup\Fonts\Crash_Euro` (`Startup\Fonts\Crash`, `Startup\Fonts\Crash_Jpn`).
+The archive index the game reads is served with its own names over the disc's entries, and a voice bank is found under the
+disc's name; the start-up says so:
+
+```
+files: the disc's build files 23 of its archive's names differently; the game is given its own
+```
+
+A settings language the disc has no voices for would leave the game waiting on files that are not there, so it falls back to
+English and says which it did (`settings: this disc has no French voices; playing in english`).
+
+Four discs play, and `--verify-disc` names each of them:
+
+| Disc | What it is |
+|---|---|
+| `SLES-52568` v1.01 | the European release (and any patched copy of it) |
+| `SLUS-20909` v1.00 | the North American release |
+| `SLUS-20909` v2.00 | the North American release, second pressing |
+| `SLPM-65801` v1.00 | the Japanese release, its texts and voices Japanese |
+
+A disc whose names are none of these is not silent about it: the port lists the game's files it cannot find
+(`files: the disc has no <name>`), and `tools/disc_names.py` prints the row it would take to support it.
+
+Each disc also plays at **its own field rate**: the release's build says which, 50 fields a second on the European disc and 60
+on the North American and Japanese ones, and the port takes it from the disc's serial — the game's own PAL flag is a word of
+the retail data, which the port carries the European build's value of. The rate decides the logic's step, the clock's frame,
+the particle emitters' aging and the picture's framing, so a North American disc runs at the speed its console ran at.
+
+**Only the European disc can be built with.** The North American and Japanese discs are *data* to this port: the game's own
+code is the European program's, so their program's own behaviour does not come with them. The PS2 build is the one that needs
+the program itself — `SLES_525.68` from the European disc, as above; the computer builds need no executable at all, they read
+whichever disc they are pointed at.
+What a build on another region's program would take is in [DEVELOPMENT.md](docs/DEVELOPMENT.md#another-regions-disc).
 
 ## Building
 
@@ -143,12 +194,16 @@ the 3D geometry, the sprites and the menus' text alike; hardware multisampling i
 echo 'antialias smaa' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
 ```
 
-`language <name>` is the language the game reads its texts, voices, movies and title pictures in: `english` when the file has
+`language <name>` is the language the game's voices, movies, title pictures and credits are in: `english` when the file has
 none, or `french`, `german`, `spanish`, `italian` -- the five the disc carries. The game's own OPTIONS screen has no row for
 it, so this is the way to choose it, and it takes effect at the next start (the game puts its language in place once, early).
 
+`text_language <name>` puts the texts alone in another language, for discs whose text banks were moved into another slot (a
+translation patch: the English slot holding Portuguese, say). Without it the texts are in the `language` above.
+
 ```sh
 echo 'language french' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
+echo 'text_language english' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"   # French menus, English texts
 ```
 
 A crash writes `crash.log` in the working directory and to stderr: the signal, registers, and the faulting frame with the
@@ -192,4 +247,5 @@ Use forward slashes in Windows paths (`C:/Games/Twinsanity.iso`) or double the b
 ## Credits
 
 The decompilation this port is built on is [Smartkin/twinsanity-reversed](https://github.com/Smartkin/twinsanity-reversed).
+Another pc port resource that was taken as inspiration is [menaman123/TwinsanityEvolved](https://github.com/menaman123/TwinsanityEvolved)
 Crash Twinsanity is property of Activision. This repository contains no game code or data.

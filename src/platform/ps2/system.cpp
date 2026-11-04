@@ -240,6 +240,13 @@ Platform::System::ConsoleLanguage Platform::System::Language()
     return static_cast<ConsoleLanguage>(config.japLanguage);
 }
 
+Platform::System::ConsoleLanguage Platform::System::TextLanguage()
+{
+    // The console has one language, and the texts are in it
+    return Language();
+}
+
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     sceCdCLOCK clock;

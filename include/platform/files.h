@@ -25,6 +25,10 @@ enum Whence : s32
 // The directory the game's own paths are read from: empty for the working directory (a run started in the disc's folder),
 // or the folder the launch found the files in (Platform::GameData::Locate). Set once, before the game opens anything
 void SetRoot(const char* path);
+// Whether the disc being read is the European release's build, which ran at 50 fields a second: the North American and
+// Japanese builds ran at 60. The game's own flag for it (g_Pal) is a word of the retail data, which this port has from the
+// European build, so the disc's serial at its root is what says which it is
+bool DiscIsPal();
 // Forgets what it knew of the file system (open again after the I/O processor restarted)
 void Reset();
 // Returns the descriptor, negative on failure

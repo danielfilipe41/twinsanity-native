@@ -10,6 +10,7 @@
 #include "iso9660.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -31,6 +32,10 @@ struct HostFile
     u32 imageSize = 0;
     u64 imagePosition = 0;
 
+    // A handle served from memory: the disc's archive index with its build's names put back to the game's (see Open)
+    std::shared_ptr<const std::vector<u8>> memory;
+    u64 memoryPosition = 0;
+
     std::mutex mutex;
 };
 
@@ -44,6 +49,43 @@ std::string g_Root;
 // Whether the root is a disc image rather than a folder: every path is then looked up in the volume (iso9660.h) and nothing
 // is written to it
 bool g_ImageRoot = false;
+
+// What a disc's build files differently from the game's own names. The game's C++ and its data table ask for the European
+// release's names; the North American one calls its single language "American" where the game says "English", and set its font
+// in "Crash" where the game asks for "Crash_Euro". This is the table TwinsanityEvolved's SLUS-20909 region map carries, whose
+// names were read out of both releases' data images: nothing else of the two discs' naming differs
+struct NameAlias
+{
+    const char* game;
+    const char* disc;
+};
+
+// A name every occurrence of which differs is the language: a folder of its pictures, the stem of its texts, its voice bank. A
+// whole name is the font its lettering was set in
+constexpr NameAlias NorthAmericanNames[] = {
+    {"English", "American"},
+    {"StartUp\\Fonts\\Crash_Euro", "StartUp\\Fonts\\Crash"},
+};
+constexpr u32 NorthAmericanNameCount = sizeof(NorthAmericanNames) / sizeof(NorthAmericanNames[0]);
+
+constexpr NameAlias JapaneseNames[] = {
+    {"English", "Japanese"},
+    {"StartUp\\Fonts\\Crash_Euro", "StartUp\\Fonts\\Crash_Jpn"},
+};
+constexpr u32 JapaneseNameCount = sizeof(JapaneseNames) / sizeof(JapaneseNames[0]);
+
+// The disc's build, by the serial at its root (the program's name on the disc, not the file's name on the host)
+enum class DiscBuild
+{
+    European,
+    NorthAmerican,
+    Japanese,
+};
+
+DiscBuild g_Build = DiscBuild::European;
+bool g_BuildKnown = false;
+// The serial the build was read from ("" when the disc's root has none this port knows)
+const char* g_Serial = "";
 
 std::string HostPath(const char* path)
 {
@@ -135,6 +177,296 @@ bool Exists(const std::string& path)
     return std::filesystem::exists(path, error);
 }
 
+// Whether the disc has a file, by the name on the disc: the image's volume, or the folder's (case-insensitively, as the
+// game's opens are)
+bool DiscHas(const std::string& gamePath)
+{
+    if (g_ImageRoot)
+    {
+        u64 offset = 0;
+        u32 size = 0;
+        return Platform::Iso9660::Find(gamePath.c_str(), &offset, &size);
+    }
+    return !ResolveInsensitive(HostPath(gamePath.c_str())).empty();
+}
+
+// The disc's build, read once from the serial file at its root
+DiscBuild BuildOfDisc()
+{
+    if (g_BuildKnown)
+    {
+        return g_Build;
+    }
+
+    // Before the probe, so the opens it makes take no aliases of their own
+    g_BuildKnown = true;
+    if (DiscHas("SLES_525.68"))
+    {
+        g_Build = DiscBuild::European;
+        g_Serial = "SLES_525.68";
+    }
+    else if (DiscHas("SLUS_209.09"))
+    {
+        g_Build = DiscBuild::NorthAmerican;
+        g_Serial = "SLUS_209.09";
+    }
+    else if (DiscHas("SLPM_658.01"))
+    {
+        g_Build = DiscBuild::Japanese;
+        g_Serial = "SLPM_658.01";
+    }
+    return g_Build;
+}
+
+const NameAlias* Aliases(u32* count)
+{
+    switch (BuildOfDisc())
+    {
+    case DiscBuild::NorthAmerican:
+        *count = NorthAmericanNameCount;
+        return NorthAmericanNames;
+    case DiscBuild::Japanese:
+        *count = JapaneseNameCount;
+        return JapaneseNames;
+    case DiscBuild::European:
+        break;
+    }
+    *count = 0;
+    return nullptr;
+}
+
+// Whether an alias names a whole path (the font: StartUp\Fonts\Crash) or a bare name every occurrence of which differs (a
+// language: English, as a folder of its pictures and in the stem of its texts)
+bool IsPathAlias(const NameAlias& alias)
+{
+    return std::strchr(alias.game, '\\') != nullptr || std::strchr(alias.game, '/') != nullptr;
+}
+
+// The path as the other build names it, or empty when it has no name either build files differently. A whole-path alias matches
+// the path with its extension kept; a bare name matches a component, whole or as a file's stem
+std::string RenamedPath(const std::string& path, bool toDisc)
+{
+    u32 count = 0;
+    const NameAlias* aliases = Aliases(&count);
+    if (aliases == nullptr)
+    {
+        return {};
+    }
+
+    auto withExtension = [&path](const std::string& name) -> const char* {
+        // The part of the path past a name that is its stem: empty, or ".psf" and the like
+        if (path.size() < name.size() || !MatchesLower(path.substr(0, name.size()), name))
+        {
+            return nullptr;
+        }
+        if (path.size() == name.size())
+        {
+            return path.c_str() + name.size();
+        }
+        return path[name.size()] == '.' ? path.c_str() + name.size() : nullptr;
+    };
+
+    for (u32 index = 0; index < count; index++)
+    {
+        const NameAlias& alias = aliases[index];
+        if (!IsPathAlias(alias))
+        {
+            continue;
+        }
+        const std::string from = toDisc ? alias.game : alias.disc;
+        const std::string to = toDisc ? alias.disc : alias.game;
+        if (const char* extension = withExtension(from))
+        {
+            return to + extension;
+        }
+    }
+
+    // The bare names: a component the build spells its own way, whole or as a file's stem (American.txt -> English.txt)
+    std::string out;
+    bool changed = false;
+    size_t at = 0;
+    while (at <= path.size())
+    {
+        const size_t end = path.find_first_of("\\/", at);
+        const std::string component = path.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        std::string replaced = component;
+        for (u32 index = 0; index < count; index++)
+        {
+            const NameAlias& alias = aliases[index];
+            if (IsPathAlias(alias))
+            {
+                continue;
+            }
+            const std::string from = toDisc ? alias.game : alias.disc;
+            const std::string to = toDisc ? alias.disc : alias.game;
+            if (MatchesLower(component, from))
+            {
+                replaced = to;
+            }
+            else if (component.size() > from.size() && MatchesLower(component.substr(0, from.size()), from) &&
+                     component[from.size()] == '.')
+            {
+                replaced = to + component.substr(from.size());
+            }
+            else
+            {
+                continue;
+            }
+            changed = true;
+            break;
+        }
+        out += replaced;
+        if (end == std::string::npos)
+        {
+            break;
+        }
+        out += path[end];
+        at = end + 1;
+    }
+    return changed ? out : std::string();
+}
+
+// The disc's archive index (CRASH6\CRASH.BH: a header word, then {length, name, offset, size} an entry) with the build's names
+// put back to the game's, so the game finds its font and its texts under the names its C++ and data carry. Only the names
+// change: every offset and size stays as the disc has it
+std::shared_ptr<const std::vector<u8>> RenamedArchiveIndex(const std::vector<u8>& index)
+{
+    if (index.size() < 4)
+    {
+        return nullptr;
+    }
+
+    auto read32 = [](const std::vector<u8>& bytes, size_t at) {
+        return static_cast<u32>(bytes[at]) | (static_cast<u32>(bytes[at + 1]) << 8) | (static_cast<u32>(bytes[at + 2]) << 16) |
+               (static_cast<u32>(bytes[at + 3]) << 24);
+    };
+
+    struct Row
+    {
+        std::string name;
+        u32 offset;
+        u32 size;
+    };
+    std::vector<Row> rows;
+    size_t at = 4;
+    while (at + 4 <= index.size())
+    {
+        const u32 length = read32(index, at);
+        if (length == 0 || length > 1024 || at + 4 + length + 8 > index.size())
+        {
+            return nullptr;
+        }
+        Row row;
+        row.name.assign(reinterpret_cast<const char*>(index.data() + at + 4), length);
+        row.offset = read32(index, at + 4 + length);
+        row.size = read32(index, at + 4 + length + 4);
+        rows.push_back(row);
+        at += 4 + length + 8;
+    }
+    if (rows.empty())
+    {
+        return nullptr;
+    }
+
+    // The names the disc already has: one the game asks for and the disc carries is left alone
+    std::vector<std::string> present;
+    for (const Row& row : rows)
+    {
+        present.push_back(row.name);
+    }
+    u32 renamedCount = 0;
+    for (Row& row : rows)
+    {
+        const std::string renamed = RenamedPath(row.name, false);
+        if (renamed.empty())
+        {
+            continue;
+        }
+        bool taken = false;
+        for (const std::string& name : present)
+        {
+            if (MatchesLower(name, renamed))
+            {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken)
+        {
+            row.name = renamed;
+            present.push_back(renamed);
+            renamedCount++;
+        }
+    }
+
+    if (renamedCount != 0)
+    {
+        // One line for the lot: the disc's build files a handful of names its own way and the game is given its own back
+        std::fprintf(stderr, "files: the disc's build files %u of its archive's names differently; the game is given its own\n",
+                     renamedCount);
+    }
+
+    auto share = std::make_shared<std::vector<u8>>();
+    share->reserve(index.size() + 1024);
+    for (size_t byte = 0; byte < 4; byte++)
+    {
+        share->push_back(index[byte]);
+    }
+    for (const Row& row : rows)
+    {
+        const u32 length = static_cast<u32>(row.name.size());
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            share->push_back(static_cast<u8>(length >> (byte * 8)));
+        }
+        share->insert(share->end(), row.name.begin(), row.name.end());
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            share->push_back(static_cast<u8>(row.offset >> (byte * 8)));
+        }
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            share->push_back(static_cast<u8>(row.size >> (byte * 8)));
+        }
+    }
+    return share;
+}
+
+// A read the disc could not serve, said once per name: a disc of a region this port has no names for fails on all of its files
+// at once, and a silent black screen says nothing about why
+void NoteMissing(const char* path)
+{
+    static std::mutex mutex;
+    static std::vector<std::string> noted;
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const std::string& name : noted)
+    {
+        if (MatchesLower(name, path))
+        {
+            return;
+        }
+    }
+    if (noted.size() >= 8)
+    {
+        return;
+    }
+    noted.emplace_back(path);
+    std::fprintf(stderr, "files: the disc has no %s\n", path);
+}
+
+// Whether a name is the disc's archive index, whatever its case and separators
+bool IsArchiveIndex(const char* path)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    std::string name(path);
+    const size_t slash = name.find_last_of("\\/");
+    name = slash == std::string::npos ? name : name.substr(slash + 1);
+    return MatchesLower(name, "CRASH.BH");
+}
+
 const char* HostMode(s32 flags)
 {
     const bool read = (flags & Platform::Files::OpenRead) != 0;
@@ -187,6 +519,8 @@ void Platform::Files::SetRoot(const char* path)
 {
     g_Root.clear();
     g_ImageRoot = false;
+    g_BuildKnown = false;
+    g_Serial = "";
     Platform::Iso9660::Close();
     if (path == nullptr)
     {
@@ -216,25 +550,52 @@ void Platform::Files::SetRoot(const char* path)
     }
 }
 
+bool Platform::Files::DiscIsPal()
+{
+    const DiscBuild build = BuildOfDisc();
+    // A disc whose root carries none of the serials is played the way the port was made: the European release's 50 fields
+    return g_Serial[0] == '\0' || build == DiscBuild::European;
+}
+
 void Platform::Files::Reset()
 {
     // The handles stay open: the game keeps reading from them once the I/O processor is back
 }
 
-s32 Platform::Files::Open(const char* path, s32 flags)
+namespace
 {
-    if (path == nullptr)
+// A handle in a free slot, or a new one
+s32 Install(std::unique_ptr<HostFile> file)
+{
+    std::lock_guard<std::mutex> lock(g_TableMutex);
+    s32 number = -1;
+    for (size_t slot = 0; slot < g_Files.size(); slot++)
     {
-        return -1;
+        if (!g_Files[slot])
+        {
+            number = static_cast<s32>(slot);
+            g_Files[slot] = std::move(file);
+            break;
+        }
     }
+    if (number < 0)
+    {
+        number = static_cast<s32>(g_Files.size());
+        g_Files.push_back(std::move(file));
+    }
+    return number;
+}
 
-    const bool create = (flags & OpenCreate) != 0;
-    const bool writing = (flags & (OpenWrite | OpenTruncate)) != 0;
+// The file by exactly the name given (the image's volume or the folder, case-insensitively), an alias not applied
+s32 OpenExact(const char* path, s32 flags)
+{
+    const bool create = (flags & Platform::Files::OpenCreate) != 0;
+    const bool writing = (flags & (Platform::Files::OpenWrite | Platform::Files::OpenTruncate)) != 0;
 
     if (g_ImageRoot)
     {
         // The volume is read-only: the game writes its saves through Platform::Saves, never into the disc
-        if (writing || (flags & OpenAppend) != 0)
+        if (writing || (flags & Platform::Files::OpenAppend) != 0)
         {
             return -1;
         }
@@ -249,24 +610,9 @@ s32 Platform::Files::Open(const char* path, s32 flags)
         file->image = true;
         file->imageOffset = offset;
         file->imageSize = size;
-        std::lock_guard<std::mutex> lock(g_TableMutex);
-        s32 number = -1;
-        for (size_t slot = 0; slot < g_Files.size(); slot++)
-        {
-            if (!g_Files[slot])
-            {
-                number = static_cast<s32>(slot);
-                g_Files[slot] = std::move(file);
-                break;
-            }
-        }
-        if (number < 0)
-        {
-            number = static_cast<s32>(g_Files.size());
-            g_Files.push_back(std::move(file));
-        }
-        return number;
+        return Install(std::move(file));
     }
+
     std::string host = HostPath(path);
     // A write of a file that isn't there fails, as the PS2's open does; the case-insensitive name still finds it
     if (!create && writing && !Exists(host))
@@ -294,23 +640,76 @@ s32 Platform::Files::Open(const char* path, s32 flags)
 
     auto file = std::make_unique<HostFile>();
     file->stream = stream;
-    std::lock_guard<std::mutex> lock(g_TableMutex);
-    s32 number = -1;
-    for (size_t slot = 0; slot < g_Files.size(); slot++)
+    return Install(std::move(file));
+}
+}
+
+s32 Platform::Files::Open(const char* path, s32 flags)
+{
+    if (path == nullptr)
     {
-        if (!g_Files[slot])
+        return -1;
+    }
+
+    const bool writing = (flags & (OpenWrite | OpenCreate | OpenTruncate | OpenAppend)) != 0;
+
+    // The disc's archive index, when its build names things differently: the game is given the index with its own names, so its
+    // C++ and its data find the font and the texts of the language they ask for
+    static std::shared_ptr<const std::vector<u8>> archiveIndex;
+    if (!writing && IsArchiveIndex(path))
+    {
+        u32 aliasCount = 0;
+        if (Aliases(&aliasCount) != nullptr)
         {
-            number = static_cast<s32>(slot);
-            g_Files[slot] = std::move(file);
-            break;
+            if (archiveIndex != nullptr)
+            {
+                auto file = std::make_unique<HostFile>();
+                file->memory = archiveIndex;
+                return Install(std::move(file));
+            }
+
+            // Read it once through the layer that serves it, and keep the renamed copy
+            const s32 plain = OpenExact(path, OpenRead);
+            if (plain < 0)
+            {
+                return -1;
+            }
+            std::vector<u8> bytes;
+            u8 chunk[4096];
+            while (true)
+            {
+                const s32 read = Read(plain, chunk, sizeof(chunk));
+                if (read <= 0)
+                {
+                    break;
+                }
+                bytes.insert(bytes.end(), chunk, chunk + read);
+            }
+            Close(plain);
+
+            archiveIndex = RenamedArchiveIndex(bytes);
+            if (archiveIndex != nullptr)
+            {
+                auto file = std::make_unique<HostFile>();
+                file->memory = archiveIndex;
+                return Install(std::move(file));
+            }
         }
     }
-    if (number < 0)
+
+    const s32 file = OpenExact(path, flags);
+    if (file >= 0 || writing)
     {
-        number = static_cast<s32>(g_Files.size());
-        g_Files.push_back(std::move(file));
+        return file;
     }
-    return number;
+
+    // The build files this name under its own: the game asks for Crash6\English.mb, the disc has Crash6\American.mb
+    const std::string renamed = RenamedPath(path, true);
+    if (!renamed.empty())
+    {
+        return OpenExact(renamed.c_str(), flags);
+    }
+    return -1;
 }
 
 s32 Platform::Files::Close(s32 file)
@@ -326,7 +725,7 @@ s32 Platform::Files::Close(s32 file)
     }
 
     std::lock_guard<std::mutex> lock(handle->mutex);
-    if (handle->image)
+    if (handle->image || handle->memory != nullptr)
     {
         return 0;
     }
@@ -341,6 +740,19 @@ s32 Platform::Files::Read(s32 file, void* buffer, s32 size)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
+    if (handle->memory != nullptr)
+    {
+        const std::vector<u8>& bytes = *handle->memory;
+        if (handle->memoryPosition >= bytes.size())
+        {
+            return 0;
+        }
+        const u64 left = bytes.size() - handle->memoryPosition;
+        const s32 wanted = left < static_cast<u64>(size) ? static_cast<s32>(left) : size;
+        std::memcpy(buffer, bytes.data() + handle->memoryPosition, static_cast<size_t>(wanted));
+        handle->memoryPosition += static_cast<u64>(wanted);
+        return wanted;
+    }
     if (handle->image)
     {
         // At the end of its own file, never past it: the image's next files are not this one's
@@ -368,7 +780,7 @@ s32 Platform::Files::Write(s32 file, const void* buffer, s32 size)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
-    if (handle->image)
+    if (handle->image || handle->memory != nullptr)
     {
         return -1;
     }
@@ -383,6 +795,18 @@ s32 Platform::Files::Seek(s32 file, s32 offset, Whence whence)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
+    if (handle->memory != nullptr)
+    {
+        const s64 start = whence == SeekSet ? 0 : whence == SeekCurrent ? static_cast<s64>(handle->memoryPosition)
+                                                                        : static_cast<s64>(handle->memory->size());
+        const s64 position = start + offset;
+        if (position < 0)
+        {
+            return -1;
+        }
+        handle->memoryPosition = static_cast<u64>(position);
+        return static_cast<s32>(handle->memoryPosition);
+    }
     if (handle->image)
     {
         // Past the end is allowed, as the console's is; before the start is not
@@ -412,6 +836,18 @@ s32 Platform::Files::ReadAt(s32 file, u32 offset, void* buffer, s32 size)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
+    if (handle->memory != nullptr)
+    {
+        const std::vector<u8>& bytes = *handle->memory;
+        if (offset >= bytes.size())
+        {
+            return 0;
+        }
+        const u64 left = bytes.size() - offset;
+        const s32 wanted = left < static_cast<u64>(size) ? static_cast<s32>(left) : size;
+        std::memcpy(buffer, bytes.data() + offset, static_cast<size_t>(wanted));
+        return wanted;
+    }
     if (handle->image)
     {
         // The read position stays where the game left it: the stream channels read in the background

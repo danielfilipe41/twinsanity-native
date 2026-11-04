@@ -22,6 +22,13 @@ Platform::System::ConsoleLanguage Platform::System::Language()
     return LanguageEnglish;
 }
 
+Platform::System::ConsoleLanguage Platform::System::TextLanguage()
+{
+    // No settings of its own: the texts are in the language everything else is
+    return Language();
+}
+
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

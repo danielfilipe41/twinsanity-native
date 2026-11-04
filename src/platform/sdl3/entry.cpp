@@ -3,6 +3,7 @@
 #include "common.h"
 #include "graphics/bgfx_context.h"
 
+#include "platform/discverify.h"
 #include "platform/gamedata.h"
 #include "settings.h"
 
@@ -35,6 +36,7 @@ int main(int argc, char** argv)
     // The run's own options are read and taken out of argv before the game's parser sees the rest: the retail parser takes the
     // words as its own arguments and would make `--disc` one of them
     const char* disc = nullptr;
+    bool verifyDisc = false;
     int count = 1;
     for (int index = 1; index < argc; index++)
     {
@@ -47,6 +49,11 @@ int main(int argc, char** argv)
         if (std::strncmp(argv[index], "--disc=", 7) == 0)
         {
             disc = argv[index] + 7;
+            continue;
+        }
+        if (std::strcmp(argv[index], "--verify-disc") == 0)
+        {
+            verifyDisc = true;
             continue;
         }
         argv[count++] = argv[index];
@@ -74,6 +81,19 @@ int main(int argc, char** argv)
     // The picture's antialiasing: the settings file's `antialias` line, read before the renderer's first frame makes the
     // post passes' targets
     BgfxSetAntiAliasing(HostSettingsAntiAlias());
+
+    if (verifyDisc)
+    {
+        const char* located = Platform::GameData::LocatedPath();
+        if (located == nullptr)
+        {
+            std::fprintf(stderr, "verify-disc: this run has no disc to verify\n");
+        }
+        else
+        {
+            Platform::DiscVerify::Image(located);
+        }
+    }
 
     if (!BgfxInit(window))
     {

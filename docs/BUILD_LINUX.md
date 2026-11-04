@@ -46,6 +46,7 @@ cd disc
 ../build/host/sdl3/game-with-data
 TWINSANITY_RENDERER=vulkan ../build/host/sdl3/game-with-data
 ../build/host/sdl3/game-with-data --disc "../Crash Twinsanity (Europe).iso"
+../build/host/sdl3/game-with-data --disc "../Crash Twinsanity (Europe).iso" --verify-disc   # which dump it is
 ```
 
 Renderers and shader blobs are [here](BUILDING.md#renderers).

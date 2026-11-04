@@ -17,6 +17,11 @@ extern "C"
     extern u32 g_LanguageCount RETAIL(GlobalLanguagesAmount);
     extern const char** g_LanguageNames RETAIL(G_unkLanguagesStruct);
     extern u32 g_CurrentLanguage RETAIL(CurrentLanguageIndex);
+    // The slot the two text files are read from. Retail had one index for everything; a disc whose text banks were moved
+    // between slots (a translation patch, where the English slot holds another language) needs the texts' slot apart from the
+    // speech's, so the texts follow this one while g_CurrentLanguage (the voice bank, the FMV sound track, a level's voices,
+    // the title cards, the credits) stays the retail index. The same slot on a retail disc
+    extern u32 g_CurrentTextLanguage;
     // The names the start-up gives (English, French, German, Spanish, Italian)
     extern const char* g_GameLanguageNames[] RETAIL(GlobalLanguagesArray);
     // Each text file's lines: how many line breaks the last one read had, every language's lines (none until read) and the
@@ -29,10 +34,12 @@ extern "C"
     void InitLanguages(u32 count, const char** names) RETAIL(InitAGlobalRelatedToLanguages);
     // The language played in: its texts the current ones (once there are languages), the game told
     void SetGameLanguage(u32 language) RETAIL(SetGameLanguage);
+    // Both at once: the language played in (its voices, movies, pictures and credits) and the slot its texts come from
+    void SetGameLanguages(u32 language, u32 textLanguage);
     // A text file's text (in memory that stays) split into its lines, the line breaks made ends; blank lines aren't lines, so
     // a text's number counts the lines that aren't blank. The lines are the language's and the current ones
     void ReadTextFile(u32 file, u32 language, char* text) RETAIL(FUN_0017e088);
-    // The current language's texts the current ones, the game told
+    // The current text language's texts the current ones, the game told
     void UseLanguageTexts() RETAIL(FUN_00181aa8);
 }
 

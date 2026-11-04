@@ -30,6 +30,9 @@ constexpr u32 PathLength = 1024;
 // isn't a path (Android's storage access framework gives a content:// URI, so getting the files there is a copy, not a path)
 constexpr const char* DataVariable = "TWINSANITY_DATA";
 
+// What this run's Locate resolved to, for the run's own reporting (--verify-disc names the image it hashed)
+std::string g_LocatedPath;
+
 std::string RecordPath()
 {
     char base[PathLength - 32];
@@ -220,6 +223,7 @@ bool Platform::GameData::Locate(const char* named, void* window)
 #else
     std::string found;
     std::string several;
+    const std::string record = RecordPath();
 
     // The run's own answer first (--disc): used as given, and not kept, because it is this run's choice and not the player's
     // standing one
@@ -229,12 +233,23 @@ bool Platform::GameData::Locate(const char* named, void* window)
         {
             if (!several.empty())
             {
-                return AskWhichImage(several, &found, window);
+                if (!AskWhichImage(several, &found, window))
+                {
+                    return false;
+                }
+                WriteRecord(record, found);
+                Announce(found);
+                g_LocatedPath = found;
+                Platform::Files::SetRoot(found.c_str());
+                return true;
             }
             std::fprintf(stderr, "gamedata: --disc %s has no %s and is not a disc image of the game\n", named, DataMarker);
             return false;
         }
+        // Kept like the picker's answer: --disc is a deliberate choice, and the next run then needs no option at all
+        WriteRecord(record, found);
         Announce(found);
+        g_LocatedPath = found;
         Platform::Files::SetRoot(found.c_str());
         return true;
     }
@@ -245,6 +260,7 @@ bool Platform::GameData::Locate(const char* named, void* window)
         if (FindGameFiles(environment, &found, &several))
         {
             Announce(found);
+            g_LocatedPath = found;
             Platform::Files::SetRoot(found.c_str());
             return true;
         }
@@ -257,6 +273,7 @@ bool Platform::GameData::Locate(const char* named, void* window)
                 return false;
             }
             Announce(found);
+            g_LocatedPath = found;
             Platform::Files::SetRoot(found.c_str());
             return true;
         }
@@ -265,14 +282,15 @@ bool Platform::GameData::Locate(const char* named, void* window)
     if (FindGameFiles(".", &found, &several))
     {
         // The working directory: relative paths already resolve against it, so there is no root to set
+        g_LocatedPath = found;
         return true;
     }
 
-    const std::string record = RecordPath();
     const std::string kept = ReadRecord(record);
     if (FindGameFiles(kept, &found, &several))
     {
         Announce(found);
+        g_LocatedPath = found;
         Platform::Files::SetRoot(found.c_str());
         return true;
     }
@@ -301,7 +319,13 @@ bool Platform::GameData::Locate(const char* named, void* window)
 
     WriteRecord(record, found);
     Announce(found);
+    g_LocatedPath = found;
     Platform::Files::SetRoot(found.c_str());
     return true;
 #endif
+}
+
+const char* Platform::GameData::LocatedPath()
+{
+    return g_LocatedPath.empty() ? nullptr : g_LocatedPath.c_str();
 }

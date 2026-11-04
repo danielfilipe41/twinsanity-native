@@ -1,6 +1,8 @@
 // The settings file itself (settings.h): a line per option, beside the saves.
 #include "settings.h"
 
+#include "platform/files.h"
+
 #include "game/renderer.h"
 #include "game/sound.h"
 
@@ -119,12 +121,16 @@ void LoadAntiAlias()
     std::fclose(file);
 }
 
-// The file's `language` line: the language the game's texts and voices are read in. Read once, as the game starts and asks the
-// console which language it runs in (Platform::System::Language), which is the one place the retail code takes it from
+// The file's `language` line, and its `text_language` line when the texts aren't in the speech's language: read once, as the
+// game starts and asks the console which language it runs in (Platform::System::Language and TextLanguage), which is the one
+// place the retail code takes it from
 bool g_LanguageLoaded = false;
 Platform::System::ConsoleLanguage g_Language = Platform::System::LanguageEnglish;
+Platform::System::ConsoleLanguage g_TextLanguage = Platform::System::LanguageEnglish;
 
 constexpr const char* LanguageWords[] = {"english", "french", "german", "spanish", "italian"};
+// The same names as the game and the disc spell them (its text folders, its voice banks: Crash6\English.mb)
+constexpr const char* LanguageDisplayNames[] = {"English", "French", "German", "Spanish", "Italian"};
 constexpr Platform::System::ConsoleLanguage LanguageValues[] = {
     Platform::System::LanguageEnglish, Platform::System::LanguageFrench, Platform::System::LanguageGerman,
     Platform::System::LanguageSpanish, Platform::System::LanguageItalian};
@@ -142,6 +148,47 @@ const char* LanguageWord(Platform::System::ConsoleLanguage language)
     return LanguageWords[0];
 }
 
+// A word of the file as the console language it names: English for one this build has no language for, which every disc has
+Platform::System::ConsoleLanguage LanguageOf(char* word)
+{
+    for (char* letter = word; *letter != '\0'; letter++)
+    {
+        if (*letter >= 'A' && *letter <= 'Z')
+        {
+            *letter = static_cast<char>(*letter - 'A' + 'a');
+        }
+    }
+
+    for (u32 index = 0; index < LanguageCount; index++)
+    {
+        if (std::strcmp(word, LanguageWords[index]) == 0)
+        {
+            return LanguageValues[index];
+        }
+    }
+    return Platform::System::LanguageEnglish;
+}
+
+// Whether the disc has a language at all: its voice bank (Crash6\\English.mb, which the file layer answers from the disc's own
+// name when its build files it differently). Its texts come from the same slot, so a disc without the one has neither
+bool DiscHasLanguage(Platform::System::ConsoleLanguage language)
+{
+    const char* name = HostSettingsLanguageName(language);
+    if (name == nullptr)
+    {
+        return false;
+    }
+    char path[64];
+    std::snprintf(path, sizeof(path), "Crash6\\%s.mb", name);
+    const s32 file = Platform::Files::Open(path, Platform::Files::OpenRead);
+    if (file < 0)
+    {
+        return false;
+    }
+    Platform::Files::Close(file);
+    return true;
+}
+
 void LoadLanguage()
 {
     if (g_LanguageLoaded)
@@ -150,40 +197,56 @@ void LoadLanguage()
     }
 
     g_LanguageLoaded = true;
+    Platform::System::ConsoleLanguage text = Platform::System::LanguageEnglish;
+    bool textNamed = false;
+
     char path[PathLength];
     SettingsPath(path);
     std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
+    if (file != nullptr)
     {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
-    {
-        char word[16] = {};
-        if (std::sscanf(line, "language %15s", word) != 1)
+        char line[LineLength];
+        while (std::fgets(line, sizeof(line), file) != nullptr)
         {
-            continue;
-        }
-        for (char& letter : word)
-        {
-            letter = static_cast<char>(std::tolower(static_cast<unsigned char>(letter)));
-        }
-
-        // A word this build has no language for leaves the game in English, which every disc carries
-        g_Language = Platform::System::LanguageEnglish;
-        for (u32 index = 0; index < LanguageCount; index++)
-        {
-            if (std::strcmp(word, LanguageWords[index]) == 0)
+            char word[16] = {};
+            if (std::sscanf(line, "language %15s", word) == 1)
             {
-                g_Language = LanguageValues[index];
+                g_Language = LanguageOf(word);
+            }
+            else if (std::sscanf(line, "text_language %15s", word) == 1)
+            {
+                text = LanguageOf(word);
+                textNamed = true;
             }
         }
+
+        std::fclose(file);
     }
 
-    std::fclose(file);
-    std::fprintf(stderr, "settings: language %s\n", LanguageWord(g_Language));
+    // The texts are in the language played in unless the file names another
+    g_TextLanguage = textNamed ? text : g_Language;
+
+    // A language the disc does not carry would leave the game waiting on files that are not there (its voice bank, its texts):
+    // the disc's own voice banks say which languages it has, and English is the one every disc has, by that name or the one
+    // its build files it under
+    if (!DiscHasLanguage(g_Language))
+    {
+        if (DiscHasLanguage(Platform::System::LanguageEnglish))
+        {
+            std::fprintf(stderr, "settings: this disc has no %s voices; playing in english\n",
+                         HostSettingsLanguageName(g_Language));
+            g_Language = Platform::System::LanguageEnglish;
+            g_TextLanguage = Platform::System::LanguageEnglish;
+        }
+    }
+    else if (!DiscHasLanguage(g_TextLanguage) && DiscHasLanguage(Platform::System::LanguageEnglish))
+    {
+        std::fprintf(stderr, "settings: this disc has no %s texts; reading them in english\n",
+                     HostSettingsLanguageName(g_TextLanguage));
+        g_TextLanguage = Platform::System::LanguageEnglish;
+    }
+
+    std::fprintf(stderr, "settings: language %s, texts %s\n", LanguageWord(g_Language), LanguageWord(g_TextLanguage));
 }
 
 // The word the file's `antialias` line is written with
@@ -238,10 +301,28 @@ AntiAlias HostSettingsAntiAlias()
     return g_AntiAlias;
 }
 
+const char* HostSettingsLanguageName(Platform::System::ConsoleLanguage language)
+{
+    for (u32 index = 0; index < LanguageCount; index++)
+    {
+        if (LanguageValues[index] == language)
+        {
+            return LanguageDisplayNames[index];
+        }
+    }
+    return LanguageDisplayNames[0];
+}
+
 Platform::System::ConsoleLanguage HostSettingsLanguage()
 {
     LoadLanguage();
     return g_Language;
+}
+
+Platform::System::ConsoleLanguage HostSettingsTextLanguage()
+{
+    LoadLanguage();
+    return g_TextLanguage;
 }
 
 void HostSettingsApplyOnce()
@@ -389,5 +470,10 @@ void HostSettingsKeep()
     std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\nantialias %s\nlanguage %s\n", static_cast<int>(stereo),
                  static_cast<int>(widescreen), static_cast<int>(g_RenderRate), AntiAliasWord(g_AntiAlias),
                  LanguageWord(g_Language));
+    if (g_TextLanguage != g_Language)
+    {
+        // Only when the texts aren't in the speech's language: a line that says what the file already said is noise
+        std::fprintf(file, "text_language %s\n", LanguageWord(g_TextLanguage));
+    }
     std::fclose(file);
 }

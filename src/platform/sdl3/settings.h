@@ -21,10 +21,16 @@ void HostSettingsTick();
 // has no mode for. Read before the renderer makes its first frame's targets, like the rate, and written back as it was read
 AntiAlias HostSettingsAntiAlias();
 
-// The language the game's texts, voices, movies and title cards are read in, from the file's `language` line: english,
-// french, german, spanish or italian, the five the disc carries. English when the file has none, and for a word this build has
-// no language for. Asked for as the game starts, which is where it puts its language in place
+// The language the game's voices, movies, title cards and credits are in, from the file's `language` line: english, french,
+// german, spanish or italian, the five the disc carries. English when the file has none, and for a word this build has no
+// language for. Asked for as the game starts, which is where it puts its language in place
 Platform::System::ConsoleLanguage HostSettingsLanguage();
+// A language's name as the game and the disc spell it (English, French, German, Spanish, Italian: its text folders and its
+// voice banks): for finding the disc's, and for the line about a disc that has none of it
+const char* HostSettingsLanguageName(Platform::System::ConsoleLanguage language);
+// The language its texts are read in: the file's `text_language` line when it names one, else the language above. A disc whose
+// texts were patched into another slot keeps its voices where they are
+Platform::System::ConsoleLanguage HostSettingsTextLanguage();
 
 // The picture's rate: how often the host presents a frame (the game's logic stays at the disc's field rate). Read from the
 // file's `render` line before the renderer starts; 50, the field rate, when the file has none

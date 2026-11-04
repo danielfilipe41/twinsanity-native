@@ -548,6 +548,6 @@ void GameContext::StartGame()
     G_VideoController = ConstructVideoController(MemoryAllocate(sizeof(VideoController)), instanceFactory, ObjectClock);
     g_DynamicSceneryClockIndex = ObjectClock;
     PreloadChunks();
-    SetGameLanguage(GameLanguageOf(Platform::System::Language()));
+    SetGameLanguages(GameLanguageOf(Platform::System::Language()), GameLanguageOf(Platform::System::TextLanguage()));
     StringDestroy(&unused);
 }

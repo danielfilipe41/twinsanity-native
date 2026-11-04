@@ -6,7 +6,9 @@
 #include "platform/sound.h"
 #include "platform/system.h"
 
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 
 void Platform::System::Initialise()
@@ -25,8 +27,16 @@ void Platform::System::StartServices()
 
 Platform::System::ConsoleLanguage Platform::System::Language()
 {
-    // The player's choice from the settings file (its `language` line): the game puts it in place once, as it starts
+    // The player's choice from the settings file (its `language` line), checked against the disc it is playing: the game puts
+    // it in place once, as it starts
     return HostSettingsLanguage();
+}
+
+Platform::System::ConsoleLanguage Platform::System::TextLanguage()
+{
+    // The settings file's `text_language` line, when it names one the speech isn't: a disc whose texts were patched into
+    // another slot keeps its voices where they were
+    return HostSettingsTextLanguage();
 }
 
 Platform::System::DateTime Platform::System::LocalTime()

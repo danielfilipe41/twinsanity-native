@@ -23,6 +23,44 @@ path, `fix_asm.py` makes splat's `.incbin` paths relative), or split there again
 Windows, so their quoting differs) and `build/compile_commands.json` for editors. `tools/split.sh` and plain `ninja` still work
 on Linux.
 
+## Another region's disc
+
+Two different things are worth telling apart.
+
+**Playing another region's disc with this build** needs no build change: the C++ is the European program's and it asks for
+files by the European names, so the platform puts the disc's own names in front of it — `src/platform/null/files.cpp` carries
+the name tables (`NorthAmericanNames`, `JapaneseNames`) and serves the archive index with the game's names over the disc's
+entries. The names come from reading each disc's archive against the European one's: 23 of them differ on every release
+(the language and the font), and the North American table is the same one TwinsanityEvolved's SLUS-20909 region map carries.
+The build is read from the serial at the disc's root (`SLES_525.68`, `SLUS_209.09`, `SLPM_658.01`).
+
+A disc the tables do not know is a command away from being one, rather than a session of reading a hex dump:
+
+```sh
+python3 tools/disc_names.py "another disc.iso"
+```
+
+It reads the disc's volume and its `CRASH6/CRASH.BH` against the European disc's archive index, lists the names that differ,
+and prints the row the platform needs (its output for the North American and Japanese discs is exactly the tables above). Until
+it has one, the platform says which of the game's files the disc cannot serve — `files: the disc has no <name>`, once per name —
+instead of leaving a black screen. The languages come from the disc the same way: a slot whose voice bank the disc does not
+have falls back to English (`src/platform/sdl3/settings.cpp`).
+
+**Building on another region's program** is the pipeline this tree already has, run on that program:
+
+1. That region's executable, out of its disc (`SLUS_209.09` at the root; `bsdtar -xf "<disc>.iso" SLUS_209.09`).
+2. A Ghidra project of it, exported with `tools/ghidra/ExportProgramInfo.java`, and `tools/make_symbols.py` making that
+   program's `symbol_addrs.txt`. Its addresses are its own: nothing of the European program's symbol table applies.
+3. `tools/split.py` over that ELF with those symbols, giving that program's `asm/` (its data sections are what the game's
+   tables come from: `data`, `rodata`, `sdata`, `sbss`, `bss`, `vudata`).
+4. The code: `src/game/` is one program's C++. Where the two programs differ in *behaviour*, the difference has to be ported
+   by hand, from the other program's disassembly — this is the part that no one has, and the reason another region's disc
+   plays here as the European program does.
+5. A `configure.py` switch selecting that `asm/` set (and any code differences) so one tree can build either.
+
+`tools/build.py --matching` is what says the split is right: the assembly alone must give the retail load image back, which is
+also how a region's data sections are shown to be the ones its disc expects.
+
 ## Testing in PCSX2
 
 These run on Linux, with PCSX2's Flatpak. `tools/play.py --boot-test` runs the first on the build with the disc image of

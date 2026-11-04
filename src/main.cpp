@@ -12,6 +12,7 @@
 #include "game/string.h"
 #include "platform/graphics.h"
 #include "platform/system.h"
+#include "platform/files.h"
 #include "platform/time.h"
 #include "retail/libc.h"
 
@@ -43,12 +44,12 @@ extern "C" int Main(u32 argc, char** argv)
 {
     RunStaticConstructors();
     Platform::System::Initialise();
-    // The disc is PAL (SLES-52568, disc/SYSTEM.CNF's VMODE), and the game's own flag for it is a word of the retail
-    // data (D_00309AEC, 1 in the PAL build). The host has no SYSTEM.CNF reader and never writes the flag, so it stayed
-    // at the zero of the process's memory and the whole game ran at 60 Hz: the renderer and the clock below took NTSC,
-    // the particle emitters aged 1/60 s a frame (particles.cpp's NtscFrame) and every per-frame formula was evaluated
-    // 1.2x less often than retail did. Set it from the disc the build carries the data of
-    g_Pal = true;
+    // The game's own flag for the disc's field rate: a word of the retail data (D_00309AEC, 1 in the European build and 0 in
+    // the others). The retail start-up never wrote it because the data carried the value; this port's data is the European
+    // build's, so the disc being played is what decides: 50 fields a second on the European release, 60 on the North American
+    // and Japanese ones. It reaches the renderer's PAL framing, the clock's rate and the particle emitters' frame (1/50 s
+    // against particles.cpp's PalFrame, 1/60 against NtscFrame)
+    g_Pal = Platform::Files::DiscIsPal();
     GameContext* context = ParseArguments(argc, argv);
     Platform::System::StartServices();
     InitStreamSystem(StreamChannels);

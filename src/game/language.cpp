@@ -3,6 +3,9 @@
 #include "game/context.h"
 #include "game/memory.h"
 
+// The texts' slot, apart from the retail index (see the header): English until the game is told otherwise
+u32 g_CurrentTextLanguage = 0;
+
 void InitLanguages(u32 count, const char** names)
 {
     g_LanguageNames = names;
@@ -67,15 +70,23 @@ void UseLanguageTexts()
 {
     for (u32 file = 0; file < TextFiles; file++)
     {
-        g_Texts[file] = g_LanguageTexts[file][g_CurrentLanguage];
+        g_Texts[file] = g_LanguageTexts[file][g_CurrentTextLanguage];
     }
 
+    // The save messages follow the language played in, which is the retail index
     g_GameContext->LanguageChanged(g_CurrentLanguage);
 }
 
 void SetGameLanguage(u32 language)
 {
+    SetGameLanguages(language, language);
+}
+
+void SetGameLanguages(u32 language, u32 textLanguage)
+{
     g_CurrentLanguage = language;
+    // A slot the disc has no texts for (a platform that names one the game never read) keeps the played-in language's
+    g_CurrentTextLanguage = g_LanguageCount == 0 || textLanguage < g_LanguageCount ? textLanguage : language;
     if (g_LanguageCount != 0)
     {
         UseLanguageTexts();
