@@ -68,6 +68,8 @@ struct ActionItem : LinkItem
         ActionExit = 9,
         // The pause menu's exit row asks first, through the pause menu's quit question
         ActionAskExit = 10,
+        // A row of the port's controller page waits for the input to bind to the action its ID names
+        ActionBind = 11,
     };
 
     u32 action;
@@ -232,8 +234,49 @@ public:
 };
 CHECK_SIZE(SoundOptionsPage, 0x50);
 
+// The options' controller page (the port's own, "controller options"): a row per input of the platform's bindings file, showing
+// what it is on and waiting for the next key or pad button when its select is pressed. The page writes the file back as a row is
+// rebound. A platform with no rebinding has no rows, and the options page offers no link to it
+class ControllerOptionsPage : public OlegPage
+{
+public:
+    enum : u32
+    {
+        // No row waiting for an input, the most rows the page shows, and a label's length
+        NoCapturing = 0xFFFFFFFF,
+        MaxRows = 32,
+        LabelLength = 64,
+        // The page's own back row, past the fields above the retail sub-pages' 0x1C
+        BackRowItem = 0x3F,
+    };
+
+    // The action whose row waits for an input (NoCapturing: none), and each row's label: the action's name and its two bindings
+    u32 capturing;
+    char labels[MaxRows][LabelLength];
+    // Whether the compact sizes are on the options' drawer, which the pages share, and the sizes it had before
+    u8 compact;
+    f32 keptScaleX;
+    f32 keptScaleY;
+    f32 keptSpacing;
+    u32 keptWindow;
+
+    static ControllerOptionsPage* Construct(ControllerOptionsPage* page, MenuPage* parent);
+    void Destroy(u32 flags);
+    void Entered(u32 player, u32 mode);
+    void Frame(u32 player, MenuInput* input, MenuSounds* sounds);
+    // The drawer's own sizes given back when the page is left
+    void Left(u32 player, u32 mode);
+    // The row of an action starts waiting for the next input pressed (an action item's select)
+    void BeginCapture(u32 action);
+    // The row waiting (NoCapturing: none), the menus' own actions taken from them while it does
+    void SetWaiting(u32 action);
+    // Every row's label rebuilt from the bindings (the waiting row says so)
+    void RefreshLabels();
+};
+
 // The options (D_002F3D00, "options"): the graphic, sound and game options and back; going back shows the main menu (in the
-// main menu) or the pause menu again
+// main menu) or the pause menu again. The port's controller page is one of its links, made at the options' construction and
+// freed with them (it is not a member, so the retail page's layout stays as it is)
 class OptionsPage : public OlegPage
 {
 public:

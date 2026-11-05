@@ -5,6 +5,7 @@
 #include "platform/pads.h"
 
 #include "graphics/bgfx_context.h"
+#include "platform/keybinds.h"
 
 #include <SDL3/SDL.h>
 
@@ -19,6 +20,9 @@ extern "C"
 namespace
 {
 using namespace Platform::Pads;
+// The inputs a key or a pad's button is on, which the file beside the settings file says (platform/keybinds.h)
+using namespace Platform::Keybinds;
+using Action = Platform::Keybinds::Action;
 
 // The presented pads: ports 0 and 1, slot 0 each
 constexpr s32 PortCount = 2;
@@ -150,11 +154,8 @@ SDL_Gamepad* ConnectedPad(s32 port)
     return pad;
 }
 
-bool PadButton(SDL_Gamepad* pad, SDL_GamepadButton button)
-{
-    return pad != nullptr && SDL_GetGamepadButton(pad, button);
-}
-
+// Whether a keyboard input is held. A binding of none is SDL_SCANCODE_UNKNOWN (0), which the state array reports as not held, so an
+// action with no key is a pad's alone
 bool KeyDown(const bool* keys, s32 keysCount, SDL_Scancode code)
 {
     return keys != nullptr && code < keysCount && keys[code];
@@ -202,6 +203,98 @@ u8 TriggerPressure(SDL_Gamepad* pad, SDL_GamepadAxis axis)
 
     return static_cast<u8>((static_cast<u32>(value) * FullPressure + 16383u) / 32767u);
 }
+
+// The buttons the file binds: the action, and the bit of the report it presses
+struct ButtonBinding
+{
+    Action action;
+    u32 bit;
+};
+
+constexpr ButtonBinding ButtonBindings[] = {
+    {Action::L2, BitL2},         {Action::R2, BitR2},         {Action::L1, BitL1},         {Action::R1, BitR1},
+    {Action::Triangle, BitTriangle}, {Action::Circle, BitCircle}, {Action::Cross, BitCross}, {Action::Square, BitSquare},
+    {Action::Select, BitSelect},  {Action::L3, BitL3},         {Action::R3, BitR3},         {Action::Start, BitStart},
+    {Action::Up, BitUp},          {Action::Right, BitRight},   {Action::Down, BitDown},     {Action::Left, BitLeft},
+};
+
+// Whether a pad's input is pressed: a button, a stick's click, or a trigger's axis past the press threshold
+bool PadInputDown(SDL_Gamepad* pad, s32 input)
+{
+    if (pad == nullptr)
+    {
+        return false;
+    }
+
+    switch (input)
+    {
+    case PadSouth:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
+    case PadEast:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST);
+    case PadWest:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST);
+    case PadNorth:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH);
+    case PadLeftShoulder:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+    case PadRightShoulder:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);
+    case PadLeftTrigger:
+        return SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TriggerPressed;
+    case PadRightTrigger:
+        return SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TriggerPressed;
+    case PadBack:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK);
+    case PadStart:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START);
+    case PadLeftStick:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK);
+    case PadRightStick:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+    case PadDpadUp:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP);
+    case PadDpadDown:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+    case PadDpadLeft:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+    case PadDpadRight:
+        return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    }
+
+    return false;
+}
+
+// The keys pressed this frame and not the last, and the same of a pad's buttons, reported to the options' controller page: SDL
+// says what is held, not what was just pressed, so the press is the first frame a hold is seen
+void NotePressed(SDL_Gamepad* pad, const bool* keys, s32 keysCount)
+{
+    static bool previousKeys[SDL_SCANCODE_COUNT];
+    static u8 previousPads[PadInputCount];
+
+    if (keys != nullptr)
+    {
+        const s32 count = keysCount < SDL_SCANCODE_COUNT ? keysCount : SDL_SCANCODE_COUNT;
+        for (s32 code = 1; code < count; code++)
+        {
+            if (keys[code] && !previousKeys[code])
+            {
+                Platform::Keybinds::NoteKey(code);
+            }
+            previousKeys[code] = keys[code];
+        }
+    }
+
+    for (s32 input = 1; input < PadInputCount; input++)
+    {
+        const u8 down = PadInputDown(pad, input) ? 1 : 0;
+        if (down != 0 && previousPads[input] == 0)
+        {
+            Platform::Keybinds::NotePadInput(input);
+        }
+        previousPads[input] = down;
+    }
+}
 }
 
 s32 Platform::Pads::Initialise()
@@ -246,78 +339,28 @@ s32 Platform::Pads::Read(s32 port, s32 slot, u8* data)
         return 0;
     }
     SDL_Gamepad* pad = PollInputs() ? ConnectedPad(port) : nullptr;
+    // The keyboard's layout, from the file beside the settings file (read once, and written with the defaults when there is none,
+    // so the first run leaves a file to edit)
+    Platform::Keybinds::Load();
     // The keyboard fallback, only with a video subsystem behind it
     int keysCount = 0;
     const bool* keys = (SDL_WasInit(SDL_INIT_VIDEO) != 0) ? SDL_GetKeyboardState(&keysCount) : nullptr;
-    // The held buttons (pressed 1): the gamepad's, the keyboard fallback's, and the test run's on pad 0
+    // The held buttons (pressed 1): what the file binds each action to, a key or a pad's input, and the test run's on pad 0
+    auto bound = [&](Action action, Kind kind)
+    {
+        const s32 input = Platform::Keybinds::Binding(action, kind);
+        return kind == Kind::Pad ? PadInputDown(pad, input)
+                                 : KeyDown(keys, keysCount, static_cast<SDL_Scancode>(input));
+    };
+    auto pressed = [&](Action action) { return bound(action, Kind::Key) || bound(action, Kind::Pad); };
 
     u32 held = 0;
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP) || KeyDown(keys, keysCount, SDL_SCANCODE_UP))
+    for (const ButtonBinding& binding : ButtonBindings)
     {
-        held |= BitUp;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || KeyDown(keys, keysCount, SDL_SCANCODE_RIGHT))
-    {
-        held |= BitRight;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN) || KeyDown(keys, keysCount, SDL_SCANCODE_DOWN))
-    {
-        held |= BitDown;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT) || KeyDown(keys, keysCount, SDL_SCANCODE_LEFT))
-    {
-        held |= BitLeft;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) || KeyDown(keys, keysCount, SDL_SCANCODE_SPACE))
-    {
-        held |= BitCross;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_EAST) || KeyDown(keys, keysCount, SDL_SCANCODE_K))
-    {
-        held |= BitCircle;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_WEST) || KeyDown(keys, keysCount, SDL_SCANCODE_J))
-    {
-        held |= BitSquare;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_NORTH) || KeyDown(keys, keysCount, SDL_SCANCODE_L))
-    {
-        held |= BitTriangle;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) || KeyDown(keys, keysCount, SDL_SCANCODE_Q))
-    {
-        held |= BitL1;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) || KeyDown(keys, keysCount, SDL_SCANCODE_E))
-    {
-        held |= BitR1;
-    }
-    // Triggers are axes in SDL3, not buttons: the axis value past the press threshold (or the keyboard fallback)
-    if ((pad != nullptr && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TriggerPressed) ||
-        KeyDown(keys, keysCount, SDL_SCANCODE_1))
-    {
-        held |= BitL2;
-    }
-    if ((pad != nullptr && SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TriggerPressed) ||
-        KeyDown(keys, keysCount, SDL_SCANCODE_3))
-    {
-        held |= BitR2;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_BACK) || KeyDown(keys, keysCount, SDL_SCANCODE_BACKSPACE))
-    {
-        held |= BitSelect;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_START) || KeyDown(keys, keysCount, SDL_SCANCODE_RETURN))
-    {
-        held |= BitStart;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK))
-    {
-        held |= BitL3;
-    }
-    if (PadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))
-    {
-        held |= BitR3;
+        if (pressed(binding.action))
+        {
+            held |= binding.bit;
+        }
     }
     if (port == 0 && slot == 0)
     {
@@ -328,52 +371,55 @@ s32 Platform::Pads::Read(s32 port, s32 slot, u8* data)
     u8 leftY = StickReport(pad, SDL_GAMEPAD_AXIS_LEFTY);
     u8 rightX = StickReport(pad, SDL_GAMEPAD_AXIS_RIGHTX);
     u8 rightY = StickReport(pad, SDL_GAMEPAD_AXIS_RIGHTY);
-    // The keyboard's sticks, full deflection while held (the gamepad wins while its stick is really off the middle: an
+    // The bound keys and buttons' sticks, full deflection while held (the gamepad wins while its stick is really off the middle: an
     // idle stick rests a little off zero, so "exactly zero" kept the keyboard out with a pad plugged in)
     if (StickAtRest(pad, SDL_GAMEPAD_AXIS_LEFTX))
     {
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_A))
+        if (pressed(Action::LeftStickLeft))
         {
             leftX = 0;
         }
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_D))
+        if (pressed(Action::LeftStickRight))
         {
             leftX = FullPressure;
         }
     }
     if (StickAtRest(pad, SDL_GAMEPAD_AXIS_LEFTY))
     {
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_W))
+        if (pressed(Action::LeftStickUp))
         {
             leftY = 0;
         }
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_S))
+        if (pressed(Action::LeftStickDown))
         {
             leftY = FullPressure;
         }
     }
     if (StickAtRest(pad, SDL_GAMEPAD_AXIS_RIGHTX))
     {
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_J))
+        if (pressed(Action::RightStickLeft))
         {
             rightX = 0;
         }
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_L))
+        if (pressed(Action::RightStickRight))
         {
             rightX = FullPressure;
         }
     }
     if (StickAtRest(pad, SDL_GAMEPAD_AXIS_RIGHTY))
     {
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_I))
+        if (pressed(Action::RightStickUp))
         {
             rightY = 0;
         }
-        if (KeyDown(keys, keysCount, SDL_SCANCODE_K))
+        if (pressed(Action::RightStickDown))
         {
             rightY = FullPressure;
         }
     }
+
+    // What was pressed this frame, for the options' controller page to bind as a row is rebound
+    NotePressed(pad, keys, keysCount);
 
     u8 pressureL2 = TriggerPressure(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
     u8 pressureR2 = TriggerPressure(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);

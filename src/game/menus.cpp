@@ -10,6 +10,9 @@
 #include "game/renderer.h"
 #include "game/sound.h"
 #include "game/string.h"
+
+#include <cstdio>
+#include <cstdlib>
 #include "game/widgets.h"
 #include "retail/libc.h"
 
@@ -780,7 +783,6 @@ extern "C"
 
                     last = first - 1 + window;
                 }
-
                 itemsPlace.x = itemsPlace.x * size->x + at->x;
                 itemsPlace.y = itemsPlace.y * size->y + at->y;
                 if (CentresItems(drawer->itemAlignment))
@@ -792,6 +794,9 @@ extern "C"
                     itemsPlace.y = itemsPlace.y - cursor.y;
                 }
 
+                // The rows drawn are the window's, so its first row sits where the list's first does: without the shift the rows of
+                // a scrolled window keep their line's place, which slides the whole block down the screen as the selection goes on
+                const f32 windowShift = static_cast<f32>(first) * spacing;
                 for (u32 line = first; line <= last; line++)
                 {
                     Vector2 place;
@@ -802,7 +807,14 @@ extern "C"
                                                           : MenuDrawer::StyleHidden;
                     MenuDrawerStyle(drawer, style, &itemScale, colours, renderer);
                     place.x = place.x + itemsPlace.x;
-                    place.y = place.y + itemsPlace.y;
+                    place.y = place.y + itemsPlace.y - windowShift;
+                    // TEMPORARY: where the window's rows land (they must not move as the selection goes on)
+                    if (std::getenv("TWINSANITY_TEST_CONTROLLER") != nullptr && window != 0 && window < count &&
+                        (line == first || line == last))
+                    {
+                        std::fprintf(stderr, "check: sel %u first %u last %u line %u y %.3f\n", selectedLine, first, last, line,
+                                     place.y);
+                    }
                     QueueText(renderer, lines[line].string, place.x, place.y);
                 }
             }

@@ -21,6 +21,7 @@ Known issues:
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
 - Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
+- Sometimes in game audio takes a bit to start
 
 Future features:
 - Multiple save pages
@@ -29,14 +30,15 @@ Future features:
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
 - HD textures
 - Other consoles button glyphs
-- Rebindable Controls inside game options
+- An in-game page for the sticks' dead zone and the triggers' threshold
 
 QOL Changes:
 - Pc port settings
+- Rebindable controls, on the keyboard and the pad, from `keybinds.txt` or the options' controller page
 - Exit game option (also on pause screen the old quit game that sent u back to the title screen now closes the game and is called close game)
 - Added option to start a new game from inside the save game option on the pause menu
 - Removed the delay on the Save file check screens
-- Fast loading screens (on my pc it only takes 62ms)
+- Fast loading screens (on an nvme it only takes 62ms)
 
 ## Getting the game
 
@@ -153,7 +155,8 @@ cd disc && ../build/host/sdl3/game-with-data
 
 ## Controls
 
-Keyboard and SDL3 gamepads both work. A pad maps directly onto the game's controller.
+Keyboard and SDL3 gamepads both work. A pad maps onto the game's controller, and both it and the keyboard are reboundable in
+the options' controller page or in `keybinds.txt` (below).
 
 | Game | Keyboard | Gamepad |
 |---|---|---|
@@ -171,6 +174,39 @@ Keyboard and SDL3 gamepads both work. A pad maps directly onto the game's contro
 
 `J`, `K` and `L` are both face buttons and the right stick's left, down and right. The right stick's up is `I`.
 
+`keybinds.txt`, beside the saves, holds every binding: a key and a pad input for each of the game's inputs, so a pad can be
+rearranged the way a keyboard can (SDL still maps the controller itself, and the system's remapping applies). The file is
+written with the defaults the first time the game reads a pad. One line per binding, `<input> key|pad <binding>`:
+
+```
+cross key Space
+cross pad south
+left stick up key W
+left stick up pad none
+```
+
+The inputs are `cross`, `circle`, `square`, `triangle`, `up`, `down`, `left`, `right`, `l1`, `r1`, `l2`, `r2`, `select`,
+`start`, `l3`, `r3`, `left stick up`, `left stick down`, `left stick left`, `left stick right`, `right stick up`,
+`right stick down`, `right stick right` and `right stick left`. A `key` is SDL's name for one (`space`, `return`,
+`left shift`, `f1`, `a`, `1`, `keypad 5`); a `pad` input is `south`, `east`, `west`, `north`, `left shoulder`,
+`right shoulder`, `left trigger`, `right trigger`, `back`, `start`, `left stick`, `right stick`, `dpad up`, `dpad down`,
+`dpad left` or `dpad right`. `none` leaves that binding to the other kind: an input with no key is a pad's alone.
+
+```sh
+printf 'start key f1\ncross key none\n' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/keybinds.txt"
+```
+
+**OPTIONS → controller options** (in the main menu and in the pause menu) has a row per input, showing what it is on
+(`cross: Space / south`). Select a row and it waits for the next key or button pressed, which becomes the row's binding and is
+written straight to the file; the pad button pressed is the one bound, so the layout can be changed with a controller alone.
+While a row waits the menus' own select, back and directions are held off, so the press being bound is not also a menu move;
+the menus' back (circle by default) ends the wait instead, and `escape` or a pad's back button ends it without binding (those
+two are left to the file, so binding them means editing a line).
+
+A line for an input this build doesn't have is kept, and one whose key or pad input has no name leaves the binding as it was;
+both say so on stderr (and in `crash.log`, which is stderr). The file is read when the game starts, so a change made by hand
+lands at the next run.
+
 The main menu and the pause menu have an `exit` row, past the options and past the pause menu's quitting: it ends the game from
 the pad, so closing it needs no keyboard and no window manager. Whatever the options screens changed is written to
 `settings.txt` on the way out.
@@ -185,7 +221,7 @@ a card.
 The path the game's files were found at is kept in `gamedata.txt` next to the saves (asked for again when it stops having them);
 `settings.txt` beside it holds the game's options, one per line: `group <n> <left> <right>` for
 the four volume groups (0 effects, 1 second effects, 2 music, 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's
-own save wins where they overlap.
+own save wins where they overlap. `keybinds.txt` sits beside them too (the [controls](#controls)).
 
 `render <n>` is the picture's rate, the frames the port presents a second: 50 when the file has none, raised to the logic's
 rate if set lower, and `0` for unlimited (the picture presents as fast as it can be drawn, so with vsync on the display is what

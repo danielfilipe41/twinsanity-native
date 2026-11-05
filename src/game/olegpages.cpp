@@ -10,12 +10,15 @@
 #include "game/porttext.h"
 
 #include "platform/display.h"
+#include "platform/keybinds.h"
 #include "platform/system.h"
 #include "game/pads.h"
 #include "game/renderer.h"
 #include "game/savemanager.h"
 #include "game/sound.h"
 #include "game/widgets.h"
+
+#include <cstdio>
 // The options the front end sets are also the ones a save carries: SaveController::TakeOptions copies the live ones when a save
 // is written, and the game applies a save's options when it loads one. Without this, entering a game would apply the last
 // save's options over what the player has just chosen in the menus
@@ -100,6 +103,8 @@ constexpr u32 GameOptionsText = 0xF;
 constexpr u32 GraphicOptionsItem = 6;
 constexpr u32 SoundOptionsItem = 7;
 constexpr u32 GameOptionsItem = 8;
+// The port's own controller page (its link, and its rows are the actions' indexes past the retail items')
+constexpr u32 ControllerOptionsItem = 0x2A;
 constexpr u32 BackText = 4;
 constexpr u32 SubPageBackItem = 0x1C;
 // Their items: vibration (no and yes), centring the screen, widescreen (off and on), the volumes (0 to 10), the output type and
@@ -499,6 +504,10 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
         }
 
         ShowScreen(oleg, OLEG::ScreenQuit);
+        break;
+    case ActionBind:
+        // The port's controller page, waiting for the row's next input
+        static_cast<ControllerOptionsPage*>(page)->BeginCapture(bits.id);
         break;
     default:
         break;
@@ -919,6 +928,247 @@ void SoundOptionsPage::Left(u32 player, u32)
     OptionsChanged();
 }
 
+// The controller page's own vtable: the page class is the port's, so its functions are too. Slot 1 entered, 2 a frame, 3 left,
+// 4 destroyed, 5 the back action, 6 and 8 the game's frame begun and ended, 7 the slot nothing calls (the base's do nothing)
+namespace
+{
+ControllerOptionsPage* PageOf(void* page)
+{
+    return static_cast<ControllerOptionsPage*>(page);
+}
+
+void ControllerPageEntered(void* page, u32 player, u32 mode)
+{
+    PageOf(page)->Entered(player, mode);
+}
+
+void ControllerPageFrame(void* page, u32 player, MenuInput* input, MenuSounds* sounds)
+{
+    PageOf(page)->Frame(player, input, sounds);
+}
+
+void ControllerPageLeft(void* page, u32 player, u32 mode)
+{
+    PageOf(page)->Left(player, mode);
+}
+
+void ControllerPageDestroy(void* page, u32 flags)
+{
+    PageOf(page)->Destroy(flags);
+}
+
+u32 ControllerPageBack(void* page, u32 player)
+{
+    (void)page;
+    (void)player;
+    return 0;
+}
+
+void ControllerPageUnused(void* page, u32 player)
+{
+    (void)page;
+    (void)player;
+}
+}
+
+// The port's page vtable: entries 0 and 7 are empty, as every retail vtable's are
+const GccVTableEntry g_ControllerOptionsPageVTable[] = {
+    {0, 0, nullptr},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageEntered)},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageFrame)},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageLeft)},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageDestroy)},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageBack)},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageUnused)},
+    {0, 0, nullptr},
+    {0, 0, reinterpret_cast<void*>(&ControllerPageUnused)},
+};
+
+// The page the options made, freed with them: the options page's own layout is retail's, so the page is beside it
+ControllerOptionsPage* g_ControllerOptionsPage = nullptr;
+
+// The controller page's own sizes for the options' list, which it puts on while it's shown: its rows are smaller and its list a
+// window of fifteen (the retail pages keep the drawer's own sizes, a tenth taller and with every row drawn)
+constexpr f32 CompactItemScaleX = 0.45f;
+constexpr f32 CompactItemScaleY = 0.55f;
+constexpr f32 CompactItemSpacing = Rounded(0.035);
+constexpr u32 CompactWindow = 15;
+
+// The drawer the options' pages are drawn with: one for them all, so the controller page's sizes are only its own
+MenuDrawer* OptionsDrawer()
+{
+    if (g_OlegGameController == nullptr)
+    {
+        return nullptr;
+    }
+
+    return g_OlegGameController->oleg.optionsMenu.drawer;
+}
+
+ControllerOptionsPage* ControllerOptionsPage::Construct(ControllerOptionsPage* page, MenuPage* parent)
+{
+    MenuPage::ConstructTitled(page, PortTextControllerOptions, MenuPlayers);
+    page->parent = parent;
+    page->vtable = g_ControllerOptionsPageVTable;
+    page->capturing = NoCapturing;
+    page->compact = 0;
+    page->keptScaleX = 0.0f;
+    page->keptScaleY = 0.0f;
+    page->keptSpacing = 0.0f;
+    page->keptWindow = 0;
+    for (u32 action = 0; action < MaxRows; action++)
+    {
+        page->labels[action][0] = '\0';
+    }
+
+    // A row per action, its label the action's and its bindings'; the item's ID is the action's index
+    const u32 actions = Platform::Keybinds::Actions();
+    for (u32 action = 0; action < actions && action < MaxRows; action++)
+    {
+        ActionItem* item = ActionItem::Construct(Allocate<ActionItem>(), NoText, action, ActionItem::ActionBind);
+        item->text = page->labels[action];
+        page->Add(item);
+    }
+
+    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, BackRowItem, parent, MenuPlayers);
+    page->Add(back);
+    page->SetFirstItem(0);
+    page->RefreshLabels();
+    return page;
+}
+
+void ControllerOptionsPage::Destroy(u32 flags)
+{
+    // The drawer's sizes back, if the page goes while it has them on
+    Left(0, 0);
+    vtable = g_OlegPageVTable;
+    MenuPage::Destroy(flags);
+}
+
+void ControllerOptionsPage::Entered(u32, u32)
+{
+    Platform::Keybinds::ClearTaken();
+    SetWaiting(NoCapturing);
+
+    // The list is the page's own size while it's shown: the options' pages share the drawer, so its sizes are put back when the
+    // page is left
+    MenuDrawer* drawer = OptionsDrawer();
+    if (drawer != nullptr && compact == 0)
+    {
+        keptScaleX = drawer->manyItemsScale.x;
+        keptScaleY = drawer->manyItemsScale.y;
+        keptSpacing = drawer->manyItemsSpacing;
+        keptWindow = drawer->windowSize;
+        drawer->manyItemsScale = {CompactItemScaleX, CompactItemScaleY};
+        drawer->manyItemsSpacing = CompactItemSpacing;
+        drawer->windowSize = CompactWindow;
+        compact = 1;
+    }
+}
+
+void ControllerOptionsPage::Left(u32, u32)
+{
+    MenuDrawer* drawer = OptionsDrawer();
+    if (drawer != nullptr && compact != 0)
+    {
+        drawer->manyItemsScale = {keptScaleX, keptScaleY};
+        drawer->manyItemsSpacing = keptSpacing;
+        drawer->windowSize = keptWindow;
+        compact = 0;
+    }
+}
+
+void ControllerOptionsPage::Frame(u32, MenuInput* input, MenuSounds*)
+{
+    if (capturing == NoCapturing)
+    {
+        return;
+    }
+
+    // The menus' own back ends the wait (the page holds it off while waiting, so this is the page's to take)
+    if (input != nullptr && input->Has(MenuInput::ActionBack, ButtonBindings::OnPress) != 0)
+    {
+        Platform::Keybinds::ClearTaken();
+        SetWaiting(NoCapturing);
+        return;
+    }
+
+    Platform::Keybinds::Kind kind = Platform::Keybinds::Kind::Key;
+    s32 code = 0;
+    if (!Platform::Keybinds::Taken(&kind, &code))
+    {
+        return;
+    }
+
+    // The page keeps the two inputs that end a wait for itself
+    if (Platform::Keybinds::IsCancel(kind, code))
+    {
+        Platform::Keybinds::ClearTaken();
+        SetWaiting(NoCapturing);
+        return;
+    }
+
+    Platform::Keybinds::SetBinding(static_cast<Platform::Keybinds::Action>(capturing), kind, code);
+    Platform::Keybinds::Save();
+    Platform::Keybinds::ClearTaken();
+    SetWaiting(NoCapturing);
+}
+
+void ControllerOptionsPage::BeginCapture(u32 action)
+{
+    Platform::Keybinds::ClearTaken();
+    SetWaiting(action < Platform::Keybinds::Actions() ? action : NoCapturing);
+}
+
+void ControllerOptionsPage::SetWaiting(u32 action)
+{
+    capturing = action;
+    // The wait is the page's: the menus' select would take the row's own select press again (and clear the input being bound), and
+    // their back would leave the page on the press being bound. Both come back when the wait ends
+    const u32 waiting = capturing != NoCapturing ? 0 : 1;
+    flags.takesSelect = waiting;
+    flags.takesBack = waiting;
+    flags.takesUpDown = waiting;
+    flags.takesLeftRight = waiting;
+    RefreshLabels();
+}
+
+void ControllerOptionsPage::RefreshLabels()
+{
+    const u32 actions = Platform::Keybinds::Actions();
+    for (u32 action = 0; action < actions && action < MaxRows; action++)
+    {
+        const Platform::Keybinds::Action typed = static_cast<Platform::Keybinds::Action>(action);
+        if (capturing == action)
+        {
+            std::snprintf(labels[action], LabelLength, "%s: %s", Platform::Keybinds::ActionName(typed),
+                          GameText(PortTextPressInput));
+            continue;
+        }
+
+        // The two names are the platform's own, in buffers of its own: copied out before the label is made. SDL names a key with
+        // its shifted character ("E", "Left Shift", "F1"), which the menus say in lower case: the file keeps SDL's spelling, the
+        // page says "e", "left shift", "f1"
+        char key[32];
+        char pad[32];
+        std::snprintf(key, sizeof(key), "%s",
+                      Platform::Keybinds::InputName(Platform::Keybinds::Kind::Key,
+                                                    Platform::Keybinds::Binding(typed, Platform::Keybinds::Kind::Key)));
+        std::snprintf(pad, sizeof(pad), "%s",
+                      Platform::Keybinds::InputName(Platform::Keybinds::Kind::Pad,
+                                                    Platform::Keybinds::Binding(typed, Platform::Keybinds::Kind::Pad)));
+        for (char* letter = key; *letter != '\0'; letter++)
+        {
+            if (*letter >= 'A' && *letter <= 'Z')
+            {
+                *letter = static_cast<char>(*letter - 'A' + 'a');
+            }
+        }
+
+        std::snprintf(labels[action], LabelLength, "%s: %s / %s", Platform::Keybinds::ActionName(typed), key, pad);
+    }
+}
+
 OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
 {
     MenuPage::ConstructTitled(page, OptionsText, MenuPlayers);
@@ -1007,12 +1257,31 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
     page->Add(graphicsLink);
     page->Add(soundLink);
     page->Add(gameLink);
+
+    // The port's controller page, on a host whose inputs can be rebound: a row per input, written back to keybinds.txt
+    g_ControllerOptionsPage = nullptr;
+    if (Platform::Keybinds::Actions() != 0)
+    {
+        ControllerOptionsPage* controller = ControllerOptionsPage::Construct(Allocate<ControllerOptionsPage>(), page);
+        g_ControllerOptionsPage = controller;
+        LinkItem* controllerLink =
+            LinkItem::Construct(Allocate<LinkItem>(), PortTextControllerOptions, ControllerOptionsItem, controller, MenuPlayers);
+        page->Add(controllerLink);
+    }
+
     page->Add(back);
     return page;
 }
 
 void OptionsPage::Destroy(u32 flags)
 {
+    if (g_ControllerOptionsPage != nullptr)
+    {
+        // Its items and rows are the page's, freed with it
+        g_ControllerOptionsPage->Destroy(DestroyAndFree);
+        g_ControllerOptionsPage = nullptr;
+    }
+
     sound.vtable = g_OlegPageVTable;
     sound.MenuPage::Destroy(DestroyOnly);
     graphics.vtable = g_OlegPageVTable;

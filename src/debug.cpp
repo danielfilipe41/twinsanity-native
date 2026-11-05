@@ -1,7 +1,12 @@
 #include "debug.h"
 
 #include "game/gamecontroller.h"
+#include "game/oleg.h"
+#include "game/olegpages.h"
+#include "game/pads.h"
 #include "retail/libc.h"
+
+#include <cstdlib>
 
 extern "C"
 {
@@ -46,6 +51,33 @@ void DebugFrameRendered()
 {
     u32 frame = g_DebugFrame + 1;
     g_DebugFrame = frame;
+    // TEMPORARY: the controller page shown at boot, with the pad's down pressed in bursts so the list scrolls
+    if (std::getenv("TWINSANITY_TEST_CONTROLLER") != nullptr && g_OlegGameController != nullptr)
+    {
+        extern ControllerOptionsPage* g_ControllerOptionsPage;
+        static bool opened = false;
+        if (!opened && frame > 3 && g_ControllerOptionsPage != nullptr)
+        {
+            opened = true;
+            OLEG& oleg = g_OlegGameController->oleg;
+            oleg.optionsMenu.home = g_ControllerOptionsPage;
+            oleg.optionsMenu.firstPage = g_ControllerOptionsPage;
+            oleg.Show(oleg.screens[OLEG::ScreenOptions], 0, 0);
+        }
+
+        if (opened)
+        {
+            // TEMPORARY: the game's own screens take the menu back, so it is shown again every frame
+            OLEG& oleg = g_OlegGameController->oleg;
+            oleg.Show(oleg.screens[OLEG::ScreenOptions], 0, 0);
+        }
+
+        if (opened && frame > 40 && frame % 6 == 0)
+        {
+            // TEMPORARY: the selection moved as the pad's down would move it (the pad isn't polled out here)
+            static_cast<MenuPage*>(g_ControllerOptionsPage)->SelectNext(0);
+        }
+    }
     g_DebugRandom[frame % DebugRandomFrames] = *reinterpret_cast<volatile u32*>(&g_Impure->randomNext);
     if (G_GameController != nullptr)
     {

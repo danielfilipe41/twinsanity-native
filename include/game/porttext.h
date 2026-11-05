@@ -29,6 +29,8 @@ enum PortText : u32
     PortTextLoadingSaves,
     PortTextNoSaveCreated,
     PortTextAreYouSure,
+    PortTextControllerOptions,
+    PortTextPressInput,
     PortTextCount,
 };
 
