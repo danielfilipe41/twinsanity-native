@@ -38,7 +38,7 @@ struct Size
 constexpr Size ResolutionPresets[] = {
     {960, 540}, {1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160},
 };
-constexpr u32 MaxResolutions = 8;
+constexpr u32 MaxResolutions = 10;
 // The rates offered, and unlimited (0, which Platform::Time takes as no pacing at all): the list's last entry
 constexpr u32 RatePresets[] = {30, 50, 60, 75, 100, 120, 144, 165, 240};
 constexpr u32 UnlimitedRate = 0;
@@ -132,10 +132,26 @@ void BuildLists()
     g_resolutionCount = 0;
     g_resolution = 0;
     bool current = false;
+    // The display's own mode first: whatever a player's screen is (a 1920x1200 laptop panel, an odd 1680x1050), it is the size
+    // they most often want and the one no preset can be relied on to hold
+    g_resolutions[g_resolutionCount] = Size{desktopWidth, desktopHeight};
+    if (desktopWidth == wanted.width && desktopHeight == wanted.height)
+    {
+        g_resolution = g_resolutionCount;
+        current = true;
+    }
+    g_resolutionCount++;
+
     for (const Size& preset : ResolutionPresets)
     {
         if (preset.width > desktopWidth || preset.height > desktopHeight)
         {
+            continue;
+        }
+
+        if (preset.width == desktopWidth && preset.height == desktopHeight)
+        {
+            // The display's own mode is on the list already
             continue;
         }
 

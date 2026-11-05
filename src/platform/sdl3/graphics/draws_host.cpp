@@ -1072,13 +1072,27 @@ void EnsureCompositeTriangle(f32 offsetX, f32 offsetY)
     const f32 clipX = 2.0f * offsetX / static_cast<f32>(BgfxBackbufferWidth());
     // The offset counts down the frame, which is +Y in a y-down backend's clip space and -Y in OpenGL's
     const f32 clipY = (yDown ? 2.0f : -2.0f) * offsetY / static_cast<f32>(BgfxBackbufferHeight());
-    // The fit scales the triangle's clip positions (and not its UVs, which stay 0..2 so the picture is still the whole scene)
-    const CompositeVertex triangle[3] = {
-        {(-1.0f + clipX) * fitX, (ySign * -1.0f + clipY) * fitY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {(3.0f + clipX) * fitX, (ySign * -1.0f + clipY) * fitY, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {(-1.0f + clipX) * fitX, (ySign * 3.0f + clipY) * fitY, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+    // The picture covers its rect exactly and nothing else: the rect's corners carry UV 0..1, so a fitted picture's edges sample
+    // the scene's edges and the bars beside it are the view's clear. Stretched, the rect is the whole screen (fit 1) and the same
+    // quad fills it. The triangle this replaces overhung the screen to (-1..3, UV 0..2), which was right stretched and, fitted,
+    // put UVs past 1 on screen: they clamp to the edge texel, which stretched it over the bars (the black bar and the smeared one
+    // people saw at sizes that are not 16:9)
+    const f32 lowX = -fitX + clipX;
+    const f32 highX = fitX + clipX;
+    const f32 lowY = ySign * -fitY + clipY;
+    const f32 highY = ySign * fitY + clipY;
+    // The corners carry UV 0..1: lowY is where UV 0 was (the overhang's -1) and highY where UV 1 is, whatever the backend's clip
+    // space (ySign flipped the positions there, not the UVs, and the same holds here). A triangle list draws three vertices at a
+    // time, so the quad is written as two triangles, six vertices
+    const CompositeVertex quad[6] = {
+        {lowX, lowY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {highX, lowY, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {lowX, highY, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {lowX, highY, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {highX, lowY, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {highX, highY, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
     };
-    const bgfx::Memory* memory = bgfx::copy(triangle, sizeof(triangle));
+    const bgfx::Memory* memory = bgfx::copy(quad, sizeof(quad));
     g_compositeTriangle = bgfx::createVertexBuffer(memory, CompositeLayout());
     g_compositeOffsetX = offsetX;
     g_compositeOffsetY = offsetY;
@@ -1474,7 +1488,9 @@ void HostCompositeScene()
     {
         bgfx::setViewClear(HostCompositeView, BGFX_CLEAR_COLOR, 0x000000FFu, 1.0f, 0);
     }
-    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_PT_TRISTRIP);
+    // The picture is a quad of two triangles (the fitted rect's, or the whole screen's), in the order the vertices are in: bgfx's
+    // default topology is a triangle list, so no PT state is set
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
     bgfx::setTexture(0, g_compositeSampler, g_sceneColour,
                      BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     bgfx::setVertexBuffer(0, g_compositeTriangle);

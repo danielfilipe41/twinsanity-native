@@ -20,6 +20,7 @@ Known issues:
 - Only Linux and, under Wine, Windows run the game (see [Building](docs/BUILDING.md)).
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
 - Build only supported with PAL SLES file
+- Pop in still kinda noticeable idk how to fix
 
 Future features:
 - Multiple save pages
@@ -28,6 +29,7 @@ Future features:
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
 - HD textures
 - Other consoles button glyphs
+- Rebindable Controls inside game options
 
 QOL Changes:
 - Pc port settings
