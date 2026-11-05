@@ -44,10 +44,12 @@ const char* const Lines[PortTextCount - PortTextFirst][Slots] = {
     {"no save file created", "aucun fichier de sauvegarde créé", "kein spielstand erstellt",
      "no se creó ningún archivo de guardado", "nessun file di salvataggio creato", "セーブファイルは作成されていません"},
     {"are you sure?", "êtes-vous sûr ?", "sind sie sicher?", "¿estás seguro?", "sei sicuro?", "よろしいですか？"},
-    {"controller options", "options de la manette", "controller-optionen", "opciones del mando", "opzioni del controller",
-     "コントローラー設定"},
+    {"remap controls", "remapper les commandes", "steuerung belegen", "reasignar controles", "rimappa i comandi",
+     "操作の割り当て"},
     {"press a key or a button", "appuyez sur une touche ou un bouton", "taste oder knopf drücken",
      "pulsa una tecla o un botón", "premi un tasto o un pulsante", "キーかボタンを押してください"},
+    {"stick dead zone", "zone morte des sticks", "totzone der sticks", "zona muerta del stick", "zona morta dello stick",
+     "スティックの遊び"},
 };
 }
 

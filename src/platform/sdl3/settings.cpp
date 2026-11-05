@@ -136,6 +136,39 @@ float g_DisplayScale = 1.0f;
 float g_DrawDistance = 1.0f;
 bool g_SettingsDirty = false;
 
+// The sticks' dead zone (the pads' own, which the options screen changes and the file keeps)
+bool g_DeadZoneLoaded = false;
+u32 g_DeadZone = 0;
+
+void LoadDeadZone()
+{
+    if (g_DeadZoneLoaded)
+    {
+        return;
+    }
+
+    g_DeadZoneLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        unsigned percent = 0;
+        if (std::sscanf(line, "deadzone %u", &percent) == 1)
+        {
+            g_DeadZone = percent > Platform::Pads::MaxDeadZone ? Platform::Pads::MaxDeadZone : percent;
+        }
+    }
+
+    std::fclose(file);
+}
+
 void LoadDisplay()
 {
     if (g_DisplayLoaded)
@@ -368,6 +401,25 @@ f32 HostSettingsDrawDistance()
 {
     LoadDisplay();
     return g_DrawDistance;
+}
+
+u32 HostSettingsDeadZone()
+{
+    LoadDeadZone();
+    return g_DeadZone;
+}
+
+void HostSettingsSetDeadZone(u32 percent)
+{
+    LoadDeadZone();
+    const u32 kept = percent > Platform::Pads::MaxDeadZone ? Platform::Pads::MaxDeadZone : percent;
+    if (kept == g_DeadZone)
+    {
+        return;
+    }
+
+    g_DeadZone = kept;
+    g_SettingsDirty = true;
 }
 
 void HostSettingsSetAntiAlias(AntiAlias mode)
@@ -634,6 +686,7 @@ enum class Setting
     Aspect,
     Scale,
     DrawDistance,
+    DeadZone,
 };
 
 // Whether the line begins with the word (the leading whitespace aside, and the word complete)
@@ -684,6 +737,8 @@ bool LineIsSetting(Setting setting, const char* line, u32 group)
         return LineStarts(line, "scale");
     case Setting::DrawDistance:
         return LineStarts(line, "draw_distance");
+    case Setting::DeadZone:
+        return LineStarts(line, "deadzone");
     }
 
     return false;
@@ -777,6 +832,8 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
 
     std::snprintf(text, sizeof(text), "draw_distance %g", static_cast<double>(g_DrawDistance));
     PlaceSetting(lines, &count, Setting::DrawDistance, 0, text);
+    std::snprintf(text, sizeof(text), "deadzone %u", HostSettingsDeadZone());
+    PlaceSetting(lines, &count, Setting::DeadZone, 0, text);
 
     std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
     PlaceSetting(lines, &count, Setting::Window, 0, text);

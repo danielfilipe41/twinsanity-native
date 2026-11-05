@@ -10,9 +10,6 @@
 #include "game/renderer.h"
 #include "game/sound.h"
 #include "game/string.h"
-
-#include <cstdio>
-#include <cstdlib>
 #include "game/widgets.h"
 #include "retail/libc.h"
 
@@ -808,13 +805,6 @@ extern "C"
                     MenuDrawerStyle(drawer, style, &itemScale, colours, renderer);
                     place.x = place.x + itemsPlace.x;
                     place.y = place.y + itemsPlace.y - windowShift;
-                    // TEMPORARY: where the window's rows land (they must not move as the selection goes on)
-                    if (std::getenv("TWINSANITY_TEST_CONTROLLER") != nullptr && window != 0 && window < count &&
-                        (line == first || line == last))
-                    {
-                        std::fprintf(stderr, "check: sel %u first %u last %u line %u y %.3f\n", selectedLine, first, last, line,
-                                     place.y);
-                    }
                     QueueText(renderer, lines[line].string, place.x, place.y);
                 }
             }

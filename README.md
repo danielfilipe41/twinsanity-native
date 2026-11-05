@@ -30,11 +30,11 @@ Future features:
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
 - HD textures
 - Other consoles button glyphs
-- An in-game page for the sticks' dead zone and the triggers' threshold
 
 QOL Changes:
 - Pc port settings
-- Rebindable controls, on the keyboard and the pad, from `keybinds.txt` or the options' controller page
+- Rebindable controls, on the keyboard and the pad, from `keybinds.txt` or the options' remap controls page
+- A stick dead zone, in the game options (off to 20%)
 - Exit game option (also on pause screen the old quit game that sent u back to the title screen now closes the game and is called close game)
 - Added option to start a new game from inside the save game option on the pause menu
 - Removed the delay on the Save file check screens
@@ -196,7 +196,7 @@ The inputs are `cross`, `circle`, `square`, `triangle`, `up`, `down`, `left`, `r
 printf 'start key f1\ncross key none\n' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/keybinds.txt"
 ```
 
-**OPTIONS → controller options** (in the main menu and in the pause menu) has a row per input, showing what it is on
+**OPTIONS → remap controls** (in the main menu and in the pause menu) has a row per input, showing what it is on
 (`cross: Space / south`). Select a row and it waits for the next key or button pressed, which becomes the row's binding and is
 written straight to the file; the pad button pressed is the one bound, so the layout can be changed with a controller alone.
 While a row waits the menus' own select, back and directions are held off, so the press being bound is not also a menu move;
@@ -254,6 +254,7 @@ GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and wri
 | `aspect` | `stretch` (the picture fills the window), `fit` (its 16:9 kept, black bars around it) | `stretch` |
 | `scale` | `0.5`, `0.75`, `1`, `1.5`, `2`, `3`, `4`: the scene drawn at that multiple of 960x540 and then stretched to the window, so a sharper or cheaper picture whatever the window's size | `1` |
 | `draw_distance` | `1`, `1.5`, `2`, `3`, `4`: the pop-in distance. It multiplies the lens's 1500-unit reach (the projection and the cull), keeps a level of detail drawing its last mesh past the distance the level's data stopped it at, stretches a load wall's 2-unit reach, and makes the chunk loader keep more links of chunks loaded (retail's 2 links, up to 5). The cost is memory and what the extra geometry draws | `1` |
+| `deadzone` | `0`, `5`, `10`, `15`, `20`: the sticks' dead zone, a percentage of an axis' half range. Inside it a stick reads as the middle, and outside it is moved out to the zone's edge and scaled over the rest of the range, so the centre holds still without the outer travel shrinking. GAME OPTIONS has the row | `0` |
 
 The file is merged when it is written: your own comments and lines this build does not know are kept as they are.
 

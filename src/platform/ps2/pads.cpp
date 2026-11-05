@@ -117,3 +117,19 @@ s32 Platform::Pads::EnterPressureMode(s32 port, s32 slot)
 {
     return padEnterPressMode(port, slot);
 }
+
+bool Platform::Pads::DeadZoneAvailable()
+{
+    // The console's pads are its own, and its options screen has no row for them
+    return false;
+}
+
+u32 Platform::Pads::DeadZonePercent()
+{
+    return 0;
+}
+
+void Platform::Pads::SetDeadZonePercent(u32 percent)
+{
+    (void)percent;
+}

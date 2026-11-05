@@ -6,6 +6,7 @@
 
 #include "graphics/bgfx_context.h"
 #include "platform/keybinds.h"
+#include "settings.h"
 
 #include <SDL3/SDL.h>
 
@@ -161,7 +162,17 @@ bool KeyDown(const bool* keys, s32 keysCount, SDL_Scancode code)
     return keys != nullptr && code < keysCount && keys[code];
 }
 
-// A stick's report value, 128 in the middle
+// The sticks' dead zone, a percentage of the axis' half range: read from the pads' settings by the first stick, then as the
+// options screen sets it (0xFFFFFFFF until it's read)
+constexpr u32 DeadZoneUnread = 0xFFFFFFFF;
+u32 g_DeadZonePercent = DeadZoneUnread;
+
+// An axis inside this much of zero counts as a stick at rest: an idle stick rests a little off it, and the keyboard's fallback
+// is only held back while the gamepad's stick is really somewhere
+constexpr Sint16 StickRest = 1024;
+
+// A stick's report value, 128 in the middle. Inside the dead zone it is the middle, and outside it the axis is moved out to the
+// zone's edge and scaled over the range left, so the stick's whole travel is still used
 u8 StickReport(SDL_Gamepad* pad, SDL_GamepadAxis axis)
 {
     if (pad == nullptr)
@@ -169,12 +180,9 @@ u8 StickReport(SDL_Gamepad* pad, SDL_GamepadAxis axis)
         return StickMiddle;
     }
 
-    return static_cast<u8>((static_cast<s32>(SDL_GetGamepadAxis(pad, axis)) + 32768) >> 8);
+    const s32 value = Platform::Pads::DeadZonedAxis(SDL_GetGamepadAxis(pad, axis), Platform::Pads::DeadZonePercent());
+    return static_cast<u8>((value + 32768) >> 8);
 }
-
-// An axis inside this much of zero counts as a stick at rest: an idle stick rests a little off it, and the keyboard's fallback
-// is only held back while the gamepad's stick is really somewhere
-constexpr Sint16 StickRest = 1024;
 
 bool StickAtRest(SDL_Gamepad* pad, SDL_GamepadAxis axis)
 {
@@ -183,8 +191,11 @@ bool StickAtRest(SDL_Gamepad* pad, SDL_GamepadAxis axis)
         return true;
     }
 
+    // A stick in its dead zone is at rest too: the keyboard's fallback is the one that moves it then
+    const s32 zone = Platform::Pads::DeadZoneTicks(Platform::Pads::DeadZonePercent());
+    const Sint16 rest = zone > StickRest ? static_cast<Sint16>(zone) : StickRest;
     Sint16 value = SDL_GetGamepadAxis(pad, axis);
-    return value < StickRest && value > -StickRest;
+    return value < rest && value > -rest;
 }
 
 // A trigger's pressure, 0 without a gamepad
@@ -579,4 +590,27 @@ s32 Platform::Pads::EnterPressureMode(s32 port, s32 slot)
     }
 
     return 1;
+}
+
+bool Platform::Pads::DeadZoneAvailable()
+{
+    // The host's pads are SDL's, and their sticks' dead zone is this port's
+    return true;
+}
+
+u32 Platform::Pads::DeadZonePercent()
+{
+    // Read from the settings file by the first stick that asks (the file is the settings' own, so its parsing stays there)
+    if (g_DeadZonePercent == DeadZoneUnread)
+    {
+        g_DeadZonePercent = HostSettingsDeadZone();
+    }
+
+    return g_DeadZonePercent;
+}
+
+void Platform::Pads::SetDeadZonePercent(u32 percent)
+{
+    g_DeadZonePercent = percent > MaxDeadZone ? MaxDeadZone : percent;
+    HostSettingsSetDeadZone(g_DeadZonePercent);
 }

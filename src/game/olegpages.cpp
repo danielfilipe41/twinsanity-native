@@ -11,6 +11,7 @@
 
 #include "platform/display.h"
 #include "platform/keybinds.h"
+#include "platform/pads.h"
 #include "platform/system.h"
 #include "game/pads.h"
 #include "game/renderer.h"
@@ -191,8 +192,16 @@ MenuItem* g_VsyncItem = nullptr;
 // starts (the voices are streamed banks it opened, the texts were read into memory), so a change lands at the next run
 constexpr u32 VoicesItemId = 0x27;
 constexpr u32 TextsItemId = 0x28;
+// The stick dead zone row on the game options page, and the percentages its choices are (steps of five, off to twenty)
+constexpr u32 DeadZoneItemId = 0x2B;
+constexpr u32 DeadZoneSteps = 5;
+constexpr u32 DeadZoneChoices = 5;
+// The row's words: the percentages as the row shows them (numbers stay numbers, as the display rows' do)
+const char* const DeadZoneNames[DeadZoneChoices] = {"off", "5%", "10%", "15%", "20%"};
 MenuItem* g_VoicesItem = nullptr;
 MenuItem* g_TextsItem = nullptr;
+// The stick dead zone row, on a host whose pads keep one
+MenuItem* g_DeadZoneItem = nullptr;
 
 // The two applied as they are stepped. The texts follow the voices while they were the same language, and only a player who
 // picks a different one for them splits the two (which is what a disc with translated-in-another-slot texts wants)
@@ -757,6 +766,10 @@ void GameOptionsPage::Entered(u32 player, u32)
 {
     auto* pads = static_cast<GamePadController*>(G_GamePadController);
     Find(VibrationItem)->SetFlag(player, pads->flags.vibration != 0);
+    if (g_DeadZoneItem != nullptr)
+    {
+        g_DeadZoneItem->SetIntValue(player, static_cast<s32>(Platform::Pads::DeadZonePercent() / DeadZoneSteps));
+    }
     if (g_VoicesItem != nullptr)
     {
         g_VoicesItem->SetIntValue(player, static_cast<s32>(Platform::System::LanguageChoice()));
@@ -776,6 +789,16 @@ void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
     else
     {
         pads->DisableVibration();
+    }
+
+    if (g_DeadZoneItem != nullptr)
+    {
+        // Steps of five percent, applied as the row is stepped (the host writes the file at its next tick)
+        s32 deadZone = 0;
+        if (g_DeadZoneItem->GetIntValue(player, &deadZone) != 0)
+        {
+            Platform::Pads::SetDeadZonePercent(static_cast<u32>(deadZone) * DeadZoneSteps);
+        }
     }
 
     if (g_VoicesItem != nullptr)
@@ -1007,7 +1030,7 @@ MenuDrawer* OptionsDrawer()
 
 ControllerOptionsPage* ControllerOptionsPage::Construct(ControllerOptionsPage* page, MenuPage* parent)
 {
-    MenuPage::ConstructTitled(page, PortTextControllerOptions, MenuPlayers);
+    MenuPage::ConstructTitled(page, PortTextRemapControls, MenuPlayers);
     page->parent = parent;
     page->vtable = g_ControllerOptionsPageVTable;
     page->capturing = NoCapturing;
@@ -1183,6 +1206,17 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
     BackItem* gameBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers);
     game.Add(vibration);
 
+    // The sticks' dead zone, on a host whose pads keep one: the row steps through off and five to twenty percent
+    g_DeadZoneItem = nullptr;
+    if (Platform::Pads::DeadZoneAvailable())
+    {
+        ChoiceItem* deadZone =
+            ConstructNamedChoice(Allocate<ChoiceItem>(), PortTextDeadZone, DeadZoneItemId, DeadZoneNames, DeadZoneChoices,
+                                 static_cast<s32>(Platform::Pads::DeadZonePercent() / DeadZoneSteps));
+        game.Add(deadZone);
+        g_DeadZoneItem = deadZone;
+    }
+
     // The languages, on a host that offers a choice between them (the console's own language is its system settings')
     g_VoicesItem = nullptr;
     g_TextsItem = nullptr;
@@ -1265,7 +1299,7 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
         ControllerOptionsPage* controller = ControllerOptionsPage::Construct(Allocate<ControllerOptionsPage>(), page);
         g_ControllerOptionsPage = controller;
         LinkItem* controllerLink =
-            LinkItem::Construct(Allocate<LinkItem>(), PortTextControllerOptions, ControllerOptionsItem, controller, MenuPlayers);
+            LinkItem::Construct(Allocate<LinkItem>(), PortTextRemapControls, ControllerOptionsItem, controller, MenuPlayers);
         page->Add(controllerLink);
     }
 

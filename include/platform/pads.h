@@ -103,4 +103,42 @@ s32 SetActuatorDirect(s32 port, s32 slot, const u8 values[6]);
 // Pressure sensitive buttons
 s32 InfoPressureMode(s32 port, s32 slot);
 s32 EnterPressureMode(s32 port, s32 slot);
+
+// The sticks' dead zone, a percentage of the axis' half range (0 to 20): a stick inside it reads as the middle, and one outside is
+// scaled from the zone's edge over the rest of the range, so the centre holds still without the outer range shrinking. 0, which
+// the console has, reads the axes as they are. The host keeps it in its settings file (the options screen's stick dead zone row)
+constexpr u32 MaxDeadZone = 20;
+// Whether the platform's pads keep a dead zone at all: the console's are its own, and its options screen has no row for them
+bool DeadZoneAvailable();
+u32 DeadZonePercent();
+void SetDeadZonePercent(u32 percent);
+
+// The dead zone in the axis' units: the percentage of its half range
+inline s32 DeadZoneTicks(u32 percent)
+{
+    return static_cast<s32>(percent) * 32768 / 100;
+}
+
+// A stick axis' value with a dead zone applied: inside it the middle, outside it moved out to the zone's edge and scaled over the
+// range left, so the stick's whole travel is still used and the centre holds still. The zone is a percentage of the half range
+inline s32 DeadZonedAxis(s32 value, u32 percent)
+{
+    const s32 zone = DeadZoneTicks(percent);
+    if (zone <= 0)
+    {
+        return value;
+    }
+
+    if (value > zone)
+    {
+        return (value - zone) * 32767 / (32767 - zone);
+    }
+
+    if (value < -zone)
+    {
+        return (value + zone) * 32768 / (32768 - zone);
+    }
+
+    return 0;
+}
 }

@@ -106,3 +106,18 @@ s32 Platform::Pads::EnterPressureMode(s32 port, s32 slot)
     (void)slot;
     return 0;
 }
+
+bool Platform::Pads::DeadZoneAvailable()
+{
+    return false;
+}
+
+u32 Platform::Pads::DeadZonePercent()
+{
+    return 0;
+}
+
+void Platform::Pads::SetDeadZonePercent(u32 percent)
+{
+    (void)percent;
+}

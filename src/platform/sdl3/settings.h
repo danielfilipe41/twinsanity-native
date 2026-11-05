@@ -7,6 +7,7 @@
 #include "common.h"
 
 #include "platform/display.h"
+#include "platform/pads.h"
 #include "platform/system.h"
 
 // The sound processor's first reset: put the file's options into the game, if there is a file
@@ -71,3 +72,8 @@ void HostSettingsSetDisplay(const HostDisplaySettings& settings);
 // The camera's reach, as a multiple of the lens's far plane: the file's `draw_distance` line, 1 when it has none. Read by the
 // renderer for the projection and for the frustum's far plane, so it must stay cheap (it is called every frame)
 f32 HostSettingsDrawDistance();
+
+// The sticks' dead zone, a percentage of the axis' half range (0 to 20): the file's `deadzone` line, 0 when it has none. Read by
+// the pad code as its first stick is read, and written back when the options screen changes it
+u32 HostSettingsDeadZone();
+void HostSettingsSetDeadZone(u32 percent);
