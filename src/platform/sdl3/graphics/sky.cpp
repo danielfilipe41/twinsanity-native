@@ -389,15 +389,17 @@ void DrawChunkSky(Sky* sky, RenderView* view)
             }
         }
     }
-    // FinishSky: the buffer over the screen, depth not written. The copy covers the scene target (the window's
-    // size, where every scene pass draws); a proof reading its own target keeps the game's display size
+    // FinishSky: the buffer over the screen, depth not written. The copy covers the scene target, which the resolution scale
+    // sizes (a fixed 960x540 copy over a 1920x1080 scene covered a quarter of it, the sky shrinking as the scale grew); a
+    // proof reading its own target keeps the game's display size
     if (bgfx::isValid(g_skyCopyTarget))
     {
         DrawSkyCopy(static_cast<u32>(target->displayWidth), static_cast<u32>(target->displayHeight));
     }
     else
     {
-        DrawSkyCopy(static_cast<u32>(BgfxWindowWidth), static_cast<u32>(BgfxWindowHeight));
+        DrawSkyCopy(Platform::Graphics::HostSceneWidth() != 0 ? Platform::Graphics::HostSceneWidth() : static_cast<u32>(BgfxSceneWidth()),
+                    Platform::Graphics::HostSceneHeight() != 0 ? Platform::Graphics::HostSceneHeight() : static_cast<u32>(BgfxSceneHeight()));
     }
 }
 }

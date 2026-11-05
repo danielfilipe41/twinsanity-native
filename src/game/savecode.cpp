@@ -1,5 +1,7 @@
 #include "game/controllers.h"
 
+#include "game/gamecontroller.h"
+
 #include "game/language.h"
 #include "game/memory.h"
 #include "game/savedevice.h"
@@ -423,6 +425,15 @@ void SaveCode::TakeAnswer()
             WriteSlot(this, bits.targetSlot);
             return;
         case SaveScreenCancelSave:
+            if (operation == SaveOperationPauseSave)
+            {
+                // The pause menu's "new game": the save is given up and a new game starts here, the port having no way back to the
+                // title from the pause menu (its quitting closes the game instead)
+                EndOperation(this, 0, 0);
+                g_OlegGameController->RequestNewGame(0);
+                return;
+            }
+
             AskDevice(this, SaveDevice::OperationWaitCancelled, 0);
             return;
         case SaveScreenSaveSlots:
@@ -527,6 +538,16 @@ void SaveCode::TakeAnswer()
         }
     }
 
+    // The pause menu's "new game" gives the save up and starts one, so it asks first: the cancel-save question is shown and its yes
+    // starts the game (a no puts the flow back on the screen it was on). Retail's new game keeps its own way out: it ends the
+    // operation here without asking, which starts the game from the front end
+    if (answer == AnswerThird && operation == SaveOperationPauseSave && screen != SaveScreenMessage &&
+        screen != SaveScreenCancelSave)
+    {
+        ShowChoicesScreen(this, SaveScreenCancelSave);
+        return;
+    }
+
     bool thirdEnds = screen < SaveScreenOverwrite || (screen >= SaveScreenSaveSlots && screen <= SaveScreenLoadFailed);
     if (answer == AnswerThird && screen != SaveScreenMessage && thirdEnds)
     {
@@ -568,7 +589,8 @@ extern "C"
         manager->bits.operation = operation;
         manager->bits.asked = operation;
         manager->bits.saveDue = 0;
-        manager->device->wait = time;
+        // The console's card latency the screens were written around, scaled to what the host's saved folder takes
+        manager->device->wait = static_cast<s32>(static_cast<f32>(time) * Platform::Saves::DeviceLatencyScale());
         if (asked == static_cast<s32>(SaveOperationNone))
         {
             return;

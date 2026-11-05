@@ -1,5 +1,7 @@
 #include "game/chunkloading.h"
 
+#include "platform/stream.h"
+
 #include "game/array.h"
 
 #include "game/clock.h"
@@ -1136,19 +1138,25 @@ void Sm2WantPolicy::Destroy(u32 flags)
     }
 }
 
+u32 ChunkLoader::WantedDepths()
+{
+    const u32 depth = Platform::Stream::ChunkDepth();
+    return depth >= 2 ? depth : 2;
+}
+
 bool Sm2WantPolicy::Wants(ChunkLoader* loader)
 {
-    return loader->bits.depth < ChunkLoader::WantedDepths;
+    return loader->bits.depth < ChunkLoader::WantedDepths();
 }
 
 bool Sm2WantPolicy::DoesNotWant(ChunkLoader* loader)
 {
-    return !(loader->bits.depth < ChunkLoader::WantedDepths);
+    return !(loader->bits.depth < ChunkLoader::WantedDepths());
 }
 
 bool Sm2WantPolicy::JustPastWanted(ChunkLoader* loader)
 {
-    return loader->bits.depth == ChunkLoader::WantedDepths;
+    return loader->bits.depth == ChunkLoader::WantedDepths();
 }
 
 void Rm2WantPolicy::Destroy(u32 flags)
@@ -1162,17 +1170,17 @@ void Rm2WantPolicy::Destroy(u32 flags)
 
 bool Rm2WantPolicy::Wants(ChunkLoader* loader)
 {
-    return loader->bits.keepDepth < ChunkLoader::WantedDepths;
+    return loader->bits.keepDepth < ChunkLoader::WantedDepths();
 }
 
 bool Rm2WantPolicy::DoesNotWant(ChunkLoader* loader)
 {
-    return !(loader->bits.keepDepth < ChunkLoader::WantedDepths);
+    return !(loader->bits.keepDepth < ChunkLoader::WantedDepths());
 }
 
 bool Rm2WantPolicy::JustPastWanted(ChunkLoader* loader)
 {
-    return loader->bits.keepDepth == ChunkLoader::WantedDepths;
+    return loader->bits.keepDepth == ChunkLoader::WantedDepths();
 }
 
 Sm2Loader* Sm2Loader::Construct(Sm2Loader* loader, ChunkLoader* chunk)
@@ -1294,11 +1302,11 @@ bool Sm2Loader::Step(bool now)
     {
         u32 depth = loader->bits.depth;
         s32 steppedKinds = 0;
-        if (depth < ChunkLoader::WantedDepths)
+        if (depth < ChunkLoader::WantedDepths())
         {
             steppedKinds = ChunkData::EveryKindStepped;
         }
-        else if (depth == ChunkLoader::WantedDepths)
+        else if (depth == ChunkLoader::WantedDepths())
         {
             // Its models still animate
             steppedKinds = 1 << NodeModel;

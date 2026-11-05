@@ -49,6 +49,8 @@ enum ChoiceItemId : u32
 };
 
 // The save code page's items: "Continue wihout saving" (id 0) and "Cancel" (id 1), after the save slots' items
+// The main menu's "new game" text (olegpages.cpp's NewGameText): the short way of saying what the save message spells out
+constexpr u32 NewGameText = 9;
 constexpr u32 PageItemCount = 2;
 constexpr u32 LeavePageItem = 0;
 constexpr u32 CancelPageItem = 1;
@@ -257,5 +259,12 @@ void SaveCodeItem::Destroy(u32 destroyFlags)
 void SaveCodeItem::Entered(u32, u32)
 {
     text = SaveMessage(message);
+    // The pause menu's way out of a save starts a new game, and says so with the disc's own "new game" line: retail's front-end
+    // flow keeps its "continue without saving"
+    if (message == SaveMessageLeave && manager != nullptr && manager->bits.operation == SaveOperationPauseSave)
+    {
+        text = GameText(NewGameText);
+    }
+
     bits.text = 0;
 }

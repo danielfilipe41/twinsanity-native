@@ -9,6 +9,12 @@
 // (whether a save is there, how many files it has, a listing by pattern and a deletion), left out
 namespace
 {
+// The card's own latency, which the game's screens were written around
+f32 Platform::Saves::DeviceLatencyScale()
+{
+    return 1.0f;
+}
+
 using Platform::Saves::FileEntry;
 using Platform::Saves::Operation;
 using Platform::Saves::Result;

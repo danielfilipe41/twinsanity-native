@@ -2,6 +2,8 @@
 
 #include "common.h"
 
+#include "game/porttext.h"
+
 // The game's two text files of each language: Language\Code\<language>.txt (the game's texts) and Language\AgentLab\<language>.txt
 // (the scripts'), a text a line
 enum TextFile : u32
@@ -43,8 +45,14 @@ extern "C"
     void UseLanguageTexts() RETAIL(FUN_00181aa8);
 }
 
-// A game text by its number (the code's text file's)
+// A game text by its number (the code's text file's). The port's own lines (porttext.h) are answered from their table: their
+// numbers start past the disc's own
 inline const char* GameText(u32 text)
 {
+    if (text >= PortTextFirst)
+    {
+        return PortTextString(text);
+    }
+
     return g_Texts[CodeTexts][text];
 }

@@ -1,6 +1,8 @@
 #include "platform/stream.h"
 #include "platform/files.h"
 
+#include "settings.h"
+
 #include "audio/soundmodule.h"
 #include "audio/audio.h"
 
@@ -22,6 +24,33 @@
 // load or a music block doesn't hold the logic step up on the disc.
 namespace Platform::Stream
 {
+// The chunk depth the pop-in distance asks for: the focus chunk and its links (2, retail's), and one link further for every
+// whole step above it (1.5x reads 3, 2x 3, 3x 4, 4x 5). Capped, since each depth is a whole ring of chunks read from the disc
+f32 FrameBudgetScale()
+{
+    // Eight times the console's slice: some 13 ms of a 60 Hz frame, so a chunk that took two seconds of slivers is read in a
+    // quarter of a second
+    return 8.0f;
+}
+
+u32 ChunkDepth()
+{
+    const f32 reach = HostSettingsDrawDistance();
+    s32 depth = 2;
+    if (reach > 1.0f)
+    {
+        depth = 2 + static_cast<s32>(reach - 1.0f + 0.5f);
+    }
+
+    constexpr s32 Deepest = 6;
+    if (depth > Deepest)
+    {
+        depth = Deepest;
+    }
+
+    return static_cast<u32>(depth);
+}
+
 namespace
 {
 struct FileInfo

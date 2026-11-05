@@ -406,6 +406,12 @@ constexpr s32 VideoNtsc = 2;
 constexpr s32 VideoPal = 3;
 }
 
+// The console's own reach: the lens's far plane is what retail culls with, and the hardware's fog hides its edge
+f32 Platform::Graphics::ViewDistanceScale()
+{
+    return 1.0f;
+}
+
 bool Platform::Graphics::IsPalDisplay()
 {
     return g_VideoOutMode == VideoPal;

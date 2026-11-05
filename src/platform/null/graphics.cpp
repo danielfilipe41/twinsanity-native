@@ -192,6 +192,12 @@ void Platform::Graphics::WaitVSync()
 {
 }
 
+// The game's own reach: the headless platform has no settings file of its own
+f32 Platform::Graphics::ViewDistanceScale()
+{
+    return 1.0f;
+}
+
 bool Platform::Graphics::IsPalDisplay()
 {
     return false;

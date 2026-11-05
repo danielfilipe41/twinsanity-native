@@ -199,6 +199,10 @@ bgfx::TextureHandle HostSceneDepth();
 u32 HostSceneWidth();
 u32 HostSceneHeight();
 
+// The post passes' targets, programs and triangles go, and the next frame makes the current antialiasing's (at the
+// backbuffer's size): the mode changed, the window was resized, or its display mode did
+void HostInvalidateAntiAliasing();
+
 // The scene's depth only if the scene target is already made: a pass that merely asks whether the frame it draws is the scene's
 // must not bring the scene target into being (which would take the frame target over) for a caller with a frame of its own
 bgfx::TextureHandle HostSceneDepthIfMade();

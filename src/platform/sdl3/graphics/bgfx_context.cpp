@@ -21,9 +21,28 @@ constexpr bgfx::ViewId ClearView = 28;
 // The debug clear color: opaque magenta (0xRRGGBBAA, bgfx's order: red is the top byte, alpha the bottom),
 // impossible to mistake for game art or a black dead surface
 constexpr std::uint32_t DebugClearColor = 0xff00ffff;
-// The swap chain BgfxInit requests: 960x540, entry.cpp's window size
-constexpr std::uint16_t SwapWidth = BgfxWindowWidth;
-constexpr std::uint16_t SwapHeight = BgfxWindowHeight;
+// The swap chain's size, which is the window's drawable: BgfxInit takes it from the caller (0: the design's) and
+// BgfxResetSwapchain follows the window afterwards
+u32 g_backbufferWidth = static_cast<u32>(BgfxWindowWidth);
+u32 g_backbufferHeight = static_cast<u32>(BgfxWindowHeight);
+bool g_vsync = false;
+SDL_Window* g_window = nullptr;
+// The scene target's size in percent of the design's, and whether the picture is fitted in the window
+u32 g_scenePercent = 100;
+bool g_pictureFit = false;
+
+// The design's size times a percentage, rounded to even pixels: a half-pixel scene would put the post passes' texel offsets
+// between texels
+u32 ScaledDimension(int design, u32 percent)
+{
+    u32 size = static_cast<u32>(static_cast<float>(design) * static_cast<float>(percent) * 0.01f + 0.5f);
+    if (size != 0 && (size & 1) != 0)
+    {
+        size++;
+    }
+
+    return size;
+}
 
 // The renderers each platform has, so a build carries only its own (and tools/build_shaders.py's platform backends hold
 // the shader side of the same sets):
@@ -157,7 +176,7 @@ void BgfxSetAntiAliasing(AntiAlias mode)
     g_antiAliasing = mode;
 }
 
-bool BgfxInit(SDL_Window* window)
+bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
 {
     if (g_initialized)
     {
@@ -179,10 +198,14 @@ bool BgfxInit(SDL_Window* window)
     bgfx::Init init;
     bool fallback = false;
     init.type = RendererFromEnvironment(&fallback);
-    init.reset = BGFX_RESET_NONE;
+    init.reset = vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE;
     init.fallback = fallback;
-    init.swapChain.width = SwapWidth;
-    init.swapChain.height = SwapHeight;
+    g_window = window;
+    g_vsync = vsync;
+    g_backbufferWidth = width > 0 ? static_cast<u32>(width) : static_cast<u32>(BgfxWindowWidth);
+    g_backbufferHeight = height > 0 ? static_cast<u32>(height) : static_cast<u32>(BgfxWindowHeight);
+    init.swapChain.width = static_cast<std::uint16_t>(g_backbufferWidth);
+    init.swapChain.height = static_cast<std::uint16_t>(g_backbufferHeight);
 
 #if defined(_WIN32)
     // Windows' backends (WGL, Direct3D, Vulkan) take the window as its HWND, with no display handle beside it
@@ -245,14 +268,82 @@ bool BgfxInit(SDL_Window* window)
         break;
     }
 
-    bgfx::reset(BGFX_RESET_NONE);
+    bgfx::reset(vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE);
     bgfx::setDebug(BGFX_DEBUG_TEXT);
     bgfx::setViewClear(ClearView, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, DebugClearColor);
-    bgfx::setViewRect(ClearView, 0, 0, SwapWidth, SwapHeight);
+    bgfx::setViewRect(ClearView, 0, 0, static_cast<std::uint16_t>(g_backbufferWidth),
+                      static_cast<std::uint16_t>(g_backbufferHeight));
     // The frame's order: the retail buckets in their own order, with the host's own passes placed among them
     OrderViews();
     g_initialized = true;
     return true;
+}
+
+SDL_Window* BgfxWindow()
+{
+    return g_window;
+}
+
+u32 BgfxBackbufferWidth()
+{
+    return g_backbufferWidth;
+}
+
+u32 BgfxBackbufferHeight()
+{
+    return g_backbufferHeight;
+}
+
+// The window's drawable changed (a resize, a mode, a resolution): the swap chain follows it, and the clear view with it. The
+// scene target and the post passes are the host's own and are sized from the scene's, so nothing else moves
+void BgfxResetSwapchain(u32 width, u32 height, bool vsync)
+{
+    if (!g_initialized || width == 0 || height == 0)
+    {
+        return;
+    }
+
+    if (width == g_backbufferWidth && height == g_backbufferHeight && vsync == g_vsync)
+    {
+        return;
+    }
+
+    g_backbufferWidth = width;
+    g_backbufferHeight = height;
+    g_vsync = vsync;
+    // The swap chain's own size: this bgfx's reset takes the flags and a chain, not the two numbers, and a field left empty
+    // keeps the main window's (the handles, the formats)
+    bgfx::SwapChain chain;
+    chain.width = width;
+    chain.height = height;
+    bgfx::reset(vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE, &chain);
+    bgfx::setViewRect(ClearView, 0, 0, static_cast<std::uint16_t>(width), static_cast<std::uint16_t>(height));
+    std::fprintf(stderr, "bgfx: backbuffer %ux%u, vsync %s\n", width, height, vsync ? "on" : "off");
+}
+
+void BgfxSetSceneScale(u32 percent)
+{
+    g_scenePercent = percent != 0 ? percent : 100;
+}
+
+u32 BgfxSceneWidth()
+{
+    return ScaledDimension(BgfxWindowWidth, g_scenePercent);
+}
+
+u32 BgfxSceneHeight()
+{
+    return ScaledDimension(BgfxWindowHeight, g_scenePercent);
+}
+
+void BgfxSetPictureFit(bool fit)
+{
+    g_pictureFit = fit;
+}
+
+bool BgfxPictureFit()
+{
+    return g_pictureFit;
 }
 
 void BgfxFrame()
@@ -279,10 +370,10 @@ void BgfxSwapSize(std::uint16_t* width, std::uint16_t* height)
 {
     if (width != nullptr)
     {
-        *width = SwapWidth;
+        *width = static_cast<std::uint16_t>(g_backbufferWidth);
     }
     if (height != nullptr)
     {
-        *height = SwapHeight;
+        *height = static_cast<std::uint16_t>(g_backbufferHeight);
     }
 }

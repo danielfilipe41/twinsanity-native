@@ -116,6 +116,10 @@ struct SaveManager : SaveCode
     // message on the message screen, the choices screen and the save slots screen shown (the screen returned), the base's
     // destructor and drawing (nothing: OLEG draws the screens)
     u32 Ask(u32 operation, u32 file) RETAIL(FUN_0029fe18);
+    // Whether the screens of the operation running offer "Continue without saving": the new game's save and the pause menu's
+    // (retail offers it for the new game's alone, which left a player whose card cannot take the save no way out of the pause
+    // menu's save)
+    bool OffersToSkipSaving() const;
     u32 ShowChoices(u32 screen) RETAIL(FUN_0029ff50);
     u32 ShowSlots(u32 screen) RETAIL(FUN_002a00e8);
     void DestroyScreens(u32 destroyFlags) RETAIL(FUN_002a7950);

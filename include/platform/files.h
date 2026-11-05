@@ -29,6 +29,9 @@ void SetRoot(const char* path);
 // Japanese builds ran at 60. The game's own flag for it (g_Pal) is a word of the retail data, which this port has from the
 // European build, so the disc's serial at its root is what says which it is
 bool DiscIsPal();
+// Whether the disc being read is the Japanese release's build: its texts and voice banks are Japanese whatever slot they sit in
+// (the file layer serves them under the european names)
+bool DiscIsJapanese();
 // Forgets what it knew of the file system (open again after the I/O processor restarted)
 void Reset();
 // Returns the descriptor, negative on failure

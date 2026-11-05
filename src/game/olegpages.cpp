@@ -7,6 +7,10 @@
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/oleg.h"
+#include "game/porttext.h"
+
+#include "platform/display.h"
+#include "platform/system.h"
 #include "game/pads.h"
 #include "game/renderer.h"
 #include "game/savemanager.h"
@@ -58,6 +62,14 @@ constexpr u32 OptionsText = 0xB;
 constexpr u32 NewGameItem = 0;
 constexpr u32 LoadGameItem = 2;
 constexpr u32 OptionsItem = 0x1E;
+// The exit row: the main menu's own, and the pause menu's quitting turned into one
+constexpr u32 ExitItem = 0x1F;
+
+
+// What the pause menu's exit question says, and the quit page it is asked on (retail's, found where the pause menu makes it: it is
+// the page's yes item that is turned from returning to the title into ending the process, and the quit row turns it back)
+
+QuitPage* g_QuitPage = nullptr;
 // A screen of OLEG's is shown over half a second, the others hidden; an item's gallery or movie starts half a second after it's
 // picked
 constexpr f32 ScreenChangeSeconds = 0.5f;
@@ -110,6 +122,110 @@ constexpr u32 OutputTypeText = 0x14;
 constexpr u32 OutputTypeItem = 0x19;
 constexpr u32 OutputTypes = 3;
 constexpr u32 MonoText = 6;
+// The display's own rows on the graphic options page: the host's picture, not the game's options. Each is a choice of the
+// names the host itself offers (Platform::Display holds them, and the words the settings file records), and the page hands a
+// changed choice back to the host, which applies it and keeps it. Their IDs sit past the retail page's (the retail items are
+// 0x14 to 0x1D)
+constexpr u32 ResolutionItemId = 0x20;
+constexpr u32 WindowItemId = 0x21;
+constexpr u32 FrameRateItemId = 0x22;
+constexpr u32 VsyncItemId = 0x23;
+constexpr u32 AspectItemId = 0x24;
+constexpr u32 RenderScaleItemId = 0x25;
+constexpr u32 AntiAliasItemId = 0x26;
+constexpr u32 DrawDistanceItemId = 0x29;
+
+// The host's value as a choice index, and the choice index back: the antialiasing's is its enum
+u32 AntiAliasChoice()
+{
+    return static_cast<u32>(Platform::Display::AntiAliasing());
+}
+
+void SetAntiAliasChoice(u32 index)
+{
+    Platform::Display::SetAntiAliasing(static_cast<AntiAlias>(index));
+}
+
+// A choice row, one per host setting: its label, its item ID, the names the host offers (a static array of the host's, which
+// outlives the menu), how many and how they are read and written
+struct DisplayRow
+{
+    u32 text;
+    u32 item;
+    const char* const* (*names)();
+    u32 (*count)();
+    u32 (*value)();
+    void (*set)(u32 index);
+};
+
+const DisplayRow DisplayRows[] = {
+    {PortTextResolution, ResolutionItemId, Platform::Display::ResolutionNames, Platform::Display::ResolutionCount,
+     Platform::Display::Resolution, Platform::Display::SetResolution},
+    {PortTextWindow, WindowItemId, Platform::Display::WindowModeNames, Platform::Display::WindowModeCount, Platform::Display::WindowMode,
+     Platform::Display::SetWindowMode},
+    {PortTextFrameRate, FrameRateItemId, Platform::Display::FrameRateNames, Platform::Display::FrameRateCount,
+     Platform::Display::FrameRate, Platform::Display::SetFrameRateIndex},
+    {PortTextAspect, AspectItemId, Platform::Display::AspectNames, Platform::Display::AspectCount, Platform::Display::Aspect,
+     Platform::Display::SetAspect},
+    {PortTextRenderScale, RenderScaleItemId, Platform::Display::ScaleNames, Platform::Display::ScaleCount, Platform::Display::Scale,
+     Platform::Display::SetScale},
+    {PortTextAntiAliasing, AntiAliasItemId, Platform::Display::AntiAliasNames, Platform::Display::AntiAliasCount, AntiAliasChoice,
+     SetAntiAliasChoice},
+    {PortTextPopIn, DrawDistanceItemId, Platform::Display::DrawDistanceNames, Platform::Display::DrawDistanceCount,
+     Platform::Display::DrawDistance, Platform::Display::SetDrawDistance},
+};
+
+constexpr u32 DisplayRowCount = sizeof(DisplayRows) / sizeof(DisplayRows[0]);
+
+// Where the graphic options page keeps them, once built: the page class is a retail one whose layout is CHECK_SIZE'd, so there
+// is no member to add to it, and the rows are read straight from here by its Entered and Frame
+MenuItem* g_DisplayItems[DisplayRowCount];
+MenuItem* g_VsyncItem = nullptr;
+
+// The language rows on the game options page: the voices' and the texts'. The game puts its languages in place once, as it
+// starts (the voices are streamed banks it opened, the texts were read into memory), so a change lands at the next run
+constexpr u32 VoicesItemId = 0x27;
+constexpr u32 TextsItemId = 0x28;
+MenuItem* g_VoicesItem = nullptr;
+MenuItem* g_TextsItem = nullptr;
+
+// The two applied as they are stepped. The texts follow the voices while they were the same language, and only a player who
+// picks a different one for them splits the two (which is what a disc with translated-in-another-slot texts wants)
+void ApplyLanguageChoice(u32 voices, u32 texts)
+{
+    const u32 oldVoices = Platform::System::LanguageChoice();
+    const u32 oldTexts = Platform::System::TextLanguageChoice();
+    if (voices != oldVoices)
+    {
+        Platform::System::SetLanguageChoice(voices);
+        if (texts == oldVoices)
+        {
+            Platform::System::SetTextLanguageChoice(voices);
+        }
+    }
+
+    if (texts != oldTexts && texts != oldVoices)
+    {
+        Platform::System::SetTextLanguageChoice(texts);
+    }
+}
+
+// A choice row named by the host's own words: the names are the host's statics and the array holding them is the item's, which
+// its Destroy frees (the same allocator ChoiceItem's own choice texts use)
+ChoiceItem* ConstructNamedChoice(ChoiceItem* item, u32 text, u32 id, const char* const* names, u32 choices, s32 value)
+{
+    ChoiceItem::Construct(item, text, id, choices, 1, 0, MenuPlayers);
+    item->usesStrings = 1;
+    item->strings = static_cast<const char**>(MemoryAllocate2(choices * sizeof(const char*)));
+    for (u32 choice = 0; choice < choices; choice++)
+    {
+        item->strings[choice] = names[choice];
+    }
+
+    item->SetRange(0, static_cast<s32>(choices) - 1, 1, value);
+    return item;
+}
+
 // The pause menu: its title, its pages' (save game, load game), its items' texts and IDs
 constexpr u32 PauseTitle = 0x18;
 constexpr u32 SaveGameText = 0x19;
@@ -341,6 +457,16 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
         ShowScreen(oleg, OLEG::ScreenScreenPosition);
         break;
     case ActionQuit:
+        // Retail's own question, and the yes returns to the title: the exit question above turns both, so they are turned back
+        if (g_QuitPage != nullptr)
+        {
+            oleg.quitTitle.text = QuitTitleText;
+            if (auto* yes = static_cast<ActionItem*>(g_QuitPage->Find(QuitYesItem)))
+            {
+                yes->action = ActionTitle;
+            }
+        }
+
         ShowScreen(oleg, OLEG::ScreenQuit);
         break;
     case ActionTitle:
@@ -357,6 +483,22 @@ MenuPage* ActionItem::Activate(u32 player, MenuPage* page)
         break;
     case ActionSave:
         controller->SaveFromPause();
+        break;
+    case ActionExit:
+        Platform::System::Exit(0);
+        break;
+    case ActionAskExit:
+        if (g_QuitPage != nullptr)
+        {
+            // The quit screen's title is a label of its own (oleg.quitTitle, beside the menu): the question is its text
+            oleg.quitTitle.text = PortTextExitQuestion;
+            if (auto* yes = static_cast<ActionItem*>(g_QuitPage->Find(QuitYesItem)))
+            {
+                yes->action = ActionExit;
+            }
+        }
+
+        ShowScreen(oleg, OLEG::ScreenQuit);
         break;
     default:
         break;
@@ -377,9 +519,11 @@ MainMenuPage* MainMenuPage::Construct(MainMenuPage* page)
                                              &page->loadGame, MenuPlayers);
     ActionItem* options = ActionItem::Construct(Allocate<ActionItem>(), OptionsText,
                                                 OptionsItem, ActionItem::ActionOptions);
+    ActionItem* exit = ActionItem::Construct(Allocate<ActionItem>(), PortTextExit, ExitItem, ActionItem::ActionExit);
     page->Add(newGame);
     page->Add(loadGame);
     page->Add(options);
+    page->Add(exit);
     return page;
 }
 
@@ -529,6 +673,8 @@ QuitPage* QuitPage::Construct(QuitPage* page, MenuPage* parent)
     OlegPage::ConstructTitled(page, QuitTitleText, parent);
     page->vtable = g_QuitPageVTable;
     AddYesNo(page, QuitYesItem, ActionItem::ActionTitle, parent);
+    // Where the exit question asks (ActionAskExit) and where the quitting's own question is put back
+    g_QuitPage = page;
     return page;
 }
 
@@ -602,6 +748,11 @@ void GameOptionsPage::Entered(u32 player, u32)
 {
     auto* pads = static_cast<GamePadController*>(G_GamePadController);
     Find(VibrationItem)->SetFlag(player, pads->flags.vibration != 0);
+    if (g_VoicesItem != nullptr)
+    {
+        g_VoicesItem->SetIntValue(player, static_cast<s32>(Platform::System::LanguageChoice()));
+        g_TextsItem->SetIntValue(player, static_cast<s32>(Platform::System::TextLanguageChoice()));
+    }
 }
 
 void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
@@ -616,6 +767,15 @@ void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
     else
     {
         pads->DisableVibration();
+    }
+
+    if (g_VoicesItem != nullptr)
+    {
+        s32 voices = 0;
+        s32 texts = 0;
+        g_VoicesItem->GetIntValue(player, &voices);
+        g_TextsItem->GetIntValue(player, &texts);
+        ApplyLanguageChoice(static_cast<u32>(voices), static_cast<u32>(texts));
     }
 
     OptionsChanged();
@@ -635,6 +795,19 @@ void GraphicsOptionsPage::Destroy(u32 flags)
 void GraphicsOptionsPage::Entered(u32 player, u32)
 {
     Find(WidescreenItem)->SetFlag(player, g_WidescreenTv);
+    // The display's rows show what the host has now (a host that presents no picture has none of them)
+    for (u32 index = 0; index < DisplayRowCount; index++)
+    {
+        if (g_DisplayItems[index] != nullptr)
+        {
+            g_DisplayItems[index]->SetIntValue(player, static_cast<s32>(DisplayRows[index].value()));
+        }
+    }
+
+    if (g_VsyncItem != nullptr)
+    {
+        g_VsyncItem->SetFlag(player, Platform::Display::Vsync() ? 1 : 0);
+    }
 }
 
 void GraphicsOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
@@ -642,6 +815,25 @@ void GraphicsOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
     u8 widescreen;
     Find(WidescreenItem)->GetFlag(player, &widescreen);
     g_WidescreenTv = widescreen;
+
+    // The display's rows as they are stepped: the host compares its own value against the choice, so a frame that changed none
+    // of them is a handful of compares and no window work
+    for (u32 index = 0; index < DisplayRowCount; index++)
+    {
+        s32 value = 0;
+        if (g_DisplayItems[index] != nullptr && g_DisplayItems[index]->GetIntValue(player, &value) != 0)
+        {
+            DisplayRows[index].set(static_cast<u32>(value));
+        }
+    }
+
+    if (g_VsyncItem != nullptr)
+    {
+        u8 vsync = 0;
+        g_VsyncItem->GetFlag(player, &vsync);
+        Platform::Display::SetVsync(vsync != 0);
+    }
+
     OptionsChanged();
 }
 
@@ -740,6 +932,25 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
     ToggleItem* vibration = ToggleItem::Construct(Allocate<ToggleItem>(), VibrationText, VibrationItem, NoText, YesText, 1, 0, MenuPlayers);
     BackItem* gameBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers);
     game.Add(vibration);
+
+    // The languages, on a host that offers a choice between them (the console's own language is its system settings')
+    g_VoicesItem = nullptr;
+    g_TextsItem = nullptr;
+    if (Platform::System::LanguageChoices() != 0)
+    {
+        const u32 choices = Platform::System::LanguageChoices();
+        const char* const* names = Platform::System::LanguageChoiceNames();
+        ChoiceItem* voices = ConstructNamedChoice(Allocate<ChoiceItem>(), PortTextVoices, VoicesItemId, names, choices,
+                                                  static_cast<s32>(Platform::System::LanguageChoice()));
+        ChoiceItem* texts = ConstructNamedChoice(Allocate<ChoiceItem>(), PortTextTexts, TextsItemId, names, choices,
+                                                 static_cast<s32>(Platform::System::TextLanguageChoice()));
+        game.Add(voices);
+        game.Add(texts);
+        g_VoicesItem = voices;
+        g_TextsItem = texts;
+
+    }
+
     game.Add(gameBack);
 
     GraphicsOptionsPage& graphics = page->graphics;
@@ -753,6 +964,38 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
     BackItem* graphicsBack = BackItem::Construct(Allocate<BackItem>(), BackText, SubPageBackItem, page, MenuPlayers);
     graphics.Add(centre);
     graphics.Add(widescreen);
+
+    // The display's own options, when the host presents a picture of its own: the resolution, the window's mode, the rate, the
+    // aspect, the render scale, the antialiasing and vsync
+    for (u32 index = 0; index < DisplayRowCount; index++)
+    {
+        g_DisplayItems[index] = nullptr;
+    }
+    g_VsyncItem = nullptr;
+    if (Platform::Display::Presentable())
+    {
+        for (u32 index = 0; index < DisplayRowCount; index++)
+        {
+            const DisplayRow& row = DisplayRows[index];
+            const u32 choices = row.count();
+            if (choices == 0)
+            {
+                continue;
+            }
+
+            ChoiceItem* item = ConstructNamedChoice(Allocate<ChoiceItem>(), row.text, row.item, row.names(), choices,
+                                                      static_cast<s32>(row.value()));
+            graphics.Add(item);
+            g_DisplayItems[index] = item;
+        }
+
+        ToggleItem* vsync = ToggleItem::Construct(Allocate<ToggleItem>(), NoText, VsyncItemId, OffText, OnText, 1,
+                                                  Platform::Display::Vsync() ? 1 : 0, MenuPlayers);
+        vsync->text = "vsync";
+        graphics.Add(vsync);
+        g_VsyncItem = vsync;
+    }
+
     graphics.Add(graphicsBack);
 
     SoundOptionsPage::Construct(&page->sound, page);
@@ -819,7 +1062,9 @@ PausePage* PausePage::Construct(PausePage* page, PadButtons*, Font*)
     LinkItem* load = LinkItem::Construct(Allocate<LinkItem>(), LoadGameText, LoadGameItem, &page->loadGame, MenuPlayers);
     ActionItem* disableAutosave = ActionItem::Construct(Allocate<ActionItem>(), DisableAutosaveText, DisableAutosaveItem,
                                                         ActionItem::ActionDisableAutosave);
-    ActionItem* quit = ActionItem::Construct(Allocate<ActionItem>(), QuitGameText, QuitGameItem, ActionItem::ActionQuit);
+    // The pause menu's quitting closes the game (retail's row went back to the title): it asks first, and the question's yes ends
+    // the process
+    ActionItem* quit = ActionItem::Construct(Allocate<ActionItem>(), PortTextCloseGame, QuitGameItem, ActionItem::ActionAskExit);
     BackItem* resume = BackItem::Construct(Allocate<BackItem>(), ResumeText, ResumeItem, &g_ResumePage, MenuPlayers);
     page->Add(options);
     page->Add(save);

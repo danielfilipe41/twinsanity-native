@@ -8,6 +8,7 @@
 #include "host_graphics.h"
 #include "mesh_builder.h"
 
+#include <cmath>
 #include <deque>
 
 #include "game/graphicstables.h"
@@ -895,6 +896,11 @@ bgfx::TextureHandle g_smaaSearch = BGFX_INVALID_HANDLE;
 // What the post passes draw with, made on first use: one program per pass, the u_aaPt uniform all of them take, the
 // samplers two of them declare, and their fullscreen triangles
 bool g_aaMade = false;
+// The backbuffer's size the post passes' targets were made at: the frame buffer is the backbuffer's size and draws use pixel
+// fractions of it, so a resized window (or a display mode the window moved to) needs them remade, or the passes stretch the
+// picture across the new one
+u32 g_aaWidth = 0;
+u32 g_aaHeight = 0;
 bgfx::ProgramHandle g_aaFxaa = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_aaSmaaEdges = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_aaSmaaWeights = BGFX_INVALID_HANDLE;
@@ -906,6 +912,14 @@ bgfx::UniformHandle g_aaSearchSampler = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_aaBlendSampler = BGFX_INVALID_HANDLE;
 bgfx::VertexBufferHandle g_aaTriangleTarget = BGFX_INVALID_HANDLE;
 bgfx::VertexBufferHandle g_aaTriangleScreen = BGFX_INVALID_HANDLE;
+// Whether the composited picture is fitted (its 16:9 kept, bars around it) rather than stretched over the window: the
+// composite's view clears when it is, so the bars are black
+bool g_pictureFit = false;
+// What the composite's triangle was made for: the offsets, the fit and the backbuffer's size it was built at
+f32 g_compositeFitX = 1.0f;
+f32 g_compositeFitY = 1.0f;
+u32 g_compositeWidth = 0;
+u32 g_compositeHeight = 0;
 
 struct CompositeVertex
 {
@@ -936,8 +950,10 @@ bgfx::VertexLayout CompositeLayout()
 // The scene target at the window's size, made (or remade on a size change)
 void EnsureSceneTarget()
 {
-    u32 width = static_cast<u32>(BgfxWindowWidth);
-    u32 height = static_cast<u32>(BgfxWindowHeight);
+    // The scene's own size: the design's 960x540 times the resolution scale (Platform::Display's), not the window's. The
+    // composite stretches it over the backbuffer, so the scene is the picture's detail and the window is its size
+    u32 width = BgfxSceneWidth();
+    u32 height = BgfxSceneHeight();
     if (bgfx::isValid(g_sceneTarget) && width == g_sceneWidth && height == g_sceneHeight)
     {
         return;
@@ -1024,7 +1040,17 @@ void EnsureComposite()
 // offset moves, which is a rare event (the debug menu's screen-position page, a loaded save)
 void EnsureCompositeTriangle(f32 offsetX, f32 offsetY)
 {
-    if (bgfx::isValid(g_compositeTriangle) && offsetX == g_compositeOffsetX && offsetY == g_compositeOffsetY)
+    // The fitted picture's scale: the scene's shape put in the window's. Stretched it is 1 either way (the picture fills the
+    // window, however its shape); fitted the smaller of the two fills one axis and the other gets bars
+    const f32 sceneAspect = static_cast<f32>(BgfxSceneWidth()) / static_cast<f32>(BgfxSceneHeight());
+    const f32 windowAspect = static_cast<f32>(BgfxBackbufferWidth()) / static_cast<f32>(BgfxBackbufferHeight());
+    const bool fit = BgfxPictureFit();
+    g_pictureFit = fit && std::fabs(sceneAspect - windowAspect) > 0.001f;
+    const f32 fitX = g_pictureFit && windowAspect > sceneAspect ? sceneAspect / windowAspect : 1.0f;
+    const f32 fitY = g_pictureFit && windowAspect < sceneAspect ? windowAspect / sceneAspect : 1.0f;
+    if (bgfx::isValid(g_compositeTriangle) && offsetX == g_compositeOffsetX && offsetY == g_compositeOffsetY &&
+        fitX == g_compositeFitX && fitY == g_compositeFitY && BgfxBackbufferWidth() == g_compositeWidth &&
+        BgfxBackbufferHeight() == g_compositeHeight)
     {
         return;
     }
@@ -1043,18 +1069,30 @@ void EnsureCompositeTriangle(f32 offsetX, f32 offsetY)
     // one it was
     const bool yDown = Platform::Graphics::HostClipSpaceYDown();
     const f32 ySign = yDown ? -1.0f : 1.0f;
-    const f32 clipX = 2.0f * offsetX / static_cast<f32>(BgfxWindowWidth);
+    const f32 clipX = 2.0f * offsetX / static_cast<f32>(BgfxBackbufferWidth());
     // The offset counts down the frame, which is +Y in a y-down backend's clip space and -Y in OpenGL's
-    const f32 clipY = (yDown ? 2.0f : -2.0f) * offsetY / static_cast<f32>(BgfxWindowHeight);
+    const f32 clipY = (yDown ? 2.0f : -2.0f) * offsetY / static_cast<f32>(BgfxBackbufferHeight());
+    // The fit scales the triangle's clip positions (and not its UVs, which stay 0..2 so the picture is still the whole scene)
     const CompositeVertex triangle[3] = {
-        {-1.0f + clipX, ySign * -1.0f + clipY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {3.0f + clipX, ySign * -1.0f + clipY, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
-        {-1.0f + clipX, ySign * 3.0f + clipY, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {(-1.0f + clipX) * fitX, (ySign * -1.0f + clipY) * fitY, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {(3.0f + clipX) * fitX, (ySign * -1.0f + clipY) * fitY, 0.0f, 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {(-1.0f + clipX) * fitX, (ySign * 3.0f + clipY) * fitY, 0.0f, 0.0f, 2.0f, 1.0f, 1.0f, 1.0f, 1.0f},
     };
     const bgfx::Memory* memory = bgfx::copy(triangle, sizeof(triangle));
     g_compositeTriangle = bgfx::createVertexBuffer(memory, CompositeLayout());
     g_compositeOffsetX = offsetX;
     g_compositeOffsetY = offsetY;
+    g_compositeFitX = fitX;
+    g_compositeFitY = fitY;
+    // Fitted, the picture covers part of the window and the rest is the bars: said once per rebuild, so a log tells the shape
+    if (g_pictureFit)
+    {
+        std::fprintf(stderr, "bgfx: picture %.0fx%.0f centred in %ux%u (fit)\n",
+                     static_cast<f32>(BgfxBackbufferWidth()) * fitX, static_cast<f32>(BgfxBackbufferHeight()) * fitY,
+                     BgfxBackbufferWidth(), BgfxBackbufferHeight());
+    }
+    g_compositeWidth = BgfxBackbufferWidth();
+    g_compositeHeight = BgfxBackbufferHeight();
 }
 
 // The post passes' fullscreen triangle, in the composite's own layout (its vertex shader is what every one of them draws
@@ -1083,15 +1121,23 @@ bgfx::ProgramHandle MakeAaProgram(Platform::Graphics::HostShader fragment)
 // The post passes' target and objects, made on first use and only what the mode asked for
 void EnsureAntiAliasing()
 {
+    // A backbuffer of another size: the targets are the frame's and must not outlive it
+    if (g_aaMade && (g_aaWidth != BgfxBackbufferWidth() || g_aaHeight != BgfxBackbufferHeight()))
+    {
+        Platform::Graphics::HostInvalidateAntiAliasing();
+    }
+
     if (g_aaMade)
     {
         return;
     }
 
     g_aaMade = true;
+    g_aaWidth = BgfxBackbufferWidth();
+    g_aaHeight = BgfxBackbufferHeight();
 
-    const u16 width = static_cast<u16>(BgfxWindowWidth);
-    const u16 height = static_cast<u16>(BgfxWindowHeight);
+    const u16 width = static_cast<u16>(g_aaWidth);
+    const u16 height = static_cast<u16>(g_aaHeight);
     // Linear and clamped: a post pass reads its source at fractions of a texel
     const u64 sampleFlags = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
     g_aaInput = bgfx::createFrameBuffer(width, height, bgfx::TextureFormat::RGBA8, sampleFlags);
@@ -1135,10 +1181,11 @@ void SubmitAntiAliasing()
     EnsureAntiAliasing();
     EnsureComposite();
     const AntiAlias mode = HostAntiAliasing();
-    const f32 point[4] = {1.0f / static_cast<f32>(BgfxWindowWidth), 1.0f / static_cast<f32>(BgfxWindowHeight),
-                          static_cast<f32>(BgfxWindowWidth), static_cast<f32>(BgfxWindowHeight)};
-    const u16 width = static_cast<u16>(BgfxWindowWidth);
-    const u16 height = static_cast<u16>(BgfxWindowHeight);
+    const f32 point[4] = {1.0f / static_cast<f32>(BgfxBackbufferWidth()),
+                          1.0f / static_cast<f32>(BgfxBackbufferHeight()),
+                          static_cast<f32>(BgfxBackbufferWidth()), static_cast<f32>(BgfxBackbufferHeight())};
+    const u16 width = static_cast<u16>(BgfxBackbufferWidth());
+    const u16 height = static_cast<u16>(BgfxBackbufferHeight());
     const u64 linear = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
 
     if (mode == AntiAlias::Fxaa)
@@ -1326,6 +1373,71 @@ void HostSetDisplayOffset(f32 across, f32 down)
     g_displayOffsetDown = down;
 }
 
+// The picture's antialiasing changed: the post passes' targets, programs and triangles are dropped, and the next frame makes
+// the new mode's. Also what a resize or a mode change needs (the targets are the backbuffer's size), which is why the
+// platform's display calls it
+void HostInvalidateAntiAliasing()
+{
+    if (bgfx::isValid(g_aaInput))
+    {
+        bgfx::destroy(g_aaInput);
+    }
+    if (bgfx::isValid(g_aaEdges))
+    {
+        bgfx::destroy(g_aaEdges);
+    }
+    if (bgfx::isValid(g_aaWeights))
+    {
+        bgfx::destroy(g_aaWeights);
+    }
+    if (bgfx::isValid(g_smaaArea))
+    {
+        bgfx::destroy(g_smaaArea);
+    }
+    if (bgfx::isValid(g_smaaSearch))
+    {
+        bgfx::destroy(g_smaaSearch);
+    }
+    if (bgfx::isValid(g_aaFxaa))
+    {
+        bgfx::destroy(g_aaFxaa);
+    }
+    if (bgfx::isValid(g_aaSmaaEdges))
+    {
+        bgfx::destroy(g_aaSmaaEdges);
+    }
+    if (bgfx::isValid(g_aaSmaaWeights))
+    {
+        bgfx::destroy(g_aaSmaaWeights);
+    }
+    if (bgfx::isValid(g_aaSmaaBlend))
+    {
+        bgfx::destroy(g_aaSmaaBlend);
+    }
+    if (bgfx::isValid(g_aaTriangleTarget))
+    {
+        bgfx::destroy(g_aaTriangleTarget);
+    }
+    if (bgfx::isValid(g_aaTriangleScreen))
+    {
+        bgfx::destroy(g_aaTriangleScreen);
+    }
+
+    g_aaInput = BGFX_INVALID_HANDLE;
+    g_aaInputColour = BGFX_INVALID_HANDLE;
+    g_aaEdges = BGFX_INVALID_HANDLE;
+    g_aaWeights = BGFX_INVALID_HANDLE;
+    g_smaaArea = BGFX_INVALID_HANDLE;
+    g_smaaSearch = BGFX_INVALID_HANDLE;
+    g_aaFxaa = BGFX_INVALID_HANDLE;
+    g_aaSmaaEdges = BGFX_INVALID_HANDLE;
+    g_aaSmaaWeights = BGFX_INVALID_HANDLE;
+    g_aaSmaaBlend = BGFX_INVALID_HANDLE;
+    g_aaTriangleTarget = BGFX_INVALID_HANDLE;
+    g_aaTriangleScreen = BGFX_INVALID_HANDLE;
+    g_aaMade = false;
+}
+
 void HostCompositeScene()
 {
     EnsureSceneTarget();
@@ -1333,8 +1445,8 @@ void HostCompositeScene()
     // The display's offset (Platform::Graphics::MoveDisplay, kept here), as pixels of the window the picture is shown
     // in: the composite's triangle carries it, so the whole picture moves the way the PS2's display window moving on
     // the TV moves it
-    EnsureCompositeTriangle(g_displayOffsetAcross * static_cast<f32>(BgfxWindowWidth),
-                            g_displayOffsetDown * static_cast<f32>(BgfxWindowHeight));
+    EnsureCompositeTriangle(g_displayOffsetAcross * static_cast<f32>(BgfxBackbufferWidth()),
+                            g_displayOffsetDown * static_cast<f32>(BgfxBackbufferHeight()));
     // The permanent vertex buffer EnsureCompositeTriangle made is the triangle drawn here; a transient one would be
     // refused on a frame that has already spent its transient pool, and the early return would leave the backbuffer's
     // debug clear (opaque magenta) showing instead of the frame -- the intermittent magenta flash
@@ -1354,7 +1466,14 @@ void HostCompositeScene()
 
     bgfx::setViewMode(HostCompositeView, bgfx::ViewMode::Sequential);
     bgfx::setViewFrameBuffer(HostCompositeView, postPass ? g_aaInput : g_compositeTarget);
-    bgfx::setViewRect(HostCompositeView, 0, 0, BgfxWindowWidth, BgfxWindowHeight);
+    bgfx::setViewRect(HostCompositeView, 0, 0, static_cast<u16>(BgfxBackbufferWidth()),
+                      static_cast<u16>(BgfxBackbufferHeight()));
+    // Fitted, the picture does not cover the whole target and the rest is the bars: cleared here, so they are black whatever
+    // the target had (stretched, the triangle covers every pixel and there is nothing to clear)
+    if (g_pictureFit)
+    {
+        bgfx::setViewClear(HostCompositeView, BGFX_CLEAR_COLOR, 0x000000FFu, 1.0f, 0);
+    }
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_PT_TRISTRIP);
     bgfx::setTexture(0, g_compositeSampler, g_sceneColour,
                      BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);

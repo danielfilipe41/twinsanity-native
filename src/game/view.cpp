@@ -1,5 +1,7 @@
 #include "game/view.h"
 
+#include "platform/graphics.h"
+
 #include "game/camerarig.h"
 #include "game/controllers.h"
 #include "game/instances.h"
@@ -24,7 +26,9 @@ RenderView* RenderView::Construct(RenderView* view)
 
 void RenderView::SetProjection(CameraLensNode* lens)
 {
-    f32 farPlane = lens->farPlane;
+    // The lens's far plane times the host's pop-in distance: the projection clips where the frustum's far plane culls, so the two
+    // have to agree (culling.cpp's SetViewFrustum scales the same plane)
+    f32 farPlane = lens->farPlane * Platform::Graphics::ViewDistanceScale();
     f32 nearPlane = lens->nearPlane;
     projection = {};
     s32 half = static_cast<s32>(static_cast<f32>(lens->fov) * 0.5f);

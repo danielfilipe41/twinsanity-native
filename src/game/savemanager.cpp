@@ -1,3 +1,4 @@
+#include "game/porttext.h"
 #include "game/savemanager.h"
 
 #include "game/clock.h"
@@ -121,6 +122,46 @@ extern "C"
     }
 }
 
+namespace
+{
+// The port's own wording for a save screen, where a computer's saves say something the console's messages do not: the folder
+// creation that fails, the slots being read, the question the pause menu's new game asks, and the heading over the new game's
+// "create a save?" message (the label draws a line break as two lines)
+void PortScreenMessage(u32 operation, u32 screen, String* text)
+{
+    switch (screen)
+    {
+    case SaveScreenFormatFailed:
+        StringAssign(text, GameText(PortTextCreateFolderFailed));
+        return;
+    case SaveScreenSaveSlots:
+    case SaveScreenLoadSlots:
+        StringAssign(text, GameText(PortTextLoadingSaves));
+        return;
+    case SaveScreenCancelSave:
+        // The pause menu's new game asks its own question; retail's own cancel-save wording stays for retail's flows
+        if (operation == SaveOperationPauseSave)
+        {
+            StringAssign(text, GameText(PortTextAreYouSure));
+        }
+
+        return;
+    case SaveScreenCreate:
+    {
+        String heading;
+        StringConstruct(&heading, GameText(PortTextNoSaveCreated));
+        StringAppend(&heading, "\n");
+        StringAppend(&heading, GameText(g_ScreenMessages[screen]));
+        StringAssign(text, heading.string);
+        StringDestroy(&heading);
+        return;
+    }
+    default:
+        return;
+    }
+}
+}
+
 u32 SaveManager::Ask(u32 operation, u32 file)
 {
     bool message = true;
@@ -145,10 +186,25 @@ u32 SaveManager::Ask(u32 operation, u32 file)
     if (message)
     {
         MessageText(g_OperationMessages[operation], &strings[MessageLabel]);
+        // The checks are the port's own: a computer's saves are files in a folder, and there is no card to look for
+        if (bits.operation == SaveOperationCheckRoom || bits.operation == SaveOperationCheckInserted)
+        {
+            StringAssign(&strings[MessageLabel], GameText(PortTextCheckingSaves));
+        }
+
         StringAssign(&messages[MessageLabel]->text, strings[MessageLabel].string);
     }
 
     return device->Ask(operation, file);
+}
+
+// Whether the screens of the operation running offer "Continue without saving". Retail offers it for a new game's save alone, the
+// pause menu's save making the player pick a slot or leave the whole flow; the port offers it for any save the player asked for,
+// since a player whose card is full, missing or broken keeps playing either way, and the pause menu had no other way out of a save
+// that cannot happen
+bool SaveManager::OffersToSkipSaving() const
+{
+    return bits.operation == SaveOperationNewGameSave || bits.operation == SaveOperationPauseSave;
 }
 
 u32 SaveManager::ShowChoices(u32 screen)
@@ -158,8 +214,9 @@ u32 SaveManager::ShowChoices(u32 screen)
     {
         s32 mode = ChoicesMode(screen);
         MessageText(g_ScreenMessages[screen], &strings[ChoicesLabel]);
+        PortScreenMessage(bits.operation, screen, &strings[ChoicesLabel]);
         StringAssign(&messages[ChoicesLabel]->text, strings[ChoicesLabel].string);
-        static_cast<SaveChoicesPage*>(choicesPage)->ShowItems(mode, bits.operation == SaveOperationNewGameSave);
+        static_cast<SaveChoicesPage*>(choicesPage)->ShowItems(mode, OffersToSkipSaving());
     }
 
     SwitchScreen(this, ChoicesScreen);
@@ -182,8 +239,9 @@ u32 SaveManager::ShowSlots(u32 screen)
         }
 
         MessageText(g_ScreenMessages[screen], &strings[SlotsLabel]);
+        PortScreenMessage(bits.operation, screen, &strings[SlotsLabel]);
         StringAssign(&messages[SlotsLabel]->text, strings[SlotsLabel].string);
-        static_cast<SaveCodePage*>(slotsPage)->ShowSlotItems(mode, bits.operation == SaveOperationNewGameSave);
+        static_cast<SaveCodePage*>(slotsPage)->ShowSlotItems(mode, OffersToSkipSaving());
     }
 
     SwitchScreen(this, SlotsScreen);

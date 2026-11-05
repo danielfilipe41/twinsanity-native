@@ -1575,7 +1575,9 @@ u32 GameController::LoadingTitle(TimeClock*)
         return NoState;
     }
 
-    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 0) != 0
+    // The screen has nothing else to do with the frame, so the chunk is waited for and read in one go rather than a loader step
+    // a frame (the console's frame pacing made this two seconds on a disc a computer reads in forty milliseconds)
+    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 1) != 0
                ? StateTitle
                : NoState;
 }
@@ -1650,7 +1652,9 @@ u32 GameController::LoadingLevel(TimeClock*)
         return NoState;
     }
 
-    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 0) != 0
+    // As on the title's loading screen: the level's chunk is waited for and read in one go, since the screen has nothing else to
+    // do with the frame
+    return progress.ChunkLoaded(flags.queuesFiles != 0 ? GameProgress::LoadedWithLinks : GameProgress::LoadedChunk, 1) != 0
                ? StateStartingPlay
                : NoState;
 }

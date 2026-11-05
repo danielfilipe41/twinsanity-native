@@ -7,6 +7,15 @@
 // Files are opened by their paths on the disc and stay open, by number, until they're closed
 namespace Platform::Stream
 {
+// How many links deep the chunk loader keeps chunks loaded: the focus chunk (0) and its links (1) are wanted below 2, which is
+// what retail loads. The host raises it with the options screen's pop-in distance, so a raised one has the next chunks loaded
+// before the player reaches them (they are read from the disc ahead of time, at the cost of memory)
+u32 ChunkDepth();
+
+// How much of a frame the streaming may have, as a multiple of the console's budget: the PS2 filled a 16 ms frame and paced its
+// chunk loading to a sliver of it (context.cpp's ChunkLoadingTime and the three beside it), which a computer's frame leaves free.
+// 1 on the console; the host raises it, since its disk waits for nothing between slivers
+f32 FrameBudgetScale();
 enum class State : s32
 {
     Stopped = 0,

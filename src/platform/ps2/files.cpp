@@ -7,6 +7,12 @@
 
 // PS2SDK's fileio (the IOP's FILEIO: its open flags and whences are the interface's). Its calls send the IOP what they build on
 // their stack
+// The console's own build: the disc it boots is the one the executable was made for, so its texts are in its own language
+bool Platform::Files::DiscIsJapanese()
+{
+    return false;
+}
+
 void Platform::Files::Reset()
 {
     fioExit();

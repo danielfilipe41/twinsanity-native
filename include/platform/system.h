@@ -34,6 +34,16 @@ ConsoleLanguage Language();
 // slots (a translation patch). The same as Language() wherever nothing says otherwise
 ConsoleLanguage TextLanguage();
 
+// The languages a player can choose between, named as the disc and the settings file spell them ("english", "french"...), the
+// two in use as indices into that list and the way to change them. The game puts its languages in place once, early (its
+// voices are streamed banks and its texts are read from the disc), so a change lands at the next start
+u32 LanguageChoices();
+const char* const* LanguageChoiceNames();
+u32 LanguageChoice();
+void SetLanguageChoice(u32 index);
+u32 TextLanguageChoice();
+void SetTextLanguageChoice(u32 index);
+
 
 struct DateTime
 {

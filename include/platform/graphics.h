@@ -32,8 +32,15 @@ struct ParticlePage;
 struct TimeClock;
 struct RenderTargetDescription;
 
+// The game's stream (the readers below take one): named in full, since Platform::Stream is a namespace beside this one
+struct Stream;
+
 namespace Platform::Graphics
 {
+// How far the camera reaches, as a multiple of the lens's own far plane (1500 units as retail has it): the options screen's
+// pop-in distance. The projection and the frustum's far plane both read it, so a longer reach shows what retail culled; 1 on
+// every platform but the host, whose settings file has the choice
+f32 ViewDistanceScale();
 // Puts the graphics hardware (the vector units and their interfaces, the path to the GS and the DMA controller) in the state the
 // renderer starts from. Only the PS2 has that hardware and only its own start-up calls this (ps2/system.cpp), so no other
 // platform defines it
@@ -309,31 +316,31 @@ MaterialResource* FirstMaterial(const RigidModel* model);
 // meshes are rigid models of the scenery's
 GameTexture* NewTexture(u32 id);
 void DeleteTexture(GameTexture* texture);
-void ReadTexture(GameTexture* texture, Stream* stream);
+void ReadTexture(GameTexture* texture, ::Stream* stream);
 MaterialResource* NewMaterial(u32 id);
 void DeleteMaterial(MaterialResource* material);
-void ReadMaterial(MaterialResource* material, Stream* stream);
+void ReadMaterial(MaterialResource* material, ::Stream* stream);
 RigidModelData* NewModel(u32 id);
 void DeleteModel(RigidModelData* model);
-void ReadModel(RigidModelData* model, Stream* stream);
+void ReadModel(RigidModelData* model, ::Stream* stream);
 RigidModel* NewRigidModel(u32 id);
 void DeleteRigidModel(RigidModel* model);
-void ReadRigidModel(RigidModel* model, Stream* stream);
+void ReadRigidModel(RigidModel* model, ::Stream* stream);
 Skin* NewSkin(u32 id);
 void DeleteSkin(Skin* skin);
-void ReadSkin(Skin* skin, Stream* stream);
+void ReadSkin(Skin* skin, ::Stream* stream);
 BlendSkin* NewBlendSkin(u32 id);
 void DeleteBlendSkin(BlendSkin* skin);
-void ReadBlendSkin(BlendSkin* skin, Stream* stream);
+void ReadBlendSkin(BlendSkin* skin, ::Stream* stream);
 RigidModel* NewMesh(u32 id);
 void DeleteMesh(RigidModel* mesh);
-void ReadMesh(RigidModel* mesh, Stream* stream);
+void ReadMesh(RigidModel* mesh, ::Stream* stream);
 Lod* NewLod(u32 id);
 void DeleteLod(Lod* lod);
-void ReadLod(Lod* lod, Stream* stream);
+void ReadLod(Lod* lod, ::Stream* stream);
 Sky* NewSky(u32 id);
 void DeleteSky(Sky* sky);
-void ReadSky(Sky* sky, Stream* stream);
+void ReadSky(Sky* sky, ::Stream* stream);
 // A chunk's sky drawn first in the frame instead of clearing it (on the PS2 into a half-size buffer copied over the screen)
 void DrawChunkSky(Sky* sky, RenderView* view);
 
@@ -341,5 +348,5 @@ void DrawChunkSky(Sky* sky, RenderView* view);
 // tables have them, or read from a chunk's stream, its material then taken from the material table; and its blend modes'
 // materials made from the material's first shader (the decals' page's draw with STQ coordinates)
 void LoadParticlePage(ParticlePage* page, const char* path, bool decals);
-void ReadParticlePage(ParticlePage* page, Stream* stream, bool decals);
+void ReadParticlePage(ParticlePage* page, ::Stream* stream, bool decals);
 }

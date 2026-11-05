@@ -29,6 +29,36 @@ Platform::System::ConsoleLanguage Platform::System::TextLanguage()
 }
 
 
+// No choice of its own: the headless platform plays in english and the options screen shows no row for a language
+
+u32 Platform::System::LanguageChoices()
+{
+    return 0;
+}
+
+const char* const* Platform::System::LanguageChoiceNames()
+{
+    return nullptr;
+}
+
+u32 Platform::System::LanguageChoice()
+{
+    return 0;
+}
+
+u32 Platform::System::TextLanguageChoice()
+{
+    return 0;
+}
+
+void Platform::System::SetLanguageChoice(u32)
+{
+}
+
+void Platform::System::SetTextLanguageChoice(u32)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

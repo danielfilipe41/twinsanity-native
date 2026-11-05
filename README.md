@@ -25,10 +25,16 @@ Future features:
 - Multiple save pages
 - Cutscene skip
 - Mod support
-- PC port settings, including pop-in distance / LOD
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
 - HD textures
 - Other consoles button glyphs
+
+QOL Changes:
+- Pc port settings
+- Exit game option (also on pause screen the old quit game that sent u back to the title screen now closes the game and is called close game)
+- Added option to start a new game from inside the save game option on the pause menu
+- Removed the delay on the Save file check screens
+- Fast loading screens (on my pc it only takes 62ms)
 
 ## Getting the game
 
@@ -163,6 +169,10 @@ Keyboard and SDL3 gamepads both work. A pad maps directly onto the game's contro
 
 `J`, `K` and `L` are both face buttons and the right stick's left, down and right. The right stick's up is `I`.
 
+The main menu and the pause menu have an `exit` row, past the options and past the pause menu's quitting: it ends the game from
+the pad, so closing it needs no keyboard and no window manager. Whatever the options screens changed is written to
+`settings.txt` on the way out.
+
 ## Saves and settings
 
 Memory cards are directories under the platform's per-user data directory: `%LOCALAPPDATA%\twinsanity` on Windows,
@@ -175,8 +185,9 @@ The path the game's files were found at is kept in `gamedata.txt` next to the sa
 the four volume groups (0 effects, 1 second effects, 2 music, 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's
 own save wins where they overlap.
 
-`render <n>` is the picture's rate, the frames the port presents a second: 50 when the file has none, and raised to 50 if
-set lower. The game's logic always steps at the disc's field rate, whatever this says; the frames between two steps draw
+`render <n>` is the picture's rate, the frames the port presents a second: 50 when the file has none, raised to the logic's
+rate if set lower, and `0` for unlimited (the picture presents as fast as it can be drawn, so with vsync on the display is what
+paces it). The game's logic always steps at the disc's field rate, whatever this says; the frames between two steps draw
 the state eased between them, so the picture runs one step (20 ms) behind the logic and the parts that step in one go
 (particles, decals' ageing, material shader animation) still move at 50. The extra frames cost CPU in proportion, since the
 scene is drawn again for each.
@@ -194,9 +205,29 @@ the 3D geometry, the sprites and the menus' text alike; hardware multisampling i
 echo 'antialias smaa' >> "${XDG_DATA_HOME:-$HOME/.local/share}/twinsanity/settings.txt"
 ```
 
+`window`, `resolution`, `vsync`, `aspect` and `scale` are the picture's presentation, and the game's own OPTIONS then
+GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and written back here:
+
+| line | Values | Default |
+|---|---|---|
+| `window` | `windowed`, `borderless`, `fullscreen` (a full screen is the display's own mode and size) | `windowed` |
+| `resolution` | `1280x720`: the window's pixels (what a full screen returns to) | `960x540` |
+| `vsync` | `on`, `off` | `off` |
+| `aspect` | `stretch` (the picture fills the window), `fit` (its 16:9 kept, black bars around it) | `stretch` |
+| `scale` | `0.5`, `0.75`, `1`, `1.5`, `2`, `3`, `4`: the scene drawn at that multiple of 960x540 and then stretched to the window, so a sharper or cheaper picture whatever the window's size | `1` |
+| `draw_distance` | `1`, `1.5`, `2`, `3`, `4`: the pop-in distance. It multiplies the lens's 1500-unit reach (the projection and the cull), keeps a level of detail drawing its last mesh past the distance the level's data stopped it at, stretches a load wall's 2-unit reach, and makes the chunk loader keep more links of chunks loaded (retail's 2 links, up to 5). The cost is memory and what the extra geometry draws | `1` |
+
+The file is merged when it is written: your own comments and lines this build does not know are kept as they are.
+
+The port's own rows are translated with the rest: the labels are text of the port's own (in english, french, german, spanish and
+italian, in whichever language the texts are read in, and in japanese on the Japanese disc), not literals, so they follow the
+`language`/`text_language` lines like the disc's menus do. The values a row shows (a resolution, a multiplier, a rate) are numbers
+and stay as they are.
+
 `language <name>` is the language the game's voices, movies, title pictures and credits are in: `english` when the file has
-none, or `french`, `german`, `spanish`, `italian` -- the five the disc carries. The game's own OPTIONS screen has no row for
-it, so this is the way to choose it, and it takes effect at the next start (the game puts its language in place once, early).
+none, or `french`, `german`, `spanish`, `italian` -- the five the disc carries. The options screen's game page has rows for it and
+for the texts ("voices (restart)" and "texts (restart)"): the game puts its languages in place once, as it starts, so a change
+lands at the next run.
 
 `text_language <name>` puts the texts alone in another language, for discs whose text banks were moved into another slot (a
 translation patch: the English slot holding Portuguese, say). Without it the texts are in the `language` above.

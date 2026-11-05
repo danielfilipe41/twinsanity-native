@@ -605,6 +605,12 @@ u32 Platform::Saves::SaveBytes(u32 kilobytes, u32 files)
     return (kilobytes + (files + 1) / 2 + DirectoryClusters) << ClusterShift;
 }
 
+// The saved folder is a folder: nothing waits for it
+f32 Platform::Saves::DeviceLatencyScale()
+{
+    return 0.05f;
+}
+
 void Platform::Saves::DataDirectory(char* path, u32 size)
 {
     if (path == nullptr || size == 0)

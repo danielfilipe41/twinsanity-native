@@ -76,7 +76,8 @@ void Platform::Time::SetRates(s32 logicRate, s32 displayRate)
         logicRate = DefaultLogicRate;
     }
 
-    if (displayRate <= 0)
+    // 0 is unlimited (the picture presents as fast as the frame is drawn), a negative rate takes the default
+    if (displayRate < 0)
     {
         displayRate = DefaultDisplayRate;
     }

@@ -1,5 +1,7 @@
 // Graphics: the null platform's stubs for everything the bgfx renderer hasn't replaced yet; the
 // material system (material_system.cpp) and 2D drawing (draw2d.cpp) carry the 2D functions instead.
+#include "../display_sdl.h"
+
 #include "draws_host.h"
 #include "host_graphics.h"
 #include "mesh_builder.h"
@@ -781,7 +783,6 @@ namespace
 // WaitVSync paces the host's loop to it and Platform::Time steps the game's clock by exactly one field, so frameTime is
 // one exact field and does not inherit the host's jitter
 bool g_palDisplay = false;
-s32 g_hostFrameRate = 50;
 }
 
 void Platform::Graphics::WaitVSync()
@@ -792,7 +793,15 @@ void Platform::Graphics::WaitVSync()
     // Platform::Time::LogicStepDue, the wall clock's 50 a second, says it is owed). A frame that overruns starts the next
     // one from now instead of being paid back in a burst (retail drops the time too: its timer keeps running)
     constexpr long long NanosecondsPerSecond = 1000000000ll;
-    const long long step = NanosecondsPerSecond / (g_hostFrameRate > 0 ? g_hostFrameRate : 60);
+    // The picture's rate, which the options menu changes while the game runs: Platform::Time owns it, and 0 there is unlimited
+    // (nothing to wait for: the loop presents as fast as it draws)
+    const s32 pictureRate = Platform::Time::DisplayRate();
+    if (pictureRate <= 0)
+    {
+        return;
+    }
+
+    const long long step = NanosecondsPerSecond / pictureRate;
     static std::chrono::steady_clock::time_point next;
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     if (next.time_since_epoch().count() == 0)
@@ -824,6 +833,13 @@ void Platform::Graphics::WaitVSync()
     // The picture's boundary only. The game's clock has its own step (main.cpp takes it when Platform::Time::LogicStepDue
     // says the game is owed one), so presenting faster than the game runs draws the frames between its steps without
     // stepping it, and presenting slower cannot make it run faster
+}
+
+// The camera's reach: the settings file's `draw_distance` line (the options screen's pop-in distance), 1 when it has none
+f32 Platform::Graphics::ViewDistanceScale()
+{
+    const f32 scale = HostSettingsDrawDistance();
+    return scale > 0.0f ? scale : 1.0f;
 }
 
 bool Platform::Graphics::IsPalDisplay()
@@ -860,21 +876,31 @@ void Platform::Graphics::StartRenderer(s32 height, bool pal)
     // game has. Below the field rate the loop could not owe a step every display frame, so the rate is raised to it (the
     // picture would otherwise starve the fixed step); a sanity ceiling keeps a typo from spinning the loop
     constexpr s32 MaxRenderRate = 1000;
+    constexpr s32 UnlimitedRenderRate = 0;
     const s32 logicRate = pal ? 50 : 60;
+    // 0 is unlimited: the loop presents as fast as it can draw, and vsync (when it is on) is what paces it
     s32 displayRate = HostSettingsRenderRate();
-    if (displayRate < logicRate)
+    if (displayRate == UnlimitedRenderRate || MaxRenderRate < displayRate)
     {
-        displayRate = logicRate;
+        displayRate = displayRate == UnlimitedRenderRate ? UnlimitedRenderRate : MaxRenderRate;
     }
-    else if (MaxRenderRate < displayRate)
+    else if (displayRate < logicRate)
     {
-        displayRate = MaxRenderRate;
+        // Below the field rate the loop could not owe a step every display frame, so the rate is raised to it
+        displayRate = logicRate;
     }
 
     Platform::Time::SetRates(logicRate, displayRate);
-    g_hostFrameRate = Platform::Time::DisplayRate();
-    std::fprintf(stderr, "sdl3: %d Hz logic, %d Hz display%s\n", Platform::Time::FrameRate(), g_hostFrameRate,
-                 pal ? " (PAL picture)" : "");
+    if (displayRate == UnlimitedRenderRate)
+    {
+        std::fprintf(stderr, "sdl3: %d Hz logic, unlimited display%s\n", Platform::Time::FrameRate(),
+                     pal ? " (PAL picture)" : "");
+    }
+    else
+    {
+        std::fprintf(stderr, "sdl3: %d Hz logic, %d Hz display%s\n", Platform::Time::FrameRate(),
+                     Platform::Time::DisplayRate(), pal ? " (PAL picture)" : "");
+    }
 
     // Retail's InitDisplay sets G_HorizontalResolution/VerticalResolution (the game's g_DisplayWidth/Height) to the
     // frame's 512-pixel width and the mode's height; the host game draws into a 960x540 scene, so they must follow
@@ -1181,6 +1207,9 @@ void* Platform::Graphics::AllocFrameMemory(u32 count, u32 size)
 
 void Platform::Graphics::FinishFrame()
 {
+    // The window's drawable against the swap chain's, once a frame: a window the player resized (or a window manager's mode
+    // change) is followed before the frame is composited into it
+    DisplaySync();
     // Present the frame: every bucket view submitted since StartFrame renders now
     static u32 frame = 0;
     g_frameCounter = frame;
@@ -1407,9 +1436,13 @@ void Platform::Graphics::DrawPlacedModel(RigidModel* model, ChunkView* view, con
 RigidModel* Platform::Graphics::LodModelAt(Lod* lod, u32 distance)
 {
     // A level of detail's mesh for a squared distance (none nearer than its nearest or past its farthest; the
-    // farthest -1 no limit): mirrors the PS2's LodMeshAt (src/platform/ps2/renderer/resources.cpp)
+    // farthest -1 no limit): mirrors the PS2's LodMeshAt (src/platform/ps2/renderer/resources.cpp). A raised pop-in distance
+    // (Platform::Graphics::ViewDistanceScale) ignores the farthest: the level's own data stopped the scenery's far level at a
+    // distance retail's fog hid, and past it the model drew nothing and popped in on the way back. Its last mesh is what keeps
+    // drawing instead, which is what a longer reach is for
     auto* host = reinterpret_cast<HostLod*>(lod);
-    if (host == nullptr || host->count == 0 || distance < host->nearest || host->farthest < distance)
+    const bool reachExtended = ViewDistanceScale() > 1.0f;
+    if (host == nullptr || host->count == 0 || distance < host->nearest || (!reachExtended && host->farthest < distance))
     {
         return nullptr;
     }

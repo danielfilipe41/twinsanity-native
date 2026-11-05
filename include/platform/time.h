@@ -25,7 +25,10 @@ u64 Ticks();
 // So frameTime is one exact field whatever the display does, and the picture runs at its rate while the game runs at the
 // disc's, the frames between two steps drawing the state eased between them
 s32 FrameRate();
+// The picture's rate, or 0 when it is unlimited: WaitVSync then returns at once and the loop presents as fast as it can draw
+// (with vsync on, the display is what limits it)
 s32 DisplayRate();
+// The logic's step and the picture's rate: a displayRate of 0 is unlimited, a negative one takes the default
 void SetRates(s32 logicRate, s32 displayRate);
 // Whether the loop owes the game a logic step: call once a display frame, after WaitVSync. The step's turn is the wall
 // clock's (50 a second on this PAL disc), whatever the picture's rate is: the display frames that fall between two steps

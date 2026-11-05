@@ -268,6 +268,9 @@ void SetViewFrustum(f32 near, f32 far, f32 aspect, const s32* fieldOfView)
         }
     }
 
+    // The reach the projection clips at: the lens's far plane times the host's pop-in distance (view.cpp's SetProjection scales
+    // the same plane, and a frustum that disagreed would cull what the projection would have shown)
+    far = far * ViewDistanceScale();
     LensFrustum(CullNear, far, aspect, 1.0f, *fieldOfView, g_ViewPlanes);
     LensFrustum(CullNear, far, aspect, FarSidesScale, *fieldOfView, g_FarViewPlanes);
 }

@@ -40,8 +40,10 @@ Android and macOS have no platform layer here yet: their rows are the renderers 
 
 ## Antialiasing
 
-The settings file's `antialias` line picks how the finished frame is cleaned up (see
-[Saves and settings](../README.md#saves-and-settings); there is no screen to set it on, so the line is edited by hand):
+The settings file's `antialias` line picks how the finished frame is cleaned up. The game's own options screen has a row for
+it, on OPTIONS then GRAPHIC OPTIONS, next to the rest of the picture's settings (the resolution, the window's mode, vsync, the
+picture's shape and the resolution scale); the line is what that row writes, so it can be set by hand too (see
+[Saves and settings](../README.md#saves-and-settings)):
 
 | `antialias` | What draws |
 |---|---|

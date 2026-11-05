@@ -541,8 +541,9 @@ struct ChunkLoader
 {
     // The depth of a chunk the links didn't reach: not wanted at all
     static constexpr u32 NoDepth = 0xF;
-    // A file is wanted at the depths below it: the focus chunk's (0) and its links' (1)
-    static constexpr u32 WantedDepths = 2;
+    // A file is wanted at the depths below it: the focus chunk's (0) and its links' (1), and however many more the host's
+    // chunk depth reaches (Platform::Stream::ChunkDepth: 2 as retail has it, raised by the pop-in distance)
+    static u32 WantedDepths();
 
     LoaderReference* self;
     ChunkLoaderBits bits;

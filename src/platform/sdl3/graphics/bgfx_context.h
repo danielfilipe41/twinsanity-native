@@ -4,24 +4,15 @@
 
 #include <SDL3/SDL.h>
 
+#include "platform/display.h"
+
 #include <cstdint>
 
-// The 16:9 window the menus' fractions-of-the-screen drawing maps onto, kept in step with entry.cpp's
+// The design's picture: 960x540, the 16:9 frame the menus' fractions-of-the-screen drawing maps onto and the resolution the
+// scene target is drawn at when the resolution scale is 100%. The window it is presented in is the platform's own size
+// (Platform::Display's), which is not this
 constexpr int BgfxWindowWidth = 960;
 constexpr int BgfxWindowHeight = 540;
-
-// Anti-aliasing, the settings file's `antialias` line: how the finished frame is cleaned up. Both modes are post passes over the composited frame,
-// so they cover what the picture shows (the 3D geometry, the sprites and the menus' text alike). Hardware multisampling is
-// deliberately not one of them: the scene target it would apply to is rendered into throughout the frame and left again
-// several times (the sky, the shadow volumes, the screen effects and the fog each take the frame elsewhere and back), and
-// bgfx resolves a multisample target on every one of those switches, depth included, which cost this port's GL driver a
-// factor of five and more whatever the depth format
-enum class AntiAlias : std::uint8_t
-{
-    Off,  // the default: nothing, which is how the render checks' reference pictures were drawn
-    Fxaa, // one pass, no look-up tables: the cheapest, and the softest
-    Smaa, // three passes with SMAA's area/search tables: sharper, and it keeps subpixel detail
-};
 
 // The antialiasing the frame is drawn with, and the way it is set: the port's own start-up reads the settings file's
 // `antialias` line (settings.h's HostSettingsAntiAlias) and hands it over before BgfxInit, so this context needs no file of
@@ -30,9 +21,30 @@ AntiAlias HostAntiAliasing();
 void BgfxSetAntiAliasing(AntiAlias mode);
 
 // Initializes bgfx on window's native handle (X11 display + window through SDL's window properties, Wayland
-// display + surface when SDL picked Wayland), with a 960x540 swap chain and the debug clear color; returns whether
-// bgfx initialized (BGFX_RESET_NONE: no vsync, the test drives its own frame count)
-bool BgfxInit(SDL_Window* window);
+// display + surface when SDL picked Wayland), with a swap chain of the given size (0: the design's) and the debug clear
+// color; returns whether bgfx initialized. vsync is the display's (BGFX_RESET_VSYNC), off by default: a test drives its own
+// frame count
+bool BgfxInit(SDL_Window* window, int width = 0, int height = 0, bool vsync = false);
+
+// The window bgfx draws into, for the platform's own display changes
+SDL_Window* BgfxWindow();
+
+// The backbuffer's size (the swap chain's, which is the window's drawable) and a reset to a new one: the window was resized or
+// its mode changed, or vsync was switched. The scene target and the post passes are the host's own targets and are not
+// touched: they are sized from the scene's, not the backbuffer's
+u32 BgfxBackbufferWidth();
+u32 BgfxBackbufferHeight();
+void BgfxResetSwapchain(u32 width, u32 height, bool vsync);
+
+// The scene target's size against the design's 960x540, in percent (Platform::Display's resolution scale): more pixels are
+// a sharper picture at a higher cost, whatever the backbuffer's size. The scene target is remade on the next frame
+void BgfxSetSceneScale(u32 percent);
+u32 BgfxSceneWidth();
+u32 BgfxSceneHeight();
+
+// Whether the picture is fitted in the window (its 16:9 kept, black bars around it) rather than stretched over it
+void BgfxSetPictureFit(bool fit);
+bool BgfxPictureFit();
 
 // Clears view 0 to the debug color and advances a frame; call once per presented frame
 void BgfxFrame();

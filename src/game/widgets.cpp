@@ -1,3 +1,5 @@
+#include <cstring>
+
 #include "game/widgets.h"
 
 #include "game/bindings.h"
@@ -911,6 +913,12 @@ void StringLabel::Destroy(u32 destroyFlags)
     Widget::Destroy(destroyFlags);
 }
 
+namespace
+{
+// The room each of a string label's two lines needs
+constexpr u32 LabelLineSize = 192;
+}
+
 void StringLabel::Draw(Renderer* renderer)
 {
     if (flags.invisible == 0 && State() >= StateAppearing)
@@ -927,7 +935,33 @@ void StringLabel::Draw(Renderer* renderer)
         renderer->textAlignment = alignment;
         renderer->textScale.y = size.y;
         renderer->colour = drawColour;
-        QueueText(renderer, text.string, at.x, at.y);
+        // A line break in the text draws two lines, the block centred where the one line was (the port's save screens say a heading
+        // over the disc's own message)
+        const char* breakAt = text.string != nullptr ? std::strchr(text.string, '\n') : nullptr;
+        if (breakAt != nullptr)
+        {
+            char first[LabelLineSize] = {};
+            char second[LabelLineSize] = {};
+            u32 length = 0;
+            for (const char* letter = text.string; letter < breakAt && length + 1 < LabelLineSize; letter++)
+            {
+                first[length++] = *letter;
+            }
+
+            length = 0;
+            for (const char* letter = breakAt + 1; *letter != '\0' && length + 1 < LabelLineSize; letter++)
+            {
+                second[length++] = *letter;
+            }
+
+            const f32 step = size.y * 0.1f;
+            QueueText(renderer, first, at.x, at.y - step * 0.5f);
+            QueueText(renderer, second, at.x, at.y + step * 0.5f);
+        }
+        else
+        {
+            QueueText(renderer, text.string, at.x, at.y);
+        }
     }
 
     if (next != nullptr)
@@ -1008,6 +1042,64 @@ void Label::Destroy(u32 destroyFlags)
     Widget::Destroy(destroyFlags);
 }
 
+namespace
+{
+// Half of the longest retail text a row has room for, and the room each half of a split line needs
+constexpr u32 LineHalfSize = 64;
+// A long line split at the space nearest its middle into two: false when it fits or has no space to split at
+bool SplitLine(const char* string, char* first, char* second)
+{
+    constexpr u32 LongestLine = 24;
+    u32 characters = 0;
+    for (const char* letter = string; *letter != '\0'; letter++)
+    {
+        characters++;
+    }
+
+    if (characters <= LongestLine)
+    {
+        return false;
+    }
+
+    // The space nearest the middle (the later one where two are as near), so the two lines are about as long
+    const u32 middle = characters / 2;
+    u32 split = characters;
+    u32 nearest = characters;
+    for (u32 index = 0; index < characters; index++)
+    {
+        if (string[index] != ' ')
+        {
+            continue;
+        }
+
+        const u32 apart = index < middle ? middle - index : index - middle;
+        if (apart <= nearest)
+        {
+            nearest = apart;
+            split = index;
+        }
+    }
+
+    if (split == 0 || split >= characters || split + 1 >= LineHalfSize)
+    {
+        return false;
+    }
+
+    for (u32 index = 0; index < split; index++)
+    {
+        first[index] = string[index];
+    }
+
+    u32 length = 0;
+    for (u32 index = split + 1; index < characters && length + 1 < LineHalfSize; index++)
+    {
+        second[length++] = string[index];
+    }
+
+    return true;
+}
+}
+
 void Label::Draw(Renderer* renderer)
 {
     if (flags.invisible == 0 && State() >= StateAppearing)
@@ -1026,6 +1118,30 @@ void Label::Draw(Renderer* renderer)
         renderer->textAlignment = alignment;
         renderer->textScale.x = size.x;
         renderer->textScale.y = size.y;
+
+        // The port's own lines are sentences where retail's labels are a word or two: a long one is drawn as two lines at the label's
+        // own size, the block still centred where the one line was, rather than shrunk to fit on one. The split is the space nearest
+        // the middle, so each line is about half the text
+        if (text >= PortTextFirst && string != nullptr)
+        {
+            char first[LineHalfSize] = {};
+            char second[LineHalfSize] = {};
+            if (SplitLine(string, first, second))
+            {
+                // A line's step is a tenth of the text's scale: the menus' own lines sit ItemsSpacing (0.05) apart at half that
+                // scale, so the block of two sits where the one line did
+                const f32 step = size.y * 0.1f;
+                QueueText(renderer, first, at.x, at.y - step * 0.5f);
+                QueueText(renderer, second, at.x, at.y + step * 0.5f);
+
+                if (next != nullptr)
+                {
+                    CallVirtual<void>(next, next->vtable, DrawSlot, renderer);
+                }
+                return;
+            }
+        }
+
         QueueText(renderer, string, at.x, at.y);
     }
 

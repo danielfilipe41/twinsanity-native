@@ -660,7 +660,7 @@ extern "C"
         }
     }
 
-    void DrawMenuPage(MenuDrawer* drawer, MenuPage* page, u32 player, u32 colour, const Vector2* at, const Vector2* size,
+        void DrawMenuPage(MenuDrawer* drawer, MenuPage* page, u32 player, u32 colour, const Vector2* at, const Vector2* size,
                       Renderer* renderer)
     {
         Vector2 titleScale;
@@ -696,8 +696,6 @@ extern "C"
             {
                 name = GameText(page->flags.title);
             }
-
-            StringAssign(&title, name);
             MenuDrawerStyle(drawer, MenuDrawer::StyleTitle, &titleScale, colours, renderer);
             QueueText(renderer, title.string, place.x, place.y);
         }

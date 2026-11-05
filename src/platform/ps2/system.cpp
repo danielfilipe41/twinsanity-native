@@ -247,6 +247,36 @@ Platform::System::ConsoleLanguage Platform::System::TextLanguage()
 }
 
 
+// No choice of its own: the console's own language is the one the OSD was set to (Language), and the options screen shows no row for it
+
+u32 Platform::System::LanguageChoices()
+{
+    return 0;
+}
+
+const char* const* Platform::System::LanguageChoiceNames()
+{
+    return nullptr;
+}
+
+u32 Platform::System::LanguageChoice()
+{
+    return 0;
+}
+
+u32 Platform::System::TextLanguageChoice()
+{
+    return 0;
+}
+
+void Platform::System::SetLanguageChoice(u32)
+{
+}
+
+void Platform::System::SetTextLanguageChoice(u32)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     sceCdCLOCK clock;

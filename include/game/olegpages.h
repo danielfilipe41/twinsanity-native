@@ -63,6 +63,11 @@ struct ActionItem : LinkItem
         ActionStopSaving = 6,
         ActionLoad = 7,
         ActionSave = 8,
+        // The process ends: the port's own action, for the main menu's exit row (retail has no way out of the game but the
+        // console) and for the yes of the pause menu's exit question
+        ActionExit = 9,
+        // The pause menu's exit row asks first, through the pause menu's quit question
+        ActionAskExit = 10,
     };
 
     u32 action;

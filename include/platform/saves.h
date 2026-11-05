@@ -8,6 +8,10 @@
 // retail numbers, which the game's save code goes by
 namespace Platform::Saves
 {
+// How much of the console's memory card latency the save screens wait out: the card's operations took a second or two on the PS2
+// and the game's screens hold their messages that long, which a computer's saved folder has no reason to. 1 on the console, a
+// small fraction on a computer (savecode.cpp's SaveManagerRequest scales each operation's wait by it)
+f32 DeviceLatencyScale();
 enum class Operation : s32
 {
     // What Update returns when the check found no memory card

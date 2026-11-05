@@ -557,6 +557,11 @@ bool Platform::Files::DiscIsPal()
     return g_Serial[0] == '\0' || build == DiscBuild::European;
 }
 
+bool Platform::Files::DiscIsJapanese()
+{
+    return BuildOfDisc() == DiscBuild::Japanese;
+}
+
 void Platform::Files::Reset()
 {
     // The handles stay open: the game keeps reading from them once the I/O processor is back

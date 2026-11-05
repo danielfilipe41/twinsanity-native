@@ -22,6 +22,9 @@ void Platform::System::StartServices()
 
 [[noreturn]] void Platform::System::Exit(s32 status)
 {
+    // The options menu's exit row ends the process from inside the game: the change the player made a moment ago may still be
+    // waiting for the settings tick, so the file is kept before the process ends (the same write the tick would have done)
+    HostSettingsKeep();
     std::exit(status);
 }
 
@@ -37,6 +40,39 @@ Platform::System::ConsoleLanguage Platform::System::TextLanguage()
     // The settings file's `text_language` line, when it names one the speech isn't: a disc whose texts were patched into
     // another slot keeps its voices where they were
     return HostSettingsTextLanguage();
+}
+
+// The five the disc carries, in the order the settings file's words and the options screen's row take them
+u32 Platform::System::LanguageChoices()
+{
+    return HostSettingsLanguageChoices();
+}
+
+const char* const* Platform::System::LanguageChoiceNames()
+{
+    return HostSettingsLanguageChoiceNames();
+}
+
+u32 Platform::System::LanguageChoice()
+{
+    return HostSettingsLanguageChoice();
+}
+
+u32 Platform::System::TextLanguageChoice()
+{
+    return HostSettingsTextLanguageChoice();
+}
+
+// Kept in the settings file, for the next start: the voices are streamed banks the game opened at boot and its texts were read
+// into memory then
+void Platform::System::SetLanguageChoice(u32 index)
+{
+    HostSettingsSetLanguageChoice(index);
+}
+
+void Platform::System::SetTextLanguageChoice(u32 index)
+{
+    HostSettingsSetTextLanguageChoice(index);
 }
 
 Platform::System::DateTime Platform::System::LocalTime()

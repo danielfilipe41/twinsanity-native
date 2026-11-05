@@ -1252,11 +1252,14 @@ void PortalPlanes(const LoadWall* wall, Vector4* planes, const Vector4* eye)
     PlaneOfCorners(planes, ViewPlaneCount - 1, triangle);
 }
 
-// A point in front of the wall's plane by less than its reach and inside its four edges
+// A point in front of the wall's plane by less than its reach and inside its four edges. The reach is retail's two units times
+// the host's pop-in distance (Platform::Graphics::ViewDistanceScale): a raised reach takes the linked chunk's instances from
+// further in front of the wall, so they are there before the player arrives instead of appearing at it
 u32 LoadWallHolds(const LoadWall* wall, const Vector4* point)
 {
+    const f32 reach = WallReach * Platform::Graphics::ViewDistanceScale();
     f32 distance = ((wall->plane.x * point->x + wall->plane.y * point->y) + wall->plane.z * point->z) + wall->plane.w;
-    if (!(distance < WallReach) || !(0.0f < distance))
+    if (!(distance < reach) || !(0.0f < distance))
     {
         return 0;
     }

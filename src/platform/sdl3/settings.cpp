@@ -64,7 +64,8 @@ void LoadRenderRate()
     while (std::fgets(line, sizeof(line), file) != nullptr)
     {
         int rate = 0;
-        if (std::sscanf(line, "render %d", &rate) == 1 && rate > 0)
+        // 0 is unlimited (the picture presents as fast as the frame is drawn)
+        if (std::sscanf(line, "render %d", &rate) == 1 && rate >= 0)
         {
             g_RenderRate = rate;
         }
@@ -115,6 +116,74 @@ void LoadAntiAlias()
         {
             // "off", or a word this build has no mode for: the picture is drawn as it comes, which is never wrong
             g_AntiAlias = AntiAlias::Off;
+        }
+    }
+
+    std::fclose(file);
+}
+
+// The display's own lines (`window`, `resolution`, `vsync`, `aspect`, `scale`): the host's picture rather than the game's
+// options. Read once, before the window exists, and kept as the words the file has, so what the display wrote is what it reads
+// back. Anything the options menu changes marks the file dirty, and the next tick writes it whether or not the game's own
+// options moved with them
+bool g_DisplayLoaded = false;
+u32 g_PictureWidth = 0;
+u32 g_PictureHeight = 0;
+char g_DisplayWindow[16] = "windowed";
+bool g_DisplayVsync = false;
+char g_DisplayAspect[16] = "stretch";
+float g_DisplayScale = 1.0f;
+float g_DrawDistance = 1.0f;
+bool g_SettingsDirty = false;
+
+void LoadDisplay()
+{
+    if (g_DisplayLoaded)
+    {
+        return;
+    }
+
+    g_DisplayLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        unsigned width = 0;
+        unsigned height = 0;
+        char word[16] = {};
+        unsigned number = 0;
+        float scale = 0.0f;
+        if (std::sscanf(line, "resolution %ux%u", &width, &height) == 2)
+        {
+            g_PictureWidth = width;
+            g_PictureHeight = height;
+        }
+        else if (std::sscanf(line, "window %15s", word) == 1)
+        {
+            std::snprintf(g_DisplayWindow, sizeof(g_DisplayWindow), "%s", word);
+        }
+        else if (std::sscanf(line, "vsync %15s", word) == 1)
+        {
+            g_DisplayVsync = std::strcmp(word, "off") != 0;
+        }
+        else if (std::sscanf(line, "aspect %15s", word) == 1)
+        {
+            std::snprintf(g_DisplayAspect, sizeof(g_DisplayAspect), "%s", word);
+        }
+        else if (std::sscanf(line, "scale %f", &scale) == 1 && scale > 0.0f)
+        {
+            g_DisplayScale = scale;
+        }
+        else if (std::sscanf(line, "draw_distance %f", &scale) == 1 && scale > 0.0f)
+        {
+            g_DrawDistance = scale;
         }
     }
 
@@ -295,6 +364,74 @@ s32 HostSettingsRenderRate()
     return g_RenderRate;
 }
 
+f32 HostSettingsDrawDistance()
+{
+    LoadDisplay();
+    return g_DrawDistance;
+}
+
+void HostSettingsSetAntiAlias(AntiAlias mode)
+{
+    LoadAntiAlias();
+    if (mode == g_AntiAlias)
+    {
+        return;
+    }
+
+    g_AntiAlias = mode;
+    g_SettingsDirty = true;
+}
+
+HostDisplaySettings HostSettingsDisplay()
+{
+    LoadDisplay();
+    HostDisplaySettings settings;
+    settings.width = g_PictureWidth;
+    settings.height = g_PictureHeight;
+    settings.window = g_DisplayWindow;
+    settings.vsync = g_DisplayVsync;
+    settings.aspect = g_DisplayAspect;
+    settings.scale = g_DisplayScale;
+    settings.drawDistance = g_DrawDistance;
+    return settings;
+}
+
+void HostSettingsSetDisplay(const HostDisplaySettings& settings)
+{
+    LoadDisplay();
+    const char* window = settings.window != nullptr ? settings.window : g_DisplayWindow;
+    const char* aspect = settings.aspect != nullptr ? settings.aspect : g_DisplayAspect;
+    if (settings.width == g_PictureWidth && settings.height == g_PictureHeight && settings.vsync == g_DisplayVsync &&
+        settings.scale == g_DisplayScale && settings.drawDistance == g_DrawDistance &&
+        std::strcmp(window, g_DisplayWindow) == 0 &&
+        std::strcmp(aspect, g_DisplayAspect) == 0)
+    {
+        return;
+    }
+
+    g_PictureWidth = settings.width;
+    g_PictureHeight = settings.height;
+    g_DisplayVsync = settings.vsync;
+    g_DisplayScale = settings.scale;
+    g_DrawDistance = settings.drawDistance > 0.0f ? settings.drawDistance : 1.0f;
+    std::snprintf(g_DisplayWindow, sizeof(g_DisplayWindow), "%s", window);
+    std::snprintf(g_DisplayAspect, sizeof(g_DisplayAspect), "%s", aspect);
+    g_SettingsDirty = true;
+}
+
+void HostSettingsSetRenderRate(s32 rate)
+{
+    LoadRenderRate();
+    const s32 kept = rate < 0 ? 0 : rate;
+    if (kept == g_RenderRate)
+    {
+        return;
+    }
+
+    g_RenderRate = kept;
+    g_SettingsDirty = true;
+}
+
 AntiAlias HostSettingsAntiAlias()
 {
     LoadAntiAlias();
@@ -323,6 +460,68 @@ Platform::System::ConsoleLanguage HostSettingsTextLanguage()
 {
     LoadLanguage();
     return g_TextLanguage;
+}
+
+u32 HostSettingsLanguageChoices()
+{
+    return sizeof(LanguageWords) / sizeof(LanguageWords[0]);
+}
+
+const char* const* HostSettingsLanguageChoiceNames()
+{
+    return LanguageWords;
+}
+
+u32 HostSettingsLanguageChoice()
+{
+    LoadLanguage();
+    for (u32 index = 0; index < HostSettingsLanguageChoices(); index++)
+    {
+        if (LanguageValues[index] == g_Language)
+        {
+            return index;
+        }
+    }
+
+    return 0;
+}
+
+u32 HostSettingsTextLanguageChoice()
+{
+    LoadLanguage();
+    for (u32 index = 0; index < HostSettingsLanguageChoices(); index++)
+    {
+        if (LanguageValues[index] == g_TextLanguage)
+        {
+            return index;
+        }
+    }
+
+    return 0;
+}
+
+void HostSettingsSetLanguageChoice(u32 index)
+{
+    LoadLanguage();
+    if (index >= HostSettingsLanguageChoices() || LanguageValues[index] == g_Language)
+    {
+        return;
+    }
+
+    g_Language = LanguageValues[index];
+    g_SettingsDirty = true;
+}
+
+void HostSettingsSetTextLanguageChoice(u32 index)
+{
+    LoadLanguage();
+    if (index >= HostSettingsLanguageChoices() || LanguageValues[index] == g_TextLanguage)
+    {
+        return;
+    }
+
+    g_TextLanguage = LanguageValues[index];
+    g_SettingsDirty = true;
 }
 
 void HostSettingsApplyOnce()
@@ -413,6 +612,199 @@ void HostSettingsTick()
     HostSettingsKeep();
 }
 
+// The file's lines, as written: a player's own comment, or an option a later build knows, is not the port's to drop, so the
+// file is merged rather than replaced -- the lines this port owns are replaced where they are (or appended when missing) and
+// everything else is written back as it came
+constexpr u32 MaxFileLines = 64;
+using FileLines = char[MaxFileLines][LineLength];
+
+// The settings the file's lines hold
+enum class Setting
+{
+    Group,
+    Stereo,
+    Widescreen,
+    Render,
+    AntiAlias,
+    Language,
+    TextLanguage,
+    Window,
+    Resolution,
+    Vsync,
+    Aspect,
+    Scale,
+    DrawDistance,
+};
+
+// Whether the line begins with the word (the leading whitespace aside, and the word complete)
+bool LineStarts(const char* line, const char* word)
+{
+    while (*line == ' ' || *line == '\t')
+    {
+        line++;
+    }
+
+    const size_t length = std::strlen(word);
+    return std::strncmp(line, word, length) == 0 &&
+           (line[length] == ' ' || line[length] == '\t' || line[length] == '\0');
+}
+
+// Whether the line is one a setting is written as: `group <number> ...` for a group's (its own number), the word alone for
+// the others
+bool LineIsSetting(Setting setting, const char* line, u32 group)
+{
+    switch (setting)
+    {
+    case Setting::Group:
+    {
+        unsigned number = 0;
+        return LineStarts(line, "group") && std::sscanf(line, "group %u", &number) == 1 && number == group;
+    }
+    case Setting::Stereo:
+        return LineStarts(line, "stereo");
+    case Setting::Widescreen:
+        return LineStarts(line, "widescreen");
+    case Setting::Render:
+        return LineStarts(line, "render");
+    case Setting::AntiAlias:
+        return LineStarts(line, "antialias");
+    case Setting::Language:
+        return LineStarts(line, "language");
+    case Setting::TextLanguage:
+        return LineStarts(line, "text_language");
+    case Setting::Window:
+        return LineStarts(line, "window");
+    case Setting::Resolution:
+        return LineStarts(line, "resolution");
+    case Setting::Vsync:
+        return LineStarts(line, "vsync");
+    case Setting::Aspect:
+        return LineStarts(line, "aspect");
+    case Setting::Scale:
+        return LineStarts(line, "scale");
+    case Setting::DrawDistance:
+        return LineStarts(line, "draw_distance");
+    }
+
+    return false;
+}
+
+// The setting's line put in the file's: the first line of its kind replaced in place, any later one dropped (the port wrote
+// duplicates once), and a setting the file doesn't have appended. An empty text removes the line
+void PlaceSetting(FileLines& lines, u32* count, Setting setting, u32 group, const char* text)
+{
+    bool placed = false;
+    for (u32 index = 0; index < *count;)
+    {
+        if (!LineIsSetting(setting, lines[index], group))
+        {
+            index++;
+            continue;
+        }
+
+        if (!placed && text != nullptr)
+        {
+            std::snprintf(lines[index], LineLength, "%s", text);
+            placed = true;
+            index++;
+            continue;
+        }
+
+        // A duplicate of the line just placed, or a line being removed
+        for (u32 other = index; other + 1 < *count; other++)
+        {
+            std::memcpy(lines[other], lines[other + 1], LineLength);
+        }
+        (*count)--;
+    }
+
+    if (!placed && text != nullptr && *count < MaxFileLines)
+    {
+        std::snprintf(lines[(*count)++], LineLength, "%s", text);
+    }
+}
+
+// The file written: its own lines merged with this port's
+void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
+{
+    static FileLines lines;
+    u32 count = 0;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file != nullptr)
+    {
+        while (count < MaxFileLines && std::fgets(lines[count], LineLength, file) != nullptr)
+        {
+            size_t length = std::strlen(lines[count]);
+            while (length != 0 && (lines[count][length - 1] == '\n' || lines[count][length - 1] == '\r'))
+            {
+                lines[count][--length] = '\0';
+            }
+            count++;
+        }
+        std::fclose(file);
+    }
+
+    char text[LineLength];
+    for (u32 group = 0; group < Groups; group++)
+    {
+        std::snprintf(text, sizeof(text), "group %u %d %d", group, static_cast<int>(left[group]),
+                      static_cast<int>(right[group]));
+        PlaceSetting(lines, &count, Setting::Group, group, text);
+    }
+
+    std::snprintf(text, sizeof(text), "stereo %d", static_cast<int>(stereo));
+    PlaceSetting(lines, &count, Setting::Stereo, 0, text);
+    std::snprintf(text, sizeof(text), "widescreen %d", static_cast<int>(widescreen));
+    PlaceSetting(lines, &count, Setting::Widescreen, 0, text);
+    std::snprintf(text, sizeof(text), "render %d", static_cast<int>(g_RenderRate));
+    PlaceSetting(lines, &count, Setting::Render, 0, text);
+    std::snprintf(text, sizeof(text), "antialias %s", AntiAliasWord(g_AntiAlias));
+    PlaceSetting(lines, &count, Setting::AntiAlias, 0, text);
+    std::snprintf(text, sizeof(text), "language %s", LanguageWord(g_Language));
+    PlaceSetting(lines, &count, Setting::Language, 0, text);
+    // Only when the texts aren't in the speech's language: a line that says what the file already said is noise
+    if (g_TextLanguage != g_Language)
+    {
+        std::snprintf(text, sizeof(text), "text_language %s", LanguageWord(g_TextLanguage));
+        PlaceSetting(lines, &count, Setting::TextLanguage, 0, text);
+    }
+    else
+    {
+        PlaceSetting(lines, &count, Setting::TextLanguage, 0, nullptr);
+    }
+
+    std::snprintf(text, sizeof(text), "draw_distance %g", static_cast<double>(g_DrawDistance));
+    PlaceSetting(lines, &count, Setting::DrawDistance, 0, text);
+
+    std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
+    PlaceSetting(lines, &count, Setting::Window, 0, text);
+    if (g_PictureWidth != 0 && g_PictureHeight != 0)
+    {
+        std::snprintf(text, sizeof(text), "resolution %ux%u", g_PictureWidth, g_PictureHeight);
+        PlaceSetting(lines, &count, Setting::Resolution, 0, text);
+    }
+    std::snprintf(text, sizeof(text), "vsync %s", g_DisplayVsync ? "on" : "off");
+    PlaceSetting(lines, &count, Setting::Vsync, 0, text);
+    std::snprintf(text, sizeof(text), "aspect %s", g_DisplayAspect);
+    PlaceSetting(lines, &count, Setting::Aspect, 0, text);
+    std::snprintf(text, sizeof(text), "scale %g", static_cast<double>(g_DisplayScale));
+    PlaceSetting(lines, &count, Setting::Scale, 0, text);
+
+    file = std::fopen(path, "wb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    for (u32 index = 0; index < count; index++)
+    {
+        std::fprintf(file, "%s\n", lines[index]);
+    }
+    std::fclose(file);
+}
+
 void HostSettingsKeep()
 {
     // Only once the game has started its audio (its first reset): before that its option values are still the data's initial
@@ -440,8 +832,10 @@ void HostSettingsKeep()
         return;
     }
 
-    if (g_Kept && std::memcmp(left, g_KeptLeft, sizeof(left)) == 0 && std::memcmp(right, g_KeptRight, sizeof(right)) == 0 &&
-        stereo == g_KeptStereo && widescreen == g_KeptWidescreen)
+    const bool unchanged = g_Kept && std::memcmp(left, g_KeptLeft, sizeof(left)) == 0 &&
+                           std::memcmp(right, g_KeptRight, sizeof(right)) == 0 && stereo == g_KeptStereo &&
+                           widescreen == g_KeptWidescreen;
+    if (unchanged && !g_SettingsDirty)
     {
         return;
     }
@@ -451,29 +845,12 @@ void HostSettingsKeep()
     g_KeptStereo = stereo;
     g_KeptWidescreen = widescreen;
     g_Kept = true;
+    g_SettingsDirty = false;
+    // The lines the write re-emits as they were read: the picture's rate, its antialiasing, the languages and the display's own
+    // settings. They are cached from the same file, so a value this run never loaded would be written back as its default
     LoadRenderRate();
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "wb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    for (u32 group = 0; group < Groups; group++)
-    {
-        std::fprintf(file, "group %u %d %d\n", group, static_cast<int>(left[group]), static_cast<int>(right[group]));
-    }
-
-    // The antialiasing is the file's own line, written back as it was read: the port has no screen to set it on, so editing
-    // the file is the way, and a run that rewrote the file must not lose the choice
-    std::fprintf(file, "stereo %d\nwidescreen %d\nrender %d\nantialias %s\nlanguage %s\n", static_cast<int>(stereo),
-                 static_cast<int>(widescreen), static_cast<int>(g_RenderRate), AntiAliasWord(g_AntiAlias),
-                 LanguageWord(g_Language));
-    if (g_TextLanguage != g_Language)
-    {
-        // Only when the texts aren't in the speech's language: a line that says what the file already said is noise
-        std::fprintf(file, "text_language %s\n", LanguageWord(g_TextLanguage));
-    }
-    std::fclose(file);
+    LoadAntiAlias();
+    LoadLanguage();
+    LoadDisplay();
+    WriteSettings(left, right, stereo, widescreen);
 }

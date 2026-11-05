@@ -3,6 +3,8 @@
 #include "common.h"
 #include "graphics/bgfx_context.h"
 
+#include "display_sdl.h"
+
 #include "platform/discverify.h"
 #include "platform/gamedata.h"
 #include "settings.h"
@@ -16,13 +18,6 @@ extern "C" int Main(u32 argc, char** argv);
 
 // The host's crash log (crashlog.cpp): a crash outside gdb still leaves where it happened beside the run
 void InstallCrashLog();
-
-namespace
-{
-// The game's window: 960x540, the 16:9 window the menus' fractions-of-the-screen drawing maps onto
-constexpr int WindowWidth = 960;
-constexpr int WindowHeight = 540;
-}
 
 int main(int argc, char** argv)
 {
@@ -61,8 +56,11 @@ int main(int argc, char** argv)
     argc = count;
 
     // The window comes first: the picker that finds the disc's files is a dialog a window belongs to, and until the files are
-    // found there is nothing to draw in it
-    SDL_Window* window = SDL_CreateWindow("Crash Twinsanity", WindowWidth, WindowHeight, SDL_WINDOW_RESIZABLE);
+    // found there is nothing to draw in it. Its size and mode are the settings file's (the options menu's display rows write
+    // them), 960x540 windowed when it has none
+    SDL_Window* window = SDL_CreateWindow("Crash Twinsanity", static_cast<int>(DisplayWindowWidth()),
+                                          static_cast<int>(DisplayWindowHeight()),
+                                          DisplayWindowFlags() | SDL_WINDOW_RESIZABLE);
     if (window == nullptr)
     {
         std::fprintf(stderr, "sdl3: SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -78,9 +76,11 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // The picture's antialiasing: the settings file's `antialias` line, read before the renderer's first frame makes the
-    // post passes' targets
-    BgfxSetAntiAliasing(HostSettingsAntiAlias());
+    // The display's window is the host's from here: the mode the settings asked for is applied to it, and the picture's
+    // antialiasing (the file's `antialias` line, which the display keeps too) is in place before the renderer's first frame
+    // makes the post passes' targets
+    DisplayAttach(window);
+    BgfxSetAntiAliasing(Platform::Display::AntiAliasing());
 
     if (verifyDisc)
     {
@@ -95,7 +95,11 @@ int main(int argc, char** argv)
         }
     }
 
-    if (!BgfxInit(window))
+    // The swap chain is the window's drawable, which is the resolution the file asked for (or what the display gave for it)
+    int backbufferWidth = 0;
+    int backbufferHeight = 0;
+    SDL_GetWindowSizeInPixels(window, &backbufferWidth, &backbufferHeight);
+    if (!BgfxInit(window, backbufferWidth, backbufferHeight, Platform::Display::Vsync()))
     {
         SDL_DestroyWindow(window);
         SDL_Quit();

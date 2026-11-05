@@ -1,4 +1,5 @@
 #include "game/context.h"
+#include "platform/stream.h"
 #include "game/copyprotection.h"
 
 #include "debug.h"
@@ -27,6 +28,12 @@ namespace
 constexpr f32 ChunkLoadingTime = Rounded(0.0016954);
 constexpr f32 DestroyingTime = Rounded(0.0013563);
 constexpr f32 ResourcesTime = Rounded(0.0010173);
+// The console's four budgets are slivers of a 16 ms frame; the host's frame has more room, and its disk takes no waiting between
+// them (Platform::Stream::FrameBudgetScale: 1 on the console, higher where frames are cheap)
+f32 StreamingBudget(f32 seconds)
+{
+    return seconds * Platform::Stream::FrameBudgetScale();
+}
 constexpr f32 CompactionTime = Rounded(0.0006782);
 constexpr f32 StepTime = Rounded(0.001);
 }
@@ -285,7 +292,7 @@ extern "C"
                     u8 done = 0;
                     if (round == 0)
                     {
-                        while (GameTimeHasTimeLeft(ChunkLoadingTime, G_GameClockController) &&
+                        while (GameTimeHasTimeLeft(StreamingBudget(ChunkLoadingTime), G_GameClockController) &&
                                UpdateChunkLoading(G_ChunkLoadingManager_, false, &done))
                         {
                             worked = true;
@@ -301,7 +308,7 @@ extern "C"
 
                 if (round == 0)
                 {
-                    while (GameTimeHasTimeLeft(DestroyingTime, G_GameClockController) && DestroyPendingStep() != 0)
+                    while (GameTimeHasTimeLeft(StreamingBudget(DestroyingTime), G_GameClockController) && DestroyPendingStep() != 0)
                     {
                         worked = true;
                     }
@@ -315,7 +322,7 @@ extern "C"
                 {
                     if (round == 0)
                     {
-                        while (GameTimeHasTimeLeft(ResourcesTime, G_GameClockController) &&
+                        while (GameTimeHasTimeLeft(StreamingBudget(ResourcesTime), G_GameClockController) &&
                                ResourcesStep(G_GameResourcesObjectPointer) != 0)
                         {
                             worked = true;
@@ -333,7 +340,7 @@ extern "C"
 
             GetDiskManager();
             DiskNothing();
-            while (GameTimeHasTimeLeft(CompactionTime, G_GameClockController) && DiskCompactStep(GetDiskManager(), false))
+            while (GameTimeHasTimeLeft(StreamingBudget(CompactionTime), G_GameClockController) && DiskCompactStep(GetDiskManager(), false))
             {
                 worked = true;
             }
