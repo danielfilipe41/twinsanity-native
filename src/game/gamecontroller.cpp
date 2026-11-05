@@ -124,6 +124,8 @@ constexpr f32 WumpaAddSeconds = Rounded(0.15);
 constexpr u32 TiedMessage = 0x39;
 // The instances the game's reset resets: every one with a node of a kind but the cameras' lens
 constexpr u32 ResetKinds = ~(1u << NodeCameraLens);
+// A new run asked for from the pause menu: started the moment the title it went through is up, with no menu or save screen in between
+bool g_NewGameFromPause = false;
 
 // One of the loading screens, at random
 u32 RandomLoadingScreen()
@@ -959,6 +961,20 @@ u32 GameController::QuitToTitle()
     return 1;
 }
 
+u32 GameController::NewGameFromPause()
+{
+    // A new run straight from the pause menu, with nothing to navigate: the game passes through the title, which is what lets the
+    // level and its agents go (starting a new game over a live level reset the progress under the world and crashed the update), and
+    // the new game is asked for the moment the title is up: no menu to press start on, no save screens, no save written
+    if (State() == StateNewGame)
+    {
+        return 0;
+    }
+
+    g_NewGameFromPause = true;
+    return QuitToTitle();
+}
+
 u32 GameController::ShowBottomText(s32 duration)
 {
     if (State() != StatePlaying)
@@ -1600,6 +1616,15 @@ u32 GameController::Title(TimeClock* clock)
         }
 
         StartChunks();
+
+        // A new run asked for from the pause menu: the title is up and the world it left is gone, so the new game is asked for at once
+        // (no menu to press start on, no save screens: the run starts as it would from the menu's new game, minus the waiting)
+        if (g_NewGameFromPause)
+        {
+            g_NewGameFromPause = false;
+            RequestNewGame(0);
+        }
+
         return NoState;
     }
 

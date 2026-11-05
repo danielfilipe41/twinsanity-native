@@ -15,6 +15,8 @@
 #include "game/widgets.h"
 #include "retail/libc.h"
 
+#include <cstdio>
+
 // The save manager, the save code on OLEG's screens it derives from and its bank files
 extern "C"
 {
@@ -240,6 +242,16 @@ u32 SaveManager::ShowSlots(u32 screen)
 
         MessageText(g_ScreenMessages[screen], &strings[SlotsLabel]);
         PortScreenMessage(bits.operation, screen, &strings[SlotsLabel]);
+
+        // Which card the slots are on, when there's more than one: the screens' pages are the cards
+        if (Platform::Saves::CardCount() > 1)
+        {
+            char card[32];
+            std::snprintf(card, sizeof(card), "  (%s %u/%u)", GameText(PortTextCard), Platform::Saves::Card() + 1,
+                          Platform::Saves::CardCount());
+            StringAppend(&strings[SlotsLabel], card);
+        }
+
         StringAssign(&messages[SlotsLabel]->text, strings[SlotsLabel].string);
         static_cast<SaveCodePage*>(slotsPage)->ShowSlotItems(mode, OffersToSkipSaving());
     }
@@ -263,6 +275,81 @@ void SaveManager::DestroyScreens(u32 destroyFlags)
 
 void SaveManager::Draw(Renderer*)
 {
+    // The save screens' pages are the cards: L1 and L2 the card before, R1 and R2 the one after, while a card's screens are up and
+    // the card is idle (the "no save on this card" question and the "insert a save" one too, so a player is never kept from another
+    // card's saves). The menus' own input is the pads', and a press is the frame a button goes down (the same edge their pages step on)
+    if (!ShowsCards())
+    {
+        return;
+    }
+
+    if (device->flags.running != SaveDevice::OperationNone || Platform::Saves::CardCount() < 2)
+    {
+        return;
+    }
+
+    GamePad* pad = g_MainGamePad;
+    if (pad == nullptr)
+    {
+        return;
+    }
+
+    const u32 pressed = pad->now & ~pad->previous;
+    if ((pressed & ((1u << PadL1) | (1u << PadL2))) != 0)
+    {
+        StepCard(-1);
+    }
+    else if ((pressed & ((1u << PadR1) | (1u << PadR2))) != 0)
+    {
+        StepCard(1);
+    }
+}
+
+bool SaveManager::ShowsCards() const
+{
+    switch (bits.screen)
+    {
+    case SaveScreenSaveSlots:
+    case SaveScreenLoadSlots:
+    case SaveScreenCreate:
+    case SaveScreenInsertSave:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool SaveManager::StepCard(s32 pages)
+{
+    const s32 count = static_cast<s32>(Platform::Saves::CardCount());
+    if (count < 2 || !ShowsCards())
+    {
+        return false;
+    }
+
+    if (device->flags.running != SaveDevice::OperationNone)
+    {
+        return false;
+    }
+
+    // The card the pages land on, round the ring of them, kept for the next run
+    s32 card = static_cast<s32>(Platform::Saves::Card()) + pages;
+    card = (card % count + count) % count;
+    Platform::Saves::SetCard(static_cast<u32>(card));
+
+    // The slots the screens showed were the last card's, so they are cleared before the new card's are read: a card that can't be
+    // read shows empty slots rather than another card's saves (and a save is never written over a slot that looked like another
+    // card's)
+    folder.ClearSummaries();
+
+    // The device's next operations go to it, and the card is checked again: a card with a save is read and its slots shown, one
+    // without gets its save's folder made (saving) or is refused (loading), as retail's own flow does with a card
+    s32 port = 0;
+    s32 slot = 0;
+    Platform::Saves::CardPortSlot(static_cast<u32>(card), &port, &slot);
+    device->SetCard(port, slot);
+    Ask(SaveDevice::OperationMeasure, 0);
+    return true;
 }
 
 SaveManager* SaveManager::Construct(SaveManager* manager, GameController* controller)

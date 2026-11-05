@@ -231,6 +231,9 @@ struct GameController
     // operation, a load or a save from the pause menu (two seconds' wait each). Each returns whether it was asked for
     u32 ReturnToPauseMenu() RETAIL(FUN_0017b860);
     u32 QuitToTitle() RETAIL(FUN_0017b990);
+    // The pause menu's new game: the game goes back to the title, and the new game's own operation is asked for once the title is
+    // up (the world is unloaded there, which starting one over a running level is not)
+    u32 NewGameFromPause();
     u32 StopSaving() RETAIL(FUN_0017be18);
     u32 LoadForNewGame() RETAIL(FUN_0017c018);
     u32 LoadSavedGame() RETAIL(FUN_0017bf38);

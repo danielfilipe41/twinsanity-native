@@ -131,6 +131,24 @@ struct SaveManager : SaveCode
         return bits.operation;
     }
 
+    // The card the save screens are on, and how many there are: a page each (the console's cards, the host's card directories)
+    u32 Card() const
+    {
+        return Platform::Saves::Card();
+    }
+
+    u32 CardCount() const
+    {
+        return Platform::Saves::CardCount();
+    }
+
+    // The card a page or more before (negative) or after this one, wrapping, with its slots read and shown again. False when there
+    // is one card, no card's screen is up, or an operation is running (the device reads and writes one card at a time)
+    bool StepCard(s32 pages);
+    // Whether the screen shown is one of a card's own (the slots, the question that creates a save on a card without one, and the
+    // one that asks for a card with a save): the screens the pages step on
+    bool ShowsCards() const;
+
     OLEG* oleg;
     // OLEG's screens it switches between (OLEG::StartUp's): every widget hidden (before another is shown), its message, its
     // choices and its save slots

@@ -644,3 +644,32 @@ u32 Platform::Saves::SaveBytes(u32 kilobytes, u32 files)
 {
     return (kilobytes + (files + 1) / 2 + DirectoryClusters) << ClusterShift;
 }
+
+u32 Platform::Saves::CardCount()
+{
+    // The console's two card slots, as retail has them: the save screens' pages are its screens' own
+    return 2;
+}
+
+u32 Platform::Saves::Card()
+{
+    return 0;
+}
+
+void Platform::Saves::SetCard(u32 card)
+{
+    (void)card;
+}
+
+void Platform::Saves::CardPortSlot(u32 card, s32* port, s32* slot)
+{
+    // The console's cards are its two slots of port 0
+    if (port != nullptr)
+    {
+        *port = 0;
+    }
+    if (slot != nullptr)
+    {
+        *slot = static_cast<s32>(card);
+    }
+}

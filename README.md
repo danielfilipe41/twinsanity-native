@@ -21,10 +21,9 @@ Known issues:
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
 - Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
-- Sometimes in game audio takes a bit to start
+- Sometimes in game audio takes a bit to start (and cuts dialogue because of it)
 
 Future features:
-- Multiple save pages
 - Cutscene skip
 - Mod support
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
@@ -35,8 +34,10 @@ QOL Changes:
 - Pc port settings
 - Rebindable controls, on the keyboard and the pad, from `keybinds.txt` or the options' remap controls page
 - A stick dead zone, in the game options (off to 20%)
+- Multiple save pages: the save screens' pages are memory cards, stepped with L1/L2/R1/R2 (four cards, retail saves untouched)
 - Exit game option (also on pause screen the old quit game that sent u back to the title screen now closes the game and is called close game)
-- Added option to start a new game from inside the save game option on the pause menu
+- Added option to start a new game from inside the save game option on the pause menu (it returns to the title and starts the new
+  game there, so nothing of the level you were in is left loaded)
 - Removed the delay on the Save file check screens
 - Fast loading screens (on an nvme it only takes 62ms)
 
@@ -218,6 +219,14 @@ Memory cards are directories under the platform's per-user data directory: `%LOC
 There is one per port and slot: `card0_0`, `card0_1`, `card1_0`, `card1_1`. Each holds the game's saves as they would be on
 a card.
 
+The save screens' pages are those cards, a page each: **L1**/**L2** step to the card before, **R1**/**R2** to the one after
+(wrapping round), with the menus' page hints at the screen's edges, and the slots screen's title says which card it is
+(`(card 2/4)`). The choice is kept in `settings.txt` as `save_card`, so the next run opens on it. A card holds the same four
+save slots as it always did, in retail's own save directory, so nothing about a save changes: a card's folder can be copied to
+another machine, or to another card, as it is. A card with no save on it yet has the save's folder made as it's opened and
+shows its four empty slots — no "create a save?" question to answer before the slots can be seen, and the pages still step
+either way.
+
 The path the game's files were found at is kept in `gamedata.txt` next to the saves (asked for again when it stops having them);
 `settings.txt` beside it holds the game's options, one per line: `group <n> <left> <right>` for
 the four volume groups (0 effects, 1 second effects, 2 music, 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's
@@ -255,6 +264,7 @@ GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and wri
 | `scale` | `0.5`, `0.75`, `1`, `1.5`, `2`, `3`, `4`: the scene drawn at that multiple of 960x540 and then stretched to the window, so a sharper or cheaper picture whatever the window's size | `1` |
 | `draw_distance` | `1`, `1.5`, `2`, `3`, `4`: the pop-in distance. It multiplies the lens's 1500-unit reach (the projection and the cull), keeps a level of detail drawing its last mesh past the distance the level's data stopped it at, stretches a load wall's 2-unit reach, and makes the chunk loader keep more links of chunks loaded (retail's 2 links, up to 5). The cost is memory and what the extra geometry draws | `1` |
 | `deadzone` | `0`, `5`, `10`, `15`, `20`: the sticks' dead zone, a percentage of an axis' half range. Inside it a stick reads as the middle, and outside it is moved out to the zone's edge and scaled over the rest of the range, so the centre holds still without the outer travel shrinking. GAME OPTIONS has the row | `0` |
+| `save_card` | `0` to `3`: the card the save screens open on (their pages are the cards), written as the pages are stepped | `0` |
 
 The file is merged when it is written: your own comments and lines this build does not know are kept as they are.
 

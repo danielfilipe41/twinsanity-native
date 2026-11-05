@@ -32,6 +32,7 @@ enum PortText : u32
     PortTextRemapControls,
     PortTextPressInput,
     PortTextDeadZone,
+    PortTextCard,
     PortTextCount,
 };
 

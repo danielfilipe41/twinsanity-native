@@ -90,4 +90,14 @@ bool Read(s32 port, s32 slot, const char* save, const char* file, void* buffer, 
 // entries
 u32 FileKilobytes(u32 size);
 u32 SaveBytes(u32 kilobytes, u32 files);
+
+// How many cards a player's saves can be kept on, and which of them is in use: the save screens' pages are its cards, a page each,
+// so a player keeps more than one card's worth of saves without a save's own format changing (every card holds retail's saves as
+// they are). The console counts its two memory card slots; a host keeps a directory per card (card0_0, card0_1, card1_0, card1_1),
+// and the one in use is kept in its settings file. 0 is the first card
+u32 CardCount();
+u32 Card();
+void SetCard(u32 card);
+// The port and slot a card is, which the device's operations take (the console's card slots, a host's card directories)
+void CardPortSlot(u32 card, s32* port, s32* slot);
 }

@@ -54,6 +54,21 @@ Operation g_Operation = Operation::None;
 Result g_Results[ResultCount];
 StorageInfo g_Info = {Platform::Saves::StorageMemoryCard, 0, 1};
 
+// The cards a player's saves can be on, and the one in use: the ports and slots the console's cards had, the first four of them
+constexpr u32 Cards = 4;
+u32 g_Card = 0;
+
+// A card's port and slot: its index in the cards' own order
+s32 CardPort(u32 card)
+{
+    return static_cast<s32>(card / 2);
+}
+
+s32 CardSlot(u32 card)
+{
+    return static_cast<s32>(card % 2);
+}
+
 // What the queued operation was asked for (the write's data points at the game's buffer, which outlives the queueing)
 struct Context
 {
@@ -619,4 +634,53 @@ void Platform::Saves::DataDirectory(char* path, u32 size)
     }
 
     ::snprintf(path, size, "%s", BasePath().c_str());
+}
+
+u32 Platform::Saves::CardCount()
+{
+    return Cards;
+}
+
+u32 Platform::Saves::Card()
+{
+    // Read from the settings file when it's first asked for (the save screens open with it, before any other option is read), the
+    // file being the one beside the cards
+    static bool read = false;
+    if (!read)
+    {
+        read = true;
+        const std::string path = BasePath() + "/settings.txt";
+        if (std::FILE* file = std::fopen(path.c_str(), "rb"))
+        {
+            char line[256];
+            while (std::fgets(line, sizeof(line), file) != nullptr)
+            {
+                unsigned card = 0;
+                if (std::sscanf(line, "save_card %u", &card) == 1)
+                {
+                    g_Card = card < Cards ? card : 0;
+                }
+            }
+            std::fclose(file);
+        }
+    }
+
+    return g_Card;
+}
+
+void Platform::Saves::SetCard(u32 card)
+{
+    g_Card = card < Cards ? card : 0;
+}
+
+void Platform::Saves::CardPortSlot(u32 card, s32* port, s32* slot)
+{
+    if (port != nullptr)
+    {
+        *port = CardPort(card);
+    }
+    if (slot != nullptr)
+    {
+        *slot = CardSlot(card);
+    }
 }

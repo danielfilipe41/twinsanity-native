@@ -325,6 +325,14 @@ public:
     static SaveDevice* Construct(SaveDevice* device, u32 fileCount, SaveIconFiles* icons, SaveFile* folder, const char* name)
         RETAIL(FUN_002a2f78);
 
+    // The card the device reads and writes (the save screens' pages are the port's cards): the port's and slot's next operation
+    // goes there. The save code asks for a folder read after it, so the slots shown are the new card's
+    void SetCard(s32 newPort, s32 newSlot)
+    {
+        port = newPort;
+        slot = newSlot;
+    }
+
     // The base class's: an operation asked for (its file for writes and reads of one; 0 when it can't be), the operation stepped
     // (whether it's still running) and the steps of the operations, the state set (returns 1, the failed step) and the destructor
     u32 Ask(u32 asked, u32 file) RETAIL(FUN_002a08f8);

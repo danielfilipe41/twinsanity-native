@@ -50,6 +50,7 @@ const char* const Lines[PortTextCount - PortTextFirst][Slots] = {
      "pulsa una tecla o un botón", "premi un tasto o un pulsante", "キーかボタンを押してください"},
     {"stick dead zone", "zone morte des sticks", "totzone der sticks", "zona muerta del stick", "zona morta dello stick",
      "スティックの遊び"},
+    {"card", "carte", "karte", "tarjeta", "scheda", "カード"},
 };
 }
 

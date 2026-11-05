@@ -153,7 +153,11 @@ void SaveCode::OperationDone(u32 operation)
             }
             else
             {
-                ShowChoicesScreen(this, SaveScreenCreate);
+                // A card with no save on it yet makes the save's folder and shows its slots: the port's cards are its save screens'
+                // pages, and asking "make a save?" there left a player who paged to another card with nothing to do but answer that
+                // question (whether to save at all is the player's, made by picking a slot)
+                results.fresh = 1;
+                AskDevice(this, SaveDevice::OperationCreate, 0);
             }
 
             return;
@@ -427,10 +431,11 @@ void SaveCode::TakeAnswer()
         case SaveScreenCancelSave:
             if (operation == SaveOperationPauseSave)
             {
-                // The pause menu's "new game": the save is given up and a new game starts here, the port having no way back to the
-                // title from the pause menu (its quitting closes the game instead)
+                // The pause menu's new game: the save is given up and the game goes back to the title, where a new game starts with
+                // nothing of the old one loaded. Starting one from the pause menu itself reset the progress but kept the level and
+                // its agents, and the game crashed wherever the player happened to be standing
                 EndOperation(this, 0, 0);
-                g_OlegGameController->RequestNewGame(0);
+                g_OlegGameController->NewGameFromPause();
                 return;
             }
 
@@ -498,12 +503,15 @@ void SaveCode::TakeAnswer()
         case SaveScreenFormatFailed:
         case SaveScreenSaveFailed:
         case SaveScreenLoadFailed:
-            if (operation == SaveOperationNewGameSave || operation == SaveOperationPauseSave)
+            if (operation == SaveOperationNewGameSave)
             {
+                // The front end's new game asks whether to give the save up
                 ShowChoicesScreen(this, SaveScreenCancelSave);
             }
             else
             {
+                // The pause menu's save (and every other flow) cancels: the save is given up and the pause menu is back, which is
+                // what its Cancel says it does
                 EndOperation(this, 0, 0);
             }
 

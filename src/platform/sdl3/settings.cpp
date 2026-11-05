@@ -687,6 +687,7 @@ enum class Setting
     Scale,
     DrawDistance,
     DeadZone,
+    SaveCard,
 };
 
 // Whether the line begins with the word (the leading whitespace aside, and the word complete)
@@ -739,6 +740,8 @@ bool LineIsSetting(Setting setting, const char* line, u32 group)
         return LineStarts(line, "draw_distance");
     case Setting::DeadZone:
         return LineStarts(line, "deadzone");
+    case Setting::SaveCard:
+        return LineStarts(line, "save_card");
     }
 
     return false;
@@ -834,6 +837,8 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     PlaceSetting(lines, &count, Setting::DrawDistance, 0, text);
     std::snprintf(text, sizeof(text), "deadzone %u", HostSettingsDeadZone());
     PlaceSetting(lines, &count, Setting::DeadZone, 0, text);
+    std::snprintf(text, sizeof(text), "save_card %u", Platform::Saves::Card());
+    PlaceSetting(lines, &count, Setting::SaveCard, 0, text);
 
     std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
     PlaceSetting(lines, &count, Setting::Window, 0, text);
