@@ -23,7 +23,7 @@ Known issues:
 - Pop in still kinda noticeable idk how to fix
 - Sometimes in game audio takes a bit to start (and cuts dialogue because of it)
 - Sometimes audio plays for a bit then stops then goes again
-- Cutscene skip only works in some cutscenes
+- Rarely cutscene skip's are so fast that the game doesnt have time to load the terrain (if you can reproduce it please open up an issue about it)
 
 Future features:
 - Mod support
@@ -39,7 +39,7 @@ QOL Changes:
 - Added option to start a new game from inside the save game option on the pause menu
 - Removed the delay on the Save file check screens
 - Fast loading screens (on an nvme it only takes 62ms)
-- Cutscene skip, in the game options and on by default, The scenes' own hint is on screen while they play. Off is retail's behaviour
+- Cutscene skip, in the game options and on by default. The scenes' own hint is on screen while they play. Off is retail's behaviour. Every watched scene can be skipped: a cutscene file skips outright, and a scripted scene runs out under a black fade at the `cutscene_speed` rate, so its own scripts still reach its own end. The `skip` hint is shown for every scripted scene, and a skipped scene is silent (its sounds are mixed at nothing, the music plays on) with no pad rumble or camera shake until it ends. A scene that waits on something the rate can't reach (the player, a sound) gets its picture back after 45 s rather than racing on
 ## Getting the game
 
 You need a PAL copy of Crash Twinsanity (SLES-525.68). Extracting the disc gives you `CRASH6`, `FMV` and `SLES_525.68`.
@@ -265,6 +265,7 @@ GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and wri
 | `deadzone` | `0`, `5`, `10`, `15`, `20`: the sticks' dead zone, a percentage of an axis' half range. Inside it a stick reads as the middle, and outside it is moved out to the zone's edge and scaled over the rest of the range, so the centre holds still without the outer travel shrinking. GAME OPTIONS has the row | `0` |
 | `save_card` | `0` to `3`: the card the save screens open on (their pages are the cards), written as the pages are stepped | `0` |
 | `cutscene_skip` | `on`, `off`: whether cutscenes can be skipped (the game options' row). `on` skips a cutscene file on its first viewing and lets a scripted scene with a skip of its own end; `off` is retail's, a file only once it has been played | `on` |
+| `cutscene_speed` | `1` to `1000`: how many seconds of a scripted cutscene a skip runs at a time while the scene runs out unseen. A step holds that much of the scene, so a low rate plays it near normal and a high one passes its triggers and physics between steps; the camera and the characters come out where the scene's own end leaves them at any rate | `10` |
 
 The file is merged when it is written: your own comments and lines this build does not know are kept as they are.
 

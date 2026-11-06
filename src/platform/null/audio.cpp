@@ -27,6 +27,34 @@ void Platform::Audio::CompactSoundMemory()
 {
 }
 
+void Platform::Audio::HoldSilent(u32, const s32*, u32)
+{
+}
+
+void Platform::Audio::NoteSceneBegin()
+{
+}
+
+u32 Platform::Audio::SoundMemoryUsed()
+{
+    return 0;
+}
+
+u32 Platform::Audio::SoundMemoryTotal()
+{
+    return 1;
+}
+
+u32 Platform::Audio::LoadedSoundCount()
+{
+    return 0;
+}
+
+u32 Platform::Audio::LoadedSoundId(u32)
+{
+    return 0;
+}
+
 void Platform::Audio::SetGroupVolume(s32 group, u32 left, u32 right)
 {
     (void)group;

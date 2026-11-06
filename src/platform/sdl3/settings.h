@@ -82,3 +82,7 @@ void HostSettingsSetDeadZone(u32 percent);
 // written back when the options screen changes it
 bool HostSettingsCutsceneSkip();
 void HostSettingsSetCutsceneSkip(bool skip);
+// How many seconds of a scripted cutscene a skip runs at a time while it runs the scene out (the file's `cutscene_speed`, 10 when it
+// has none): what a scene's own scripts reach their own end in, unseen and unheard. A step holds that many seconds of the scene, so
+// past a few tens a scene passes its own triggers, its physics and its camera between two steps
+u32 HostSettingsCutsceneSpeed();

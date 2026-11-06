@@ -1,5 +1,7 @@
 #include "game/readers.h"
 
+#include "game/sound.h"
+
 #include "debug.h"
 
 #include "game/controllers.h"
@@ -739,6 +741,12 @@ void SubItemsReader::Restart()
     diskHandle = &diskIndex;
 }
 
+// The id a sound bank's samples are registered under: the sound's own, the one every play of it asks the module for
+u32 SoundIdOf(const SoundBankEntry* bank)
+{
+    return reinterpret_cast<const GameSound*>(bank)->soundId;
+}
+
 SoundBankReader* SoundBankReader::Construct(SoundBankReader* reader, SoundBankEntry* bank, u32 offset, u32 size)
 {
     GenericItemReader::Construct(reader, nullptr);
@@ -784,7 +792,10 @@ s32 SoundBankReader::Begin(FileStream* fileStream)
         return 0;
     }
 
-    return FileStreamReadSoundBank(fileStream, bank->header.id, offset, size, ReadInBackground);
+    // The samples are registered under the id the sound is played by, which is its sound ID and not its resource header's: the front
+    // end's two sounds have a header that is not their id at all, and their blocks were registered under nonsense - every play of
+    // them was refused as having no samples
+    return FileStreamReadSoundBank(fileStream, SoundIdOf(bank), offset, size, ReadInBackground);
 }
 
 bool SoundBankReader::IsDone()
@@ -796,7 +807,7 @@ void SoundBankReader::Finish(ReaderStack*)
 {
     // The bank's ID is the sound's own (the resource header's ID: GameSound's soundId field, which the tables' AddResource
     // already wrote), and the sound processor is told its samples are all in its memory
-    Platform::Audio::SoundBankLoaded(static_cast<u16>(bank->header.id));
+    Platform::Audio::SoundBankLoaded(static_cast<u16>(SoundIdOf(bank)));
     bank->flags.samplesLoaded = 1;
     if (bits.closesFile != 0)
     {

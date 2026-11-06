@@ -4,6 +4,7 @@
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/followcamera.h"
+#include "game/gamecontroller.h"
 #include "game/layout.h"
 #include "game/memory.h"
 #include "game/pads.h"
@@ -67,6 +68,12 @@ void PushCameraShake(CameraShake* shake, const Vector4* from, f32 strength, f32 
 {
     constexpr f32 NoFalloff = Rounded(1e-4);
     constexpr f32 Jitter = Rounded(0.2);
+    // A scene being skipped shakes nothing (its shake is the scene's, and the player is not watching it)
+    if (SceneSkipHoldingEffects() != 0)
+    {
+        return;
+    }
+
     ObjectPlace* place = CentrePlace(shake);
     if (place == nullptr)
     {
@@ -96,6 +103,11 @@ void PushCameraShake(CameraShake* shake, const Vector4* from, f32 strength, f32 
 void PushCameraShakeAxes(CameraShake* shake, const Vector4* from, f32 xStrength, f32 yStrength, f32 zStrength, f32 falloff)
 {
     constexpr f32 NoFalloff = Rounded(1e-4);
+    if (SceneSkipHoldingEffects() != 0)
+    {
+        return;
+    }
+
     ObjectPlace* place = CentrePlace(shake);
     if (place == nullptr)
     {
@@ -150,6 +162,18 @@ void PushCameraShakeAxes(CameraShake* shake, const Vector4* from, f32 xStrength,
 
 void StepCameraShake(CameraShake* shake)
 {
+    // A shake already running is let go when a skip starts, rather than carried on into the picture that comes back
+    if (SceneSkipHoldingEffects() != 0)
+    {
+        shake->push = g_DefaultBox.min;
+        shake->push.w = 1.0f;
+        shake->offset = g_DefaultBox.min;
+        shake->offset.w = 1.0f;
+        shake->previous = g_DefaultBox.min;
+        shake->previous.w = 1.0f;
+        return;
+    }
+
     ObjectPlace* place = CentrePlace(shake);
     if (place == nullptr)
     {
@@ -201,6 +225,11 @@ void CameraShakeOffset(const CameraShake* shake, Vector4* offset)
 
 void VibrateForShake(f32 strength)
 {
+    if (SceneSkipHoldingEffects() != 0)
+    {
+        return;
+    }
+
     constexpr u32 FirstPad = 1;
     constexpr f32 MotorPerStrength = 1024.0f;
     constexpr s32 Weakest = 20;

@@ -287,6 +287,12 @@ void Platform::System::SetCutsceneSkip(bool)
 {
 }
 
+// The console has no run-out: retail's scripts play their scenes out
+u32 Platform::System::CutsceneSkipSpeed()
+{
+    return 1;
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     sceCdCLOCK clock;

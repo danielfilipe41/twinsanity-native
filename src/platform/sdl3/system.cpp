@@ -85,6 +85,11 @@ void Platform::System::SetCutsceneSkip(bool skip)
     HostSettingsSetCutsceneSkip(skip);
 }
 
+u32 Platform::System::CutsceneSkipSpeed()
+{
+    return HostSettingsCutsceneSpeed();
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

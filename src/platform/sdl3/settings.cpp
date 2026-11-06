@@ -144,6 +144,15 @@ u32 g_DeadZone = 0;
 bool g_CutsceneSkipLoaded = false;
 bool g_CutsceneSkip = true;
 
+// How fast a skipped scripted cutscene runs out (the file's `cutscene_speed`): a thousand seconds of it a second by default, which a
+// scene's own scripts reach their own end in a step or two
+bool g_CutsceneSpeedLoaded = false;
+u32 g_CutsceneSpeed = 10;
+// The speed's range in the file (seconds of the scene a second of play): 1 is the game's own, the top a step holding many minutes of
+// it, where a scene's own end is a step or two away
+constexpr u32 MinCutsceneSpeed = 1;
+constexpr u32 MaxCutsceneSpeed = 1000;
+
 void LoadCutsceneSkip()
 {
     if (g_CutsceneSkipLoaded)
@@ -167,6 +176,35 @@ void LoadCutsceneSkip()
         if (std::sscanf(line, "cutscene_skip %7s", word) == 1)
         {
             g_CutsceneSkip = std::strcmp(word, "off") != 0;
+        }
+    }
+
+    std::fclose(file);
+}
+
+void LoadCutsceneSpeed()
+{
+    if (g_CutsceneSpeedLoaded)
+    {
+        return;
+    }
+
+    g_CutsceneSpeedLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        unsigned speed = 0;
+        if (std::sscanf(line, "cutscene_speed %u", &speed) == 1)
+        {
+            g_CutsceneSpeed = speed < MinCutsceneSpeed ? MinCutsceneSpeed : (speed > MaxCutsceneSpeed ? MaxCutsceneSpeed : speed);
         }
     }
 
@@ -461,6 +499,12 @@ bool HostSettingsCutsceneSkip()
     return g_CutsceneSkip;
 }
 
+u32 HostSettingsCutsceneSpeed()
+{
+    LoadCutsceneSpeed();
+    return g_CutsceneSpeed;
+}
+
 void HostSettingsSetCutsceneSkip(bool skip)
 {
     LoadCutsceneSkip();
@@ -740,6 +784,7 @@ enum class Setting
     DeadZone,
     SaveCard,
     CutsceneSkip,
+    CutsceneSpeed,
 };
 
 // Whether the line begins with the word (the leading whitespace aside, and the word complete)
@@ -796,6 +841,8 @@ bool LineIsSetting(Setting setting, const char* line, u32 group)
         return LineStarts(line, "save_card");
     case Setting::CutsceneSkip:
         return LineStarts(line, "cutscene_skip");
+    case Setting::CutsceneSpeed:
+        return LineStarts(line, "cutscene_speed");
     }
 
     return false;
@@ -895,6 +942,8 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     PlaceSetting(lines, &count, Setting::SaveCard, 0, text);
     std::snprintf(text, sizeof(text), "cutscene_skip %s", HostSettingsCutsceneSkip() ? "on" : "off");
     PlaceSetting(lines, &count, Setting::CutsceneSkip, 0, text);
+    std::snprintf(text, sizeof(text), "cutscene_speed %u", HostSettingsCutsceneSpeed());
+    PlaceSetting(lines, &count, Setting::CutsceneSpeed, 0, text);
 
     std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
     PlaceSetting(lines, &count, Setting::Window, 0, text);

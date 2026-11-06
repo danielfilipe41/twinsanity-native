@@ -104,6 +104,9 @@ u32 GameMovieController::Update()
 
         flags.state = StateIdle;
         Stop();
+        // The sound it paused when it started comes back with the movie's end: the frontend does not send a resume of its own, and a
+        // module left paused held the music of the menus that follow silent
+        ResumeSound();
         g_ReadersMode = ReadersAfterMovie;
         g_ReadersSteps = 0;
         return 0;
@@ -111,6 +114,7 @@ u32 GameMovieController::Update()
         // The state stays until the next frame takes the idle state on
         flags.request = IdleRequested;
         Stop();
+        ResumeSound();
         g_ReadersMode = ReadersAfterMovie;
         g_ReadersSteps = 0;
         return 0;

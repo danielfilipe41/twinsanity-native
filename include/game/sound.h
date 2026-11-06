@@ -652,6 +652,16 @@ extern "C"
     void SetGroupVolume(f32 left, f32 right, s32 group) RETAIL_N32(FUN_001e6778);
     // Stops every sound and the music, the reverbs and the groups' fades
     void StopAllSound() RETAIL(FUN_001e0560);
+    // The scene skip's silence: no sound is played while it is on (a sound the scene starts is refused rather than muted), and the
+    // voices already sounding are released. The music is not played through this path, so it plays on
+    void SilenceSceneVoices();
+    // The samples of the sounds the game no longer has, let go of: a skip reads a level's banks as it races through it, and the blocks
+    // of what no table holds any more would otherwise fill the module's memory until every later bank is refused
+    void ReleaseSoundsTheGameLost();
+    void RestoreSceneVoices();
+    // The voices the game has playing that a music player does not own: what a skipped scene is still saying (the skip's silence is
+    // held until they have finished, so nothing of the scene comes back when the mix opens)
+    u32 SceneVoicesHeard();
     // Returns g_SoundLentToMovie while the sound is lent to a movie, else what the pending music request returned (0 without one)
     u32 UpdateSound(s32 paused, TimeClock* clock) RETAIL(FUN_001e0768);
     MusicSystem* ConstructMusic(MusicSystem* music) RETAIL(FUN_001dfde8);

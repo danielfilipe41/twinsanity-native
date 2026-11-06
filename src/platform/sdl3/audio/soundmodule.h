@@ -133,6 +133,10 @@ public:
     void CompactSoundMemory();
 
     void SetGroupVolume(s32 group, u32 left, u32 right);
+    // Mixes every voice but the groups given at nothing while held (the scene skip's silence)
+    void HoldSilent(bool held, const s32* musicGroups, u32 musicGroupCount);
+    // The moment a watched scene begins: a track that starts after it is the scene's own, and ends with the scene
+    void NoteSceneBegin();
     s32 SetVoiceVolume(s32 voice, s16 left, s16 right);
     s32 SetVoicePitch(s32 voice, u16 pitch);
     void SetVoiceReverb(s32 voice, bool on);
@@ -148,6 +152,11 @@ public:
     void ReserveSounds(u16 count);
     void ReleaseSound(u32 sound);
     u32 LoadSoundBank(u32 sound, const u8* data, u32 size);
+    // What is in the module's sound memory: how much of it, how many sounds' blocks it holds, and their ids by index. A block kept for
+    // a sound the game no longer has is the pile-up that ended in every later load being refused
+    u32 MemoryTotal() const;
+    u32 LoadedSoundCount() const;
+    u32 LoadedSoundId(u32 index) const;
     s32 PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 pitch, u32 attack, u32 release, u32 loops);
 
     s32 PitchOfRate(s32 rate);
@@ -193,6 +202,22 @@ private:
         u32 blocks = 0;
     };
 
+    // What the silence holds back: the groups whose voices still mix (the music's), and whether it is on
+    bool m_silent = false;
+    s32 m_loudGroups[4] = {};
+    u32 m_loudGroupCount = 0;
+    // The voices that were still sounding when the silence lifted: they keep mixing at nothing until they end, so a scene's last
+    // words finish in silence instead of coming back with the picture. Nothing of the game's own voice bookkeeping is touched
+    bool m_tail[VoiceCount] = {};
+    // When each of those stops being held: a stream's voice never ends by itself (a music track loops), so held for good it would
+    // leave the music silent with a player that believes it is playing
+    u64 m_tailUntil[VoiceCount] = {};
+    // When each stream began playing, and when the skip's silence began: a track that began under it is the scene's own, and ends
+    // with the scene rather than coming back as the voice that carried on after a skip
+    u64 m_streamStart[StreamChannels] = {};
+    u64 m_silentSince = 0;
+    u64 m_sceneBegin = 0;
+
     struct Channel
     {
         ChannelState state = ChannelState::Off;
@@ -210,6 +235,9 @@ private:
         u32 passesLeft = 1;
         u32 lastNext = 0;
     };
+
+    // Whether a voice and group (as the game hands them over) is one the silence leaves loud
+    bool GroupIsLoud(u32 voiceAndGroup) const;
 
     void TargetChannel(s32 voice, s16 left, s16 right, bool immediate);
     void StepRamps();

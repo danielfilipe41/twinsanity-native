@@ -132,8 +132,60 @@ bool g_NewGameFromPause = false;
 // The cross button pressed in the scripted cutscene playing (GameController::Watching), from its start: what the level scripts'
 // skip condition (572) asks, so a scene that carries a skip of its own ends it, and one that does not plays on
 u32 g_CutsceneSkipped = 0;
-// Whether a script of the scene asked condition 572 (only a scene that carries a skip does)
-u32 g_CutsceneSkipAsked = 0;
+// A skip of a scripted scene is not a cut-off but a run-out: the scene's clocks run faster, so its own scripts walk the scene to its
+// own end and its own clean-up runs. Cutting a scene off instead leaves the camera and the characters where the script abandoned them
+// and the level without what the rest of the script does
+// The speed a run-out runs at is the settings file's (Platform::System::CutsceneSkipSpeed, 1000 a second by default): one step then
+// holds many seconds of the scene, and at that stride anything the scene moves or checks can pass a trigger between two steps, so a
+// scene's own end can be reached before its own work is done. That is what the whole-game pass is for
+// The run-out gives up after this long (seconds): a scene waiting on something no speed-up reaches (the player, a sound still playing)
+// then plays at the game's own speed rather than racing on through the level
+constexpr f32 SceneSkipSeconds = 45.0f;
+// The run-out's picture is covered over this many seconds, so its speed is neither seen nor its voices heard: the skip looks like the
+// picture going dark and coming back on the other side of the scene. The scene keeps the game's own speed until the cover is complete,
+// since a faded-out scene still shows its accelerating frames through a thin black
+constexpr f32 RunOutFadeSeconds = 0.08f;
+// The seconds the cover has left to reach black, and of speed-up left in the scene being watched, and the speed it runs at (read when
+// the press starts it)
+f32 g_SceneCoverLeft = 0.0f;
+f32 g_SceneSkipLeft = 0.0f;
+f32 g_SceneSkipSpeed = 1.0f;
+// Whether the picture is covered for a run-out (and so must be uncovered when it ends), the seconds its sounds stay silent for, and
+// whether its effects are held off (what camerarig.cpp's shakes ask: a scene shakes the camera and rumbles the pad, and a skip is
+// not the player's to feel)
+bool g_SceneSkipCovered = false;
+u32 g_SceneSkipHolding = 0;
+// Whether a run-out has finished and the game is still on the far side of the scene: the scene's last commands and whatever it
+// starts run there, after the episode that watched it is over, so the sounds stay shut off until the game plays again. Whether a
+// skip was asked for in this scene at all (a run-out that gave up at its time limit keeps it), so its end is on the far side too
+u32 g_SceneSkipTail = 0;
+u32 g_SceneSkipUsed = 0;
+
+// The run-out covers the picture and silences the scene's own sounds: its dialogue and effects are the effect groups' and are mixed at
+// nothing, while the music's and the movie's groups play on. Its voices are what most scenes wait on and they are real time, so they
+// are cut rather than run faster
+void CoverRunOut(GameController* controller)
+{
+    u32 hidden;
+    u32 shown;
+    GetColor(&hidden, ColourTransparentBlack);
+    GetColor(&shown, ColourBlack);
+    controller->oleg.fader.hiddenColour = hidden;
+    controller->oleg.fader.shownColour = shown;
+    controller->oleg.Show(controller->oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * RunOutFadeSeconds),
+                          0);
+    g_SceneSkipCovered = true;
+    SilenceSceneVoices();
+}
+
+void UncoverRunOut(GameController* controller)
+{
+    controller->oleg.Hide(controller->oleg.screens[OLEG::ScreenBlack], static_cast<s32>(g_ClockUnitsPerSecond * RunOutFadeSeconds),
+                          0);
+    g_SceneSkipCovered = false;
+    // What the skip raced through has left sample blocks behind that no table holds any more: they go now, before the level plays on
+    ReleaseSoundsTheGameLost();
+}
 
 // One of the loading screens, at random
 u32 RandomLoadingScreen()
@@ -387,6 +439,73 @@ u32 GameController::Update(u32 keepFreed)
     {
         SetNextState(next);
     }
+
+    // The run-out a skip starts, stepped here because every state reaches it: a scene's end takes the game out of Watching, and the
+    // speed and the silence must be put back then, not whenever a playing or watching state comes round again
+    const f32 step = static_cast<f32>(G_GameClockController->frameTime) * g_SecondsPerClockUnit;
+    const bool watching = State() == StateWatching;
+    // The cover first, at the game's own speed: the scene is not accelerated until the picture is black, and its voices are cut at
+    // once rather than as it goes dark
+    bool covering = watching && g_SceneCoverLeft > 0.0f;
+    if (covering)
+    {
+        g_SceneCoverLeft -= step;
+        covering = g_SceneCoverLeft > 0.0f;
+    }
+
+    bool running = watching && !covering && g_SceneSkipLeft > 0.0f;
+    if (running)
+    {
+        g_SceneSkipLeft -= step;
+        running = g_SceneSkipLeft > 0.0f;
+    }
+    else if (!watching)
+    {
+        g_SceneSkipLeft = 0.0f;
+        g_SceneCoverLeft = 0.0f;
+    }
+
+    // The run-out runs: the chunk loader's counters are not a "still loading" test (they differ while both are settled), and gating on
+    // them left every skip at the game's own speed
+    g_ClockTurbo = running ? g_SceneSkipSpeed : 1.0f;
+    if (g_SceneSkipCovered && !running && !covering)
+    {
+        UncoverRunOut(this);
+    }
+
+    // The sounds stay shut off past the scene's end, while the game is on its far side: a scene's last commands run there, and one of
+    // them plays the line that was being heard after a skip. Playing again is what says they are over. A run-out that ends while the
+    // scene still plays (the 45 s cap) sets nothing: that scene goes on, heard
+    if (g_SceneSkipUsed != 0 && !watching)
+    {
+        g_SceneSkipTail = 1;
+    }
+
+    // Playing again is the far side's end. Nothing waits for a voice to finish: the platform keeps the ones the scene had sounding
+    // out of the mix until they end themselves, so the effects come back the moment play does
+    if (State() == StatePlaying)
+    {
+        g_SceneSkipUsed = 0;
+        g_SceneSkipTail = 0;
+    }
+
+    // The scene's sounds are silent for the cover, the run-out and that far side, and put back once the game plays again: the release is
+    // driven by whether the silence is still wanted, so there is no timer that can leave it on
+    const u32 holding = running || covering || g_SceneSkipTail != 0 ? 1 : 0;
+    if (holding != 0)
+    {
+        // Not only muted: nothing the scene starts is allowed to sound, and anything it did start is released rather than left to come
+        // back when the silence lifts
+        SilenceSceneVoices();
+    }
+    else if (g_SceneSkipHolding != 0)
+    {
+        RestoreSceneVoices();
+    }
+
+    // The pads and the camera's shakes are held off for the same stretch: a scene rumbles and shakes as it speaks
+    g_SceneSkipHolding = holding;
+    HoldPadVibration(g_SceneSkipHolding != 0);
 
     InstanceContext* player = CharacterInstance(&progress);
     auto* node = player != nullptr ? static_cast<PlayerNode*>(GetGameNode(&player->nodes, NodeCharacter)) : nullptr;
@@ -1014,7 +1133,6 @@ u32 GameController::StartCutscene(s32 duration)
 {
     u32 state = State();
     g_CutsceneSkipped = 0;
-    g_CutsceneSkipAsked = 0;
     if (state == StatePlaying)
     {
         SetNextState(StateWatching);
@@ -1311,6 +1429,8 @@ u32 GameController::Watching(TimeClock* clock)
     if (frame == stateFrame)
     {
         StartChunks();
+        // A track the scene starts from here is the scene's own: a skip ends it with the scene, and the music playing before it plays on
+        Platform::Audio::NoteSceneBegin();
         std::fprintf(stderr, "cutscene: watching begins (file %s)\n",
                      G_VideoController != nullptr && G_VideoController->state == VideoController::StatePlaying ? "playing"
                                                                                                             : "none");
@@ -1323,22 +1443,36 @@ u32 GameController::Watching(TimeClock* clock)
     }
 
     bool skip = GetButtonState(pad, PadCross, true);
-    if (G_VideoController->state == VideoController::StatePlaying && skip)
+    // A cutscene file's skip is its own: it jumps the file to its last frame. The video controller is also playing while a scripted
+    // scene runs its music through it (bits.musicOnly), where its skip has nothing to skip, so the press must not go there: it would
+    // be swallowed and the scene could never be skipped
+    if (G_VideoController->state == VideoController::StatePlaying && G_VideoController->cutscene != nullptr && skip)
     {
         G_VideoController->Skip();
     }
     else if (skip && Platform::System::CutsceneSkip())
     {
-        // A scripted cutscene (no cutscene file playing): the level's scripts that carry a skip of their own end when condition
-        // 572 turns yes, and one without a skip plays to its end. No fast-forward here: running a scripted scene's frames at
-        // once is what leaves the characters and the level wherever the frames were rushed through
+        // A scripted cutscene (no cutscene file playing) is run out rather than cut off: the press sets the flag the scripts' skip
+        // condition (572) answers, and if no script of the scene takes that answer the scene's clocks run faster under a covered
+        // picture until its own scripts reach its own end. Either way the camera, the characters and the level are left exactly where
+        // the scene's own end leaves them, only sooner: cutting a scene off is what leaves the camera stuck and the level unadvanced
         // The press is remembered for the rest of the scene whatever the scripts have asked so far: a scene asks 572 whenever its own
         // loop comes round (some from the first step, some only part way in, most every step), so a press made before its first ask
-        // still turns the answer yes when the ask comes, and the script takes its own end of the scene. Nothing else is forced: a
-        // scene whose scripts never ask (no skip of its own) plays out, as retail's would
+        // still turns the answer yes when the ask comes, and the script takes its own end of the scene
         g_CutsceneSkipped = 1;
-        std::fprintf(stderr, "cutscene: skip asked (a script of this scene %s 572 yet)\n",
-                     CutsceneSkipAsked() != 0 ? "asked" : "has not asked");
+        if (g_SceneSkipLeft <= 0.0f)
+        {
+            // Every other scene: the run-out, hidden and silent, until its own end comes (not only the scenes that never ask: a scene
+            // may ask 572 and act on nothing, or ask only before the press and never again)
+            g_SceneSkipLeft = SceneSkipSeconds;
+            g_SceneCoverLeft = RunOutFadeSeconds;
+            g_SceneSkipUsed = 1;
+            g_SceneSkipSpeed = static_cast<f32>(Platform::System::CutsceneSkipSpeed());
+            CoverRunOut(this);
+        }
+
+        std::fprintf(stderr, "cutscene: skip asked (the run-out runs it out at %gx)\n",
+                     static_cast<double>(g_SceneSkipSpeed));
     }
 
     // The scene's hint queued as the file's is (its own update queues it once a step): the display frames between the steps queue
@@ -1356,20 +1490,9 @@ u32 CutsceneSkipped()
            G_GameController->State() == GameController::StateWatching;
 }
 
-// Whether a script of the scene asked condition 572 (a scene that carries a skip of its own): the hint waits for that, so a scene
-// without one never offers a skip it cannot take
-u32 CutsceneSkipAsked()
+u32 SceneSkipHoldingEffects()
 {
-    return g_CutsceneSkipAsked;
-}
-
-void NoteCutsceneSkipAsked()
-{
-    if (g_CutsceneSkipAsked == 0)
-    {
-        g_CutsceneSkipAsked = 1;
-        std::fprintf(stderr, "cutscene: a script of the scene asks 572 (it carries a skip)\n");
-    }
+    return g_SceneSkipHolding;
 }
 
 u32 GameController::FadingOut(TimeClock*)

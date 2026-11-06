@@ -189,11 +189,34 @@ u32 DropPlacesInChunk(InstancePlaces* places, ChunkData* chunk)
     return kept;
 }
 
-// Retail bug: nothing keeps the count within the 8 places, a ninth place in another loaded chunk would be written past them
+// Retail writes a ninth place past the array's end (its own comment above: nothing keeps the count within the 8), which lands in
+// whatever the heap put after the places and is what frees a pointer made of a position's bits (the crash free 0x3f7ffff4 was exactly
+// that: a place's String written over another block's). The oldest place goes instead
+void MakeRoomForPlace(InstancePlaces* places)
+{
+    if (places->count > InstancePlaces::MostPlaces)
+    {
+        places->count = InstancePlaces::MostPlaces;
+    }
+
+    if (places->count < InstancePlaces::MostPlaces)
+    {
+        return;
+    }
+
+    for (u32 index = 1; index < places->count; index++)
+    {
+        places->places[index - 1].Assign(&places->places[index]);
+    }
+
+    places->count = InstancePlaces::MostPlaces - 1;
+}
+
 u32 AddInstancePlace(InstancePlaces* places, InstanceContext* instance, ChunkData* chunk)
 {
     KeepLoadedPlaces(places);
     DropPlacesInChunk(places, chunk);
+    MakeRoomForPlace(places);
     places->places[places->count++].TakeInChunk(instance, chunk, 0);
     return 1;
 }

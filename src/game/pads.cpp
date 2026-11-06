@@ -37,6 +37,8 @@ constexpr s32 StickDeadZone = 0x20;
 constexpr s32 StickRange = 0xFF;
 // A button is down when it's pressed further
 constexpr f32 ButtonDown = Rounded(0.05);
+// Whether the motors are held off (a scene being skipped, its rumbles its own: HoldPadVibration)
+bool g_VibrationHeld = false;
 // The report's bytes (Platform::Pads::ReportByte: the buttons' high byte is GamePadInformation::buttons' high byte)
 using namespace Platform::Pads;
 // The report's sticks' middle
@@ -265,6 +267,19 @@ u32 GamePadController::Update(f32 seconds)
         }
 
         VibrationRequest* request = &g_VibrationRequests[i];
+        // A scene being skipped holds the motors off, its rumbles its own: the request is dropped rather than left pending, so it
+        // cannot go off when the hold ends
+        if (g_VibrationHeld)
+        {
+            request->bits.pad = 0;
+            request->bits.smallMotor = 0;
+            request->bits.bigMotor = 0;
+            request->bits.pending = 0;
+            request->seconds = 0.0f;
+            SetPadMotors(pad->info, 0, 0);
+            continue;
+        }
+
         if (request->bits.pad == 0 || flags.paused != 0)
         {
             continue;
@@ -745,6 +760,11 @@ extern "C"
         }
 
         return pad->info->flags.read != 0;
+    }
+
+    void HoldPadVibration(bool held)
+    {
+        g_VibrationHeld = held;
     }
 
     void RequestVibration(const VibrationRequest* request)

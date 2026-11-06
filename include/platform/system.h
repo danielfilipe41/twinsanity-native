@@ -49,6 +49,9 @@ void SetTextLanguageChoice(u32 index);
 // file answers its own choice, and the console answers retail
 bool CutsceneSkip();
 void SetCutsceneSkip(bool skip);
+// How many seconds of a scripted cutscene a skip runs at a time while it runs the scene out unseen (the settings file's
+// `cutscene_speed`, 10 by default): the scene's own scripts still reach its own end, only sooner
+u32 CutsceneSkipSpeed();
 
 
 struct DateTime

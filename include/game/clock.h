@@ -70,6 +70,10 @@ extern "C"
     extern f32 g_FixedFrameSeconds RETAIL(G_GlobalClockSpeedScale);
     extern f32 g_ClockUnitsPerSecond RETAIL(G_TICKS_TO_TIME);
     extern f32 g_SecondsPerClockUnit RETAIL(G_TIME_TO_TICKS);
+    // The scene skip's speed (game/gamecontroller.cpp): it multiplies the per-clock speeds, so a scene whose scripts carry no skip
+    // of their own is run out to its own end over fewer seconds instead of being cut off. 1 is the game's own speed, and the retail
+    // build's (the PS2 build leaves it at 1)
+    extern f32 g_ClockTurbo;
     // The game clock's last frame in seconds (the scripts' movement commands scale by it)
     extern f32 g_FrameSeconds RETAIL(D_0030A0A4);
     // The frames rendered, which the renderer's double buffers go by

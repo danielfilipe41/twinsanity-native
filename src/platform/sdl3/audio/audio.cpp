@@ -12,6 +12,9 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+
+#include "platform/time.h"
 #include <cstring>
 #include <vector>
 
@@ -259,6 +262,49 @@ void Platform::Audio::CompactSoundMemory()
     UnlockAudio();
 }
 
+u32 Platform::Audio::SoundMemoryUsed()
+{
+    LockAudio();
+    u32 used = Module().MemoryUsed();
+    UnlockAudio();
+    return used;
+}
+
+u32 Platform::Audio::SoundMemoryTotal()
+{
+    return Module().MemoryTotal();
+}
+
+u32 Platform::Audio::LoadedSoundCount()
+{
+    LockAudio();
+    u32 count = Module().LoadedSoundCount();
+    UnlockAudio();
+    return count;
+}
+
+u32 Platform::Audio::LoadedSoundId(u32 index)
+{
+    LockAudio();
+    u32 id = Module().LoadedSoundId(index);
+    UnlockAudio();
+    return id;
+}
+
+void Platform::Audio::NoteSceneBegin()
+{
+    LockAudio();
+    Module().NoteSceneBegin();
+    UnlockAudio();
+}
+
+void Platform::Audio::HoldSilent(u32 held, const s32* musicGroups, u32 musicGroupCount)
+{
+    LockAudio();
+    Module().HoldSilent(held != 0, musicGroups, musicGroupCount);
+    UnlockAudio();
+}
+
 void Platform::Audio::SetGroupVolume(s32 group, u32 left, u32 right)
 {
     LockAudio();
@@ -388,7 +434,19 @@ s32 Platform::Audio::StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 p
     // The track's region is read here, with the device lock not held: a disc read under it parks the mixer for the read's
     // length, and the device underruns while it waits. The stream's start then only installs bytes it was handed
     std::vector<u8> prepared;
+    // TEMPORARY probe (TWINSANITY_TEST_AUDIO=1): how long the track's region takes to read, which is the game's thread parked while
+    // the menu's music waits
+    const u64 before = std::getenv("TWINSANITY_TEST_AUDIO") != nullptr
+                           ? Platform::Time::Ticks() / (Platform::Time::TicksPerSecond / 1000)
+                           : 0;
     Module().PrepareStream(file, &prepared);
+    if (std::getenv("TWINSANITY_TEST_AUDIO") != nullptr)
+    {
+        const u64 after = Platform::Time::Ticks() / (Platform::Time::TicksPerSecond / 1000);
+        std::fprintf(stderr, "audio: [%llu ms] stream read %u bytes took %llu ms\n", static_cast<unsigned long long>(after),
+                     static_cast<u32>(prepared.size()), static_cast<unsigned long long>(after - before));
+    }
+
     LockAudio();
     s32 result = Module().StreamMusic(file, channel, voiceAndGroup, pitch, once, &prepared);
     UnlockAudio();

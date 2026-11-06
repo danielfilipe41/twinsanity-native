@@ -3,12 +3,49 @@
 #include "soundmodule.h"
 
 #include "platform/stream.h"
+#include "platform/time.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace
 {
 using namespace SdlAudio::Spu2;
+
+// TEMPORARY probe of the module's pauses, lends and holds (TWINSANITY_TEST_AUDIO=1): the two README sound faults are a pause or a
+// lend that never came back, and this says which
+bool AudioProbe()
+{
+    static s32 on = -1;
+    if (on < 0)
+    {
+        on = std::getenv("TWINSANITY_TEST_AUDIO") != nullptr ? 1 : 0;
+    }
+
+    return on != 0;
+}
+
+// Counted per second by the health line: plays the module refused because the sound's samples were not in its memory (a bank that was
+// never registered, which silences a whole level's sounds while the music plays on)
+u32 g_RefusedNoSamples = 0;
+u32 g_RefusedIds[4] = {};
+u32 g_RefusedIdsCount = 0;
+
+// The game's movie group as the module sees it: the encoded group's number, which its own number in the low half of the word follows
+constexpr s32 MovieGroupNumber = 4;
+
+// How long a leftover voice is held at nothing when the silence lifts: a line is over by then, and a track that loops is heard again
+constexpr u64 TailHoldMs = 3000;
+
+// Milliseconds since the clock started, so a delay between a request and what is heard can be measured
+u64 AudioProbeMs()
+{
+    return Platform::Time::Ticks() / (Platform::Time::TicksPerSecond / 1000);
+}
+
+// Whether a stream has already been reported audible
+bool g_AudibleTold[StreamChannels] = {};
 
 // The effect modes, as the game names them (include/game/sound.h's ReverbMode): 0 off, then the SPU's ten
 constexpr s32 EffectModes = 10;
@@ -225,6 +262,16 @@ void SdlAudio::Spu2::SoundModule::Reset()
 
 void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
 {
+    // TEMPORARY probe (TWINSANITY_TEST_AUDIO=2): a second's worth of the mix, once a second - what is sounding, what is held, and
+    // how loud the mix actually came out, which is what tells a silence the game asked for from one it did not
+    const u64 probeNow = AudioProbeMs();
+    static u64 probeNext = 0;
+    static s32 probePeak = 0;
+    static u32 probeVoices = 0;
+    static u32 probeStreams = 0;
+    static u32 probePlays = 0;
+    static u32 probeSeconds = 0;
+
     // The mix runs whatever the pause says: a paused module has its music held and let its sounds go, but the processor is
     // still mixing, so a sound played during a pause (a menu, the frontend) is heard
     Device& device = SoundProcessor();
@@ -241,6 +288,104 @@ void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
         TrackChannels();
     }
 
+    if (AudioProbe())
+    {
+        // When a track first makes a sound: the gap between the game asking for it and this is what a late start is
+        for (s32 channel = 0; channel < StreamChannels; channel++)
+        {
+            const MusicStream& stream = m_streams[channel];
+            if (g_AudibleTold[channel] || !stream.bound || !stream.playing || stream.voice < 0)
+            {
+                continue;
+            }
+
+            if (m_channels[stream.voice].state != ChannelState::Off)
+            {
+                g_AudibleTold[channel] = true;
+                std::fprintf(stderr, "audio: [%llu ms] stream %d audible\n", static_cast<unsigned long long>(AudioProbeMs()), channel);
+            }
+        }
+    }
+
+    if (AudioProbe() && std::getenv("TWINSANITY_TEST_AUDIO")[0] == '2')
+    {
+        for (u32 frame = 0; frame < frames; frame++)
+        {
+            const s32 left = stereo[frame * 2];
+            const s32 right = stereo[frame * 2 + 1];
+            const s32 peak = (left < 0 ? -left : left) > (right < 0 ? -right : right) ? (left < 0 ? -left : left)
+                                                                                    : (right < 0 ? -right : right);
+            if (peak > probePeak)
+            {
+                probePeak = peak;
+            }
+        }
+
+        if (probeNow >= probeNext)
+        {
+            u32 voices = 0;
+            for (s32 voice = 0; voice < VoiceCount; voice++)
+            {
+                if (m_channels[voice].state != ChannelState::Off)
+                {
+                    voices++;
+                }
+            }
+
+            u32 streams = 0;
+            for (s32 channel = 0; channel < StreamChannels; channel++)
+            {
+                if (m_streams[channel].bound && m_streams[channel].playing)
+                {
+                    streams++;
+                }
+            }
+
+            u32 held = 0;
+            char tails[256] = {};
+            u32 tailLength = 0;
+            for (s32 voice = 0; voice < VoiceCount; voice++)
+            {
+                if (m_tail[voice])
+                {
+                    held++;
+                }
+            }
+
+            for (s32 channel = 0; channel < StreamChannels; channel++)
+            {
+                const MusicStream& stream = m_streams[channel];
+                if (!stream.bound)
+                {
+                    continue;
+                }
+
+                const s32 level = stream.voice >= 0 ? m_channels[stream.voice].levelLeft : -1;
+                tailLength += static_cast<u32>(std::snprintf(tails + tailLength, sizeof(tails) - tailLength, " s%d:g%d:v%d:l%d",
+                                                             channel, static_cast<s32>(stream.group >> GroupShift), stream.voice, level));
+            }
+
+            char refused[64] = {};
+            u32 refusedLength = 0;
+            for (u32 index = 0; index < g_RefusedIdsCount; index++)
+            {
+                refusedLength += static_cast<u32>(std::snprintf(refused + refusedLength, sizeof(refused) - refusedLength, " %u",
+                                                                g_RefusedIds[index]));
+            }
+
+            // The sound memory's use says whether what is loaded piles up: a bank that was never released leaves its block behind
+            std::fprintf(stderr, "audio: [%llu ms] paused %d lent %d silent %d voices %u streams %u held %u peak %d nosample %u mem %u/%u%s%s\n",
+                         static_cast<unsigned long long>(probeNow), m_paused ? 1 : 0, m_lent ? 1 : 0, m_silent ? 1 : 0, voices,
+                         streams, held, probePeak, g_RefusedNoSamples, m_memory.Used(), MemoryWords, refused, tails);
+            g_RefusedIdsCount = 0;
+            (void)probeStreams;
+            (void)probePlays;
+            (void)probeSeconds;
+            probePeak = 0;
+            probeNext = probeNow + 1000;
+        }
+    }
+
     // The tracks' rings are topped up behind their voices, and a track whose data has run out is over: both once a mix, which
     // is far more often than either needs
     FillStreams();
@@ -251,6 +396,11 @@ void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
 
 void SdlAudio::Spu2::SoundModule::PauseAll()
 {
+    if (AudioProbe())
+    {
+        std::fprintf(stderr, "audio: [%llu ms] pause (was %d)\n", static_cast<unsigned long long>(AudioProbeMs()), m_paused ? 1 : 0);
+    }
+
     // The module's pause: the game's sounds are let go of and the music is held where it is. It is deliberately not a mute of
     // the whole processor - the game pauses and resumes around its own movies and menus, and does not always pair the two calls
     // (a movie that ends into the title screen never resumes). A module that went silent for good on one unmatched pause left
@@ -274,7 +424,8 @@ void SdlAudio::Spu2::SoundModule::PauseAll()
         }
     }
 
-    // The music keeps its place: its voices are held, silent, and carried on from the same sample when the pause ends
+    // The music stops with the pause, as retail's does: its voices are held where they are and say nothing (a held voice is silent by
+    // design), and a resume carries the track on from the same sample
     for (s32 channel = 0; channel < StreamChannels; channel++)
     {
         MusicStream& stream = m_streams[channel];
@@ -295,6 +446,11 @@ void SdlAudio::Spu2::SoundModule::PauseAll()
 
 void SdlAudio::Spu2::SoundModule::ResumeAll()
 {
+    if (AudioProbe())
+    {
+        std::fprintf(stderr, "audio: [%llu ms] resume (was %d)\n", static_cast<unsigned long long>(AudioProbeMs()), m_paused ? 1 : 0);
+    }
+
     if (!m_paused)
     {
         return;
@@ -316,6 +472,11 @@ void SdlAudio::Spu2::SoundModule::ResumeAll()
 
 void SdlAudio::Spu2::SoundModule::LendToMovie()
 {
+    if (AudioProbe())
+    {
+        std::fprintf(stderr, "audio: [%llu ms] lend to movie\n", static_cast<unsigned long long>(AudioProbeMs()));
+    }
+
     // Retail takes the module's key-on callback away for the movie and puts it back after. No channel is let go of and no
     // track is stopped: the game's music player is still in its playing state when the module comes back, and nothing in the
     // game will re-start a track it thinks is playing
@@ -324,6 +485,11 @@ void SdlAudio::Spu2::SoundModule::LendToMovie()
 
 void SdlAudio::Spu2::SoundModule::ReclaimFromMovie()
 {
+    if (AudioProbe())
+    {
+        std::fprintf(stderr, "audio: [%llu ms] reclaim from movie\n", static_cast<unsigned long long>(AudioProbeMs()));
+    }
+
     m_lent = false;
 }
 
@@ -436,6 +602,79 @@ bool SdlAudio::Spu2::SoundModule::IsStreamVoice(s32 voice) const
     return false;
 }
 
+void SdlAudio::Spu2::SoundModule::NoteSceneBegin()
+{
+    m_sceneBegin = AudioProbeMs();
+}
+
+void SdlAudio::Spu2::SoundModule::HoldSilent(bool held, const s32* musicGroups, u32 musicGroupCount)
+{
+    m_loudGroupCount = 0;
+    for (u32 group = 0; group < musicGroupCount && group < 4; group++)
+    {
+        m_loudGroups[m_loudGroupCount++] = musicGroups[group];
+    }
+
+    if (held)
+    {
+        m_silentSince = AudioProbeMs();
+        for (s32 voice = 0; voice < VoiceCount; voice++)
+        {
+            m_tail[voice] = false;
+            m_tailUntil[voice] = 0;
+        }
+    }
+    else
+    {
+        // Lifting: whatever the scene is still sounding is left out of the mix until it ends, so its last words finish in silence
+        // rather than coming back with the picture. The groups are the ones the hold was given, not GroupIsLoud's (that answers for a
+        // hold that is still on)
+        for (s32 voice = 0; voice < VoiceCount; voice++)
+        {
+            const u32 voiceAndGroup = static_cast<u32>(m_channels[voice].group);
+            const s32 index = static_cast<s32>(voiceAndGroup >> GroupShift) - 1;
+            bool loud = false;
+            for (u32 group = 0; group < m_loudGroupCount; group++)
+            {
+                if (index >= 0 && index + 1 == static_cast<s32>(m_loudGroups[group] >> GroupShift))
+                {
+                    loud = true;
+                    break;
+                }
+            }
+
+            // Only the game's own voices are held at nothing: a stream is a music player's track, and a track held is a track the
+            // player loses while its player believes it is still playing
+            m_tail[voice] = m_channels[voice].state != ChannelState::Off && !loud;
+            m_tailUntil[voice] = m_tail[voice] ? AudioProbeMs() + TailHoldMs : 0;
+        }
+    }
+
+    if (!held)
+    {
+        // A track that began while the scene was being skipped is the scene's own (its dialogue, its tune): it ends with the scene.
+        // One that was already playing is the music and plays on
+        for (s32 channel = 0; channel < StreamChannels; channel++)
+        {
+            MusicStream& stream = m_streams[channel];
+            // A track that began with the scene or after it is the scene's own, whatever group the game gave it: one that was already
+            // playing when the scene began is the level's music and plays on
+            if (stream.bound && stream.playing && m_streamStart[channel] >= m_sceneBegin)
+            {
+                EndStream(channel);
+            }
+        }
+    }
+
+    m_silent = held;
+
+    // Every voice is retargeted now: the ones already sounding stop this mix rather than at their next volume change
+    for (s32 voice = 0; voice < VoiceCount; voice++)
+    {
+        TargetChannel(voice, m_channels[voice].rawLeft, m_channels[voice].rawRight, true);
+    }
+}
+
 s32 SdlAudio::Spu2::SoundModule::SetVoiceVolume(s32 voice, s16 left, s16 right)
 {
     if (voice < 0 || voice >= VoiceCount)
@@ -511,6 +750,31 @@ SdlAudio::Spu2::ChannelState SdlAudio::Spu2::SoundModule::StateOf(s32 voice) con
     return m_channels[voice].state;
 }
 
+// A voice and group as the game hands them over: whether the silence leaves it loud (the music's group)
+bool SdlAudio::Spu2::SoundModule::GroupIsLoud(u32 voiceAndGroup) const
+{
+    if (!m_silent)
+    {
+        return true;
+    }
+
+    s32 index = static_cast<s32>(voiceAndGroup >> GroupShift) - 1;
+    if (index < 0)
+    {
+        return false;
+    }
+
+    for (u32 group = 0; group < m_loudGroupCount; group++)
+    {
+        if (index + 1 == static_cast<s32>(m_loudGroups[group] >> GroupShift))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // The channel's level from the game's register and its group's volume
 void SdlAudio::Spu2::SoundModule::TargetChannel(s32 voice, s16 left, s16 right, bool immediate)
 {
@@ -521,6 +785,29 @@ void SdlAudio::Spu2::SoundModule::TargetChannel(s32 voice, s16 left, s16 right, 
     s32 index = static_cast<s32>(channel.group >> GroupShift) - 1;
     s32 groupLeft = index >= 0 && index < GroupCount ? m_groupLeft[index] : FullGroupVolume;
     s32 groupRight = index >= 0 && index < GroupCount ? m_groupRight[index] : FullGroupVolume;
+
+    // The scene skip's silence, applied where every voice's volume must pass: a voice whose group is not one of the loud ones is
+    // mixed at nothing, whatever the game set its volume to and however often it sets it again
+    if (m_silent || m_tail[voice])
+    {
+        bool loud = false;
+        for (u32 group = 0; group < m_loudGroupCount; group++)
+        {
+            if (index >= 0 && index + 1 == static_cast<s32>(m_loudGroups[group] >> GroupShift))
+            {
+                loud = true;
+                break;
+            }
+        }
+
+        if (m_tail[voice] || !loud)
+        {
+            left = 0;
+            right = 0;
+            groupLeft = 0;
+            groupRight = 0;
+        }
+    }
 
     // The register's level times the group's volume, which is 1.0 at 0x1000
     channel.targetLeft = LevelOfRegister(left) * groupLeft / FullGroupVolume;
@@ -559,6 +846,34 @@ void SdlAudio::Spu2::SoundModule::TrackChannels()
     for (s32 voice = 0; voice < VoiceCount; voice++)
     {
         Channel& channel = m_channels[voice];
+        // A voice the silence left behind: nothing of it is heard until it ends, however the game sets its volume. A stream's
+        // channel state stays Off for as long as it plays, so only a voice that is on for neither the game nor a stream is done
+        if (m_tail[voice] && AudioProbeMs() >= m_tailUntil[voice])
+        {
+            // Held long enough: a line has finished by now, and a track that loops would otherwise never be heard again
+            m_tail[voice] = false;
+        }
+
+        if (m_tail[voice])
+        {
+            bool sounding = channel.state != ChannelState::Off;
+            for (s32 index = 0; !sounding && index < StreamChannels; index++)
+            {
+                const MusicStream& stream = m_streams[index];
+                sounding = stream.bound && stream.playing && stream.voice == voice;
+            }
+
+            if (!sounding)
+            {
+                m_tail[voice] = false;
+            }
+            else
+            {
+                device.SetVoiceVolume(voice, 0, 0);
+                continue;
+            }
+        }
+
         if (channel.state == ChannelState::Off)
         {
             continue;
@@ -618,7 +933,13 @@ u32 SdlAudio::Spu2::SoundModule::LoadSoundBank(u32 sound, const u8* data, u32 si
     u32 address = 0;
     if (!m_memory.Allocate(words, address, sound))
     {
-        return 0;
+        // The memory is compacted once and the block asked for again: a bank whose block was never released otherwise left every later
+        // load refused, which is a whole level's sounds silent while its music plays
+        CompactSoundMemory();
+        if (!m_memory.Allocate(words, address, sound))
+        {
+            return 0;
+        }
     }
 
     SoundProcessor().WriteMemory(address, samples, bytes & ~1u);
@@ -629,6 +950,44 @@ u32 SdlAudio::Spu2::SoundModule::LoadSoundBank(u32 sound, const u8* data, u32 si
     m_sounds[sound].blocks = bytes / BlockBytes;
 
     return address;
+}
+
+u32 SdlAudio::Spu2::SoundModule::MemoryTotal() const
+{
+    return MemoryWords;
+}
+
+u32 SdlAudio::Spu2::SoundModule::LoadedSoundCount() const
+{
+    u32 count = 0;
+    for (u32 sound = 0; sound < SoundSlots; sound++)
+    {
+        if (m_sounds[sound].used)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+u32 SdlAudio::Spu2::SoundModule::LoadedSoundId(u32 index) const
+{
+    u32 seen = 0;
+    for (u32 sound = 0; sound < SoundSlots; sound++)
+    {
+        if (m_sounds[sound].used)
+        {
+            if (seen == index)
+            {
+                return sound;
+            }
+
+            seen++;
+        }
+    }
+
+    return SoundSlots;
 }
 
 void SdlAudio::Spu2::SoundModule::SoundBankLoaded(u16 bank)
@@ -697,6 +1056,24 @@ s32 SdlAudio::Spu2::SoundModule::PlaySound(u32 sound, u32 voiceAndGroup, s16 lef
     // The module's key-ons are off while a movie has it, and a sound whose samples are not in the memory cannot play
     if (m_lent || !m_sounds[sound].used)
     {
+        if (!m_sounds[sound].used)
+        {
+            g_RefusedNoSamples++;
+            if (g_RefusedIdsCount < 4)
+            {
+                bool known = false;
+                for (u32 index = 0; index < g_RefusedIdsCount; index++)
+                {
+                    known = known || g_RefusedIds[index] == sound;
+                }
+
+                if (!known)
+                {
+                    g_RefusedIds[g_RefusedIdsCount++] = sound;
+                }
+            }
+        }
+
         return 0;
     }
 
@@ -826,6 +1203,8 @@ void SdlAudio::Spu2::SoundModule::PrepareStream(s32 file, std::vector<u8>* data)
 s32 SdlAudio::Spu2::SoundModule::StreamMusic(s32 file, s32 channel, u32 voiceAndGroup, u16 pitch, bool once,
                                              std::vector<u8>* prepared)
 {
+    const u64 probeStart = AudioProbe() ? AudioProbeMs() : 0;
+
     if (channel < 0 || channel >= StreamChannels)
     {
         return -1;
@@ -1038,6 +1417,16 @@ bool SdlAudio::Spu2::SoundModule::IsMusicReady(s32 channel)
 
 s32 SdlAudio::Spu2::SoundModule::PlayMusic(s32 channel)
 {
+    if (channel >= 0 && channel < StreamChannels)
+    {
+        m_streamStart[channel] = AudioProbeMs();
+    }
+
+    if (AudioProbe() && channel >= 0 && channel < StreamChannels)
+    {
+        std::fprintf(stderr, "audio: [%llu ms] stream %d played\n", static_cast<unsigned long long>(AudioProbeMs()), channel);
+    }
+
     if (channel < 0 || channel >= StreamChannels)
     {
         return -1;
@@ -1198,6 +1587,7 @@ const std::vector<u8>& SdlAudio::Spu2::SoundModule::StreamData(const MusicStream
 // its own (a track's own loop point), and the ring's flags are what the voice must follow
 void SdlAudio::Spu2::SoundModule::WriteStreamBlock(MusicStream& stream)
 {
+
     u32 blocks = stream.ringWords / BlockWords;
     const std::vector<u8>& data = StreamData(stream);
     if (blocks == 0 || data.empty())

@@ -1,5 +1,7 @@
 #include "game/sound.h"
 
+#include <cstdlib>
+
 #include "game/chunkdata.h"
 #include "game/clock.h"
 #include "game/filestream.h"
@@ -784,8 +786,22 @@ u32 PlayInstanceSound(f32 volume, f32 pitch, GameSound* sound, u32 group, Instan
     return static_cast<u32>(index) & 0xFF;
 }
 
+#ifndef __mips__
+// TEMPORARY probe (game/sound.cpp)
+bool SkipProbeWindow();
+u32 SkipProbeCallerLines();
+void SkipProbeCallerLine(const char* where, u32 id, u32 silenced);
+#endif
+
 u32 PlayInstanceSoundById(f32 volume, f32 pitch, u32 id, u32 group, InstanceContext* instance, s32 voiceKind, s32 last)
 {
+#ifndef __mips__
+    // TEMPORARY probe (TWINSANITY_TEST_SKIP_AUDIO=2): who asks for this sound, by return address, for the first calls after a skip
+    if (SkipProbeWindow() && SkipProbeCallerLines() < 80)
+    {
+        SkipProbeCallerLine("PlayInstanceSoundById", id, 1);
+    }
+#endif
     // The school's kid herd (School_KidHerd_SFX) never repeats
     constexpr u32 KidHerdSound = 0x1BF;
     GameSound* sound = SoundById(static_cast<u16>(id));

@@ -33,6 +33,20 @@ void CompactSoundMemory();
 // The volume groups 1 to 4 (4.12 fixed point, a group given as its number << GroupShift) the voices' volumes are scaled by
 void SetGroupVolume(s32 group, u32 left, u32 right);
 
+// The scene skip's silence, at the platform's own mixing: while it is on, every voice whose group is not one of `musicGroups`
+// (a group given as SetGroupVolume's) is mixed at nothing however the game sets its volume. The game's sound code keeps setting the
+// volumes of what it plays (a placed sound's distance, an emitter's), so a game-level mute loses that race; the mix cannot
+void HoldSilent(u32 held, const s32* musicGroups, u32 musicGroupCount);
+// A watched scene begins: a track that starts after this is the scene's own, and a skip ends it with the scene
+void NoteSceneBegin();
+
+// The sound memory: how much of it is in use, how much there is, and which sounds hold blocks in it. The game uses these to let go of
+// the samples of what it no longer has, which otherwise fill the memory and leave every later bank refused
+u32 SoundMemoryUsed();
+u32 SoundMemoryTotal();
+u32 LoadedSoundCount();
+u32 LoadedSoundId(u32 index);
+
 // Return 0, -1 for no such voice
 s32 SetVoiceVolume(s32 voice, s16 left, s16 right);
 s32 SetVoicePitch(s32 voice, u16 pitch);

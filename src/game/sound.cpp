@@ -16,7 +16,135 @@
 #include "game/resources.h"
 #include "game/stream.h"
 #include "platform/audio.h"
+#include "platform/time.h"
 #include "retail/libc.h"
+
+#include <cstdio>
+#include <cstdlib>
+
+// A scene being skipped runs unheard, and muting what already sounds is only half of it: the scene's scripts go on starting sounds as
+// it runs, and one started after a mute was heard. So nothing is played at all while this is on (PlaySoundOnVoice and PlaySoundAt
+// refuse), and what was already sounding is released once. The music is not played through those two (its players own their voices),
+// so it is untouched
+bool g_SceneSilenced = false;
+
+#ifndef __mips__
+// TEMPORARY probe for the scene skip's silence (TWINSANITY_TEST_SKIP_AUDIO=1): every start the silence refuses, and every start just
+// after it lifts, with the sound it was, which names the caller that got through
+// 1 logs only what the skip's silence touches, 2 logs every sound the game starts (the comparison: is a sound repeated this often
+// in plain play too)
+s32 SkipProbeMode()
+{
+    static s32 mode = -1;
+    if (mode < 0)
+    {
+        const char* value = std::getenv("TWINSANITY_TEST_SKIP_AUDIO");
+        mode = value == nullptr ? 0 : (value[0] == '2' ? 2 : 1);
+    }
+
+    return mode;
+}
+
+bool SkipProbeOn()
+{
+    return SkipProbeMode() != 0;
+}
+
+s32 g_SkipProbeAfter = 0;
+
+u32 g_SkipProbeCallerLines = 0;
+
+// Mode 2, in the stretch that matters: while a skip holds and just after it lifts
+bool SkipProbeWindow()
+{
+    return SkipProbeMode() == 2 && (g_SceneSilenced || g_SkipProbeAfter > 0);
+}
+
+u32 SkipProbeCallerLines()
+{
+    return g_SkipProbeCallerLines;
+}
+
+void SkipProbeCallerLine(const char* where, u32 id, u32 silenced)
+{
+    g_SkipProbeCallerLines++;
+    std::fprintf(stderr, "skip-audio: %s id 0x%x from 0x%lx silenced %u after %d\n", where, id,
+                 static_cast<unsigned long>(reinterpret_cast<uintptr_t>(__builtin_return_address(1))), silenced, g_SkipProbeAfter);
+}
+
+// Mode 2 counts what is asked for and where from, and prints a summary a second at a time: a sound asked for many times a second is
+// a caller that never settles, and the address says which caller
+struct SkipProbeEntry
+{
+    u32 id;
+    u32 count;
+    uintptr_t caller;
+};
+
+SkipProbeEntry g_SkipProbeIds[32];
+u32 g_SkipProbeIdCount = 0;
+u32 g_SkipProbeCalls = 0;
+
+void SkipProbeFlush()
+{
+    for (u32 index = 0; index < g_SkipProbeIdCount; index++)
+    {
+        if (g_SkipProbeIds[index].count != 0)
+        {
+            std::fprintf(stderr, "skip-audio: id 0x%x asked %u times, caller 0x%lx, silenced %d after %d\n", g_SkipProbeIds[index].id,
+                         g_SkipProbeIds[index].count, static_cast<unsigned long>(g_SkipProbeIds[index].caller),
+                         g_SceneSilenced != 0 ? 1 : 0, g_SkipProbeAfter);
+            g_SkipProbeIds[index].count = 0;
+        }
+    }
+}
+
+void SkipProbe(const char* what, u32 id, s32 group, s32 voice)
+{
+    if (!SkipProbeOn())
+    {
+        return;
+    }
+
+    static u32 logged = 0;
+    if (SkipProbeMode() == 1 && g_SceneSilenced == 0 && g_SkipProbeAfter == 0)
+    {
+        return;
+    }
+
+    if (SkipProbeMode() == 2)
+    {
+        uintptr_t caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+        for (u32 index = 0; index < g_SkipProbeIdCount; index++)
+        {
+            if (g_SkipProbeIds[index].id == id)
+            {
+                g_SkipProbeIds[index].count++;
+                return;
+            }
+        }
+
+        if (g_SkipProbeIdCount < 32)
+        {
+            g_SkipProbeIds[g_SkipProbeIdCount].id = id;
+            g_SkipProbeIds[g_SkipProbeIdCount].count = 1;
+            g_SkipProbeIds[g_SkipProbeIdCount].caller = caller;
+            g_SkipProbeIdCount++;
+        }
+
+        return;
+    }
+
+    if (++logged > 200)
+    {
+        return;
+    }
+
+    std::fprintf(stderr, "skip-audio: %s id 0x%x group %d voice %d silenced %d after %d\n", what, id, group, voice,
+                 g_SceneSilenced != 0 ? 1 : 0, g_SkipProbeAfter);
+}
+#endif
+
 
 // The sound code's side of the sound processor: voices, reverbs, groups and music
 namespace
@@ -96,6 +224,19 @@ f32* GroupScales();
 
 extern "C" u32 PlaySound(f32 volume, f32 pitchScale, GameSound* sound, s32 group, s32 voiceKind, s32 last)
 {
+#ifndef __mips__
+    // TEMPORARY probe (TWINSANITY_TEST_SKIP_AUDIO=2): the ids no level holds, with what the game thinks it has for them
+    if (sound->soundId >= 0x8000 && SkipProbeOn())
+    {
+        static u32 told = 0;
+        if (told < 8)
+        {
+            told++;
+            std::fprintf(stderr, "skip-audio: high id 0x%x header 0x%x size %d offset %d loaded %d\n", sound->soundId,
+                         sound->resourceBits, sound->size, sound->offset, static_cast<u32>(sound->flags.loaded));
+        }
+    }
+#endif
     if (sound->flags.loaded == 0)
     {
         return 0;
@@ -139,7 +280,28 @@ extern "C" void SetVoiceBank(const char* name)
 
 extern "C" u32 PlaySoundById(f32 volume, f32 pitchScale, u32 id, s32 group, s32 voiceKind, s32 last)
 {
+#ifndef __mips__
+    // TEMPORARY probe (TWINSANITY_TEST_SKIP_AUDIO=2): who asks for this sound, by return address, for the first calls after a skip
+    if (SkipProbeMode() == 2 && (g_SceneSilenced != 0 || g_SkipProbeAfter > 0) && SkipProbeCallerLines() < 80)
+    {
+        SkipProbeCallerLine("PlaySoundById", id, g_SceneSilenced != 0 ? 1 : 0);
+    }
+#endif
     GameSound* sound = SoundById(static_cast<u16>(id));
+#ifndef __mips__
+    // TEMPORARY probe (TWINSANITY_TEST_SKIP_AUDIO=2): the frontend's own ids, and what the game thinks it has for them
+    if (id >= 0x8000 && SkipProbeOn())
+    {
+        static u32 told = 0;
+        if (told < 8)
+        {
+            told++;
+            std::fprintf(stderr, "skip-audio: frontend id 0x%x found %d size %d offset %d loaded %d\n", id, sound != nullptr ? 1 : 0,
+                         sound != nullptr ? sound->size : -1, sound != nullptr ? sound->offset : -1,
+                         sound != nullptr ? static_cast<u32>(sound->flags.loaded) : 0);
+        }
+    }
+#endif
     if (sound == nullptr)
     {
         return 0;
@@ -164,8 +326,10 @@ EABI_EXPORT(FUN_001e6e78, SetMusicPitch);
 EABI_EXPORT(FUN_001e14b8, SetMusicVolume);
 EABI_EXPORT(FUN_001e1730, UpdateMusic);
 
+
 namespace
 {
+
 f32* GroupScales()
 {
     return reinterpret_cast<f32*>(g_AlphaPresetsBlock + GroupScalesOffset);
@@ -187,6 +351,9 @@ void PlayOnVoice(SoundVoice* voice, GameSound* sound, u32 group, s32 last)
                                static_cast<s16>(voice->right), static_cast<u16>(voice->pitch), sound->parameter1,
                                SoundHighByte, static_cast<u32>(last == -1 ? 1 : last));
     voice->frames = 0;
+    // A voice silenced to be let go of and taken again plays: the release that was pending was the silence's, not the new sound's,
+    // and leaving it set cut every sound a muting had touched shortly after it started (its owner then started it again, and again)
+    voice->bits.released = 0;
 }
 }
 
@@ -346,6 +513,12 @@ extern "C"
 
     s32 PlaySoundOnVoice(f32 volume, f32 pitchScale, SoundVoice* voice, GameSound* sound, u32 group, s32 last)
     {
+        // The scene skip's silence is the mixers', not this function's: refusing here leaves the callers that own a sound thinking
+        // it never took (an instance sound is then asked for every step and never settles), so what a skipped scene starts is played
+        // and mixed at nothing instead
+#ifndef __mips__
+        SkipProbe(g_SceneSilenced != 0 ? "started" : "after", sound->soundId, static_cast<s32>(group), VoiceNumber(voice));
+#endif
         voice->volume = volume;
         voice->pitchScale = pitchScale;
         // Retail clears the voice's use field here (bits & ~0x3E00), so a sound already playing can be taken from
@@ -370,6 +543,9 @@ extern "C"
 
     s32 PlaySoundAt(f32 volume, f32 pitchScale, SoundVoice* voice, GameSound* sound, u32 group, const Vector4* position, s32 last)
     {
+#ifndef __mips__
+        SkipProbe(g_SceneSilenced != 0 ? "started-at" : "after-at", sound->soundId, static_cast<s32>(group), VoiceNumber(voice));
+#endif
         voice->pitchScale = pitchScale;
         voice->volume = volume;
         voice->bits.use = SoundVoice::UseNone;
@@ -502,11 +678,124 @@ extern "C"
         }
     }
 
+    // The scene skip's silence: the platform's mix is held (every voice but the music's at nothing), and that is all it does. The
+    // game's own voices are left exactly as the game keeps them: silencing or releasing them here made the objects that own them see
+    // their sound gone and start it again, every step, which is the sound that went on after a skip
+    extern "C" void SilenceSceneVoices()
+    {
+#ifndef __mips__
+        if (!g_SceneSilenced && SkipProbeOn())
+        {
+            std::fprintf(stderr, "skip-audio: -- hold on --\n");
+        }
+#endif
+        g_SceneSilenced = true;
+        const s32 loud[1] = {static_cast<s32>(SoundGroupOf(MusicGroup))};
+        Platform::Audio::HoldSilent(1, loud, 1);
+    }
+
+    // What the scene is still saying: the voices the game has playing that a music player does not own
+    extern "C" u32 SceneVoicesHeard()
+    {
+        u32 heard = 0;
+        for (SoundCore* core = g_SoundCores; core < g_SoundCores + SoundCoreCount; core++)
+        {
+            u32 bit = 1;
+            for (u32 voice = 0; voice < SoundCore::VoiceCount; voice++)
+            {
+                const SoundVoice& entry = core->voices[voice];
+                if ((core->voicesInUse & bit) != 0 && entry.bits.takenByMusic == 0 && entry.bits.playing != 0 &&
+                    entry.bits.released == 0)
+                {
+                    heard++;
+                }
+
+                bit <<= 1;
+            }
+        }
+
+        return heard;
+    }
+
+    extern "C" void RestoreSceneVoices()
+    {
+#ifndef __mips__
+        if (SkipProbeOn())
+        {
+            g_SkipProbeAfter = 120;
+            std::fprintf(stderr, "skip-audio: -- hold off, %u effect voices still playing --\n", SceneVoicesHeard());
+        }
+#endif
+        g_SceneSilenced = false;
+        Platform::Audio::HoldSilent(0, nullptr, 0);
+    }
+
+    // Whether the game still has a sound's samples anywhere it can play them from: a level's tables, or the front end's own (which
+    // SoundById does not look in, and whose two sounds were being let go of by every prune)
+    bool SoundIsStillHeld(u32 id)
+    {
+        if (id <= 0xFFFF && SoundById(static_cast<u16>(id)) != nullptr)
+        {
+            return true;
+        }
+
+        GameController* controller = G_GameController;
+        if (controller == nullptr)
+        {
+            return false;
+        }
+
+        // The table's capacity is its word's low 14 bits
+        constexpr u32 CapacityMask = 0x3FFF;
+        SoundTable& front = controller->frontEndSounds;
+        const s32 capacity = static_cast<s32>(front.bits & CapacityMask);
+        for (s32 index = 0; index < capacity; index++)
+        {
+            GameSound* sound = front.sounds[index];
+            if (sound != nullptr && sound->soundId == id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The samples of the sounds the game no longer has are let go of: the module keeps a block for every sound it was handed until it
+    // is told, and a level's banks are read again each time it is entered or skipped through, so what no table holds is a block nobody
+    // will ask for again. Called after a skip (the moment the pile-up happens) and when the memory is filling
+    extern "C" void ReleaseSoundsTheGameLost()
+    {
+        const u32 total = Platform::Audio::SoundMemoryTotal();
+        if (total == 0)
+        {
+            return;
+        }
+
+        const u32 loaded = Platform::Audio::LoadedSoundCount();
+        for (u32 index = 0; index < loaded; index++)
+        {
+            const u32 id = Platform::Audio::LoadedSoundId(index);
+            if (!SoundIsStillHeld(id))
+            {
+                Platform::Audio::ReleaseSound(id);
+            }
+        }
+    }
+
     u32 UpdateSound(s32 paused, TimeClock* clock)
     {
         f32 time = static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit;
         if (g_SoundLentToMovie != 0)
         {
+#ifndef __mips__
+            static s32 told = 0;
+            if (told == 0 && std::getenv("TWINSANITY_TEST_AUDIO") != nullptr)
+            {
+                told = 1;
+                std::fprintf(stderr, "audio: sound lent, update held\n");
+            }
+#endif
             return g_SoundLentToMovie;
         }
 
@@ -521,6 +810,18 @@ extern "C"
             UpdateMusicEmitters();
         }
 
+#ifndef __mips__
+        if (g_SkipProbeAfter > 0)
+        {
+            g_SkipProbeAfter--;
+        }
+
+        if (SkipProbeOn() && ++g_SkipProbeCalls >= 60)
+        {
+            g_SkipProbeCalls = 0;
+            SkipProbeFlush();
+        }
+#endif
         UpdatePlayingSounds(time, paused != 0);
         if (0.0f < g_GroupFadeTime)
         {
@@ -544,6 +845,7 @@ extern "C"
         if (g_FramesSinceKeepAlive >= KeepAliveFrames)
         {
             g_FramesSinceKeepAlive = 0;
+            ReleaseSoundsTheGameLost();
             Platform::Audio::CompactSoundMemory();
         }
 
@@ -678,6 +980,14 @@ extern "C"
 
     s32 PlayMusic(f32 left, f32 right, f32 fadeTime, MusicPlayer* player)
     {
+#ifndef __mips__
+        if (std::getenv("TWINSANITY_TEST_AUDIO") != nullptr)
+        {
+            std::fprintf(stderr, "audio: [%llu ms] music asked, channel %d\n",
+                         static_cast<unsigned long long>(Platform::Time::Ticks() / (Platform::Time::TicksPerSecond / 1000)),
+                         player->stream != nullptr ? static_cast<s32>(player->stream->channel) : -1);
+        }
+#endif
         player->left = 0.0f;
         player->fadeTime = fadeTime;
         f32 silent = player->left;

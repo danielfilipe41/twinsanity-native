@@ -27,6 +27,9 @@ EABI_EXPORT(FUN_00192360, GameTimeHasTimeLeft);
 
 extern "C"
 {
+    // The scene skip's speed over the per-clock speeds (game/gamecontroller.cpp sets it while it runs a scene out)
+    f32 g_ClockTurbo = 1.0f;
+
     void TimeClockReset(TimeClock* clock)
     {
         clock->advance = 0;
@@ -106,9 +109,16 @@ extern "C"
     void AdvanceClocks(TimeClock* clocks, GameTimeController* controller)
     {
         s32 frameTime = controller->frameTime;
+#ifndef __mips__
+        // A scene being skipped runs its clocks faster (game/gamecontroller.cpp's scene skip): everything on them gets the same
+        // frameTime scaled up, so the scripts and animations walk the scene's own frames faster rather than being skipped
+        const f32 turbo = g_ClockTurbo;
+#else
+        constexpr f32 turbo = 1.0f;
+#endif
         for (u32 i = 0; i < GameClockCount; i++)
         {
-            TimeClockAdvanceBy(g_ClockSpeeds[i], frameTime, &clocks[i]);
+            TimeClockAdvanceBy(g_ClockSpeeds[i] * turbo, frameTime, &clocks[i]);
         }
     }
 

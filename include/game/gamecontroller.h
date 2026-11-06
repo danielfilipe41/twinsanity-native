@@ -483,7 +483,6 @@ extern "C"
 // Whether the scripted cutscene the game is watching was asked to skip: the cross button pressed while watching (the level
 // scripts' condition 572, always no in retail). Only while the game watches, so a scene that skipped leaves nothing behind
 u32 CutsceneSkipped();
-// Whether a script of the scene asked condition 572 (only a scene that carries a skip of its own asks): the hint waits for it, so a
-// scene with no skip never offers one. A script asking is noted here (its condition's check)
-u32 CutsceneSkipAsked();
-void NoteCutsceneSkipAsked();
+// Whether a skip is holding the picture's own effects off: a scene runs its rumbles and its camera shakes through them, and while it
+// is being run out they are not the player's to hear or feel (camerarig.cpp's shakes ask this)
+u32 SceneSkipHoldingEffects();

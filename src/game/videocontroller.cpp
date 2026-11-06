@@ -320,13 +320,12 @@ constexpr char CrossGlyph = 0x5C;
 void QueueScriptedSkipHint()
 {
     // A cutscene file playing is its own hint's business (DrawSkipHint); a scripted scene is watched with the video controller idle, or
-    // playing its music only, so that bit says nothing about whether a scene is on. The hint waits for a script of the scene to ask
-    // condition 572: only a scene that carries a skip of its own asks, so a scene without one is never offered a skip it cannot take
-    // (the scripts ask every step while their loop is in it, so on a scene that has a skip the hint is there from the first step)
+    // playing its music only, so that bit says nothing about whether a scene is on. Every watched scene takes a skip: a script of it
+    // may end it through condition 572, and one that never asks is run out
     if (G_VideoController == nullptr ||
         (G_VideoController->state == VideoController::StatePlaying && G_VideoController->cutscene != nullptr) ||
         !Platform::System::CutsceneSkip() || G_GameController == nullptr ||
-        G_GameController->State() != GameController::StateWatching || CutsceneSkipAsked() == 0)
+        G_GameController->State() != GameController::StateWatching)
     {
         return;
     }

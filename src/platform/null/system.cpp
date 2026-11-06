@@ -69,6 +69,12 @@ void Platform::System::SetCutsceneSkip(bool)
 {
 }
 
+// Nothing keeps a speed here either: the default the settings file's docs give
+u32 Platform::System::CutsceneSkipSpeed()
+{
+    return 10;
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

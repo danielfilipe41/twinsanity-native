@@ -769,9 +769,8 @@ f32 NoOp571Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 
 f32 NoOpCutsceneSkippedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    // Retail always answered no. A scene that carries a skip of its own asks this every step, and the cross button pressed while it
-    // plays makes the answer yes, so the level's script takes its own end of the scene (the port's cutscene skip)
-    NoteCutsceneSkipAsked();
+    // Retail always answered no. The cross button pressed while a scene plays makes the answer yes, so a level script that carries a
+    // skip of its own takes its own end of the scene (the port's cutscene skip)
     return YesNo(CutsceneSkipped() != 0);
 }
 
