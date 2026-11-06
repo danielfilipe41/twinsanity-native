@@ -75,6 +75,16 @@ void Platform::System::SetTextLanguageChoice(u32 index)
     HostSettingsSetTextLanguageChoice(index);
 }
 
+bool Platform::System::CutsceneSkip()
+{
+    return HostSettingsCutsceneSkip();
+}
+
+void Platform::System::SetCutsceneSkip(bool skip)
+{
+    HostSettingsSetCutsceneSkip(skip);
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

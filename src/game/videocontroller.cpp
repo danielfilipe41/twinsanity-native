@@ -10,10 +10,18 @@
 #include "game/math.h"
 #include "game/memory.h"
 #include "game/objectnode.h"
+#include "game/gamecontroller.h"
+#include "game/language.h"
 #include "game/overlay.h"
+#include "game/porttext.h"
 #include "game/place.h"
 #include "game/renderer.h"
 #include "game/sound.h"
+
+#include "platform/system.h"
+
+#include <cstdio>
+#include <cstring>
 
 // The video controller around the cutscenes' playing (game/cutscenes.h): cutscenes and music-only ones queued, started and stopped
 // for the scripts, the parts read handed over, its state's update, its tracks made, played a frame at a time and let go of, and the
@@ -36,6 +44,10 @@ constexpr f32 TextScale = 0.5f;
 constexpr f32 SkipHintX = Rounded(0.83);
 constexpr f32 DiscErrorX = Rounded(0.85);
 constexpr f32 CutsceneTextY = Rounded(0.12);
+// The scripted scenes' hint: the bottom right corner of the picture. The text is anchored by that corner (BottomRight), so a word in a
+// language with wide glyphs runs left across the picture instead of off its edge, and every language ends the same distance from it
+constexpr f32 ScriptedHintX = Rounded(0.95);
+constexpr f32 ScriptedHintY = Rounded(0.9);
 
 // A track's place made the origin's (its w kept)
 void PlaceAtOrigin(Vector4* position)
@@ -295,6 +307,45 @@ void DrawSkipHint(VideoController* controller)
     GetColor(&colour, SkipHintColour);
     renderer->colour = colour;
     QueueText(renderer, controller->skipHint.string, SkipHintX, CutsceneTextY);
+}
+
+// The cross button's character. It is 0x5C in the game's font on every disc: the European and American select prompts end with it,
+// and so does the Japanese back prompt (a Japanese game confirms with the circle, so its select prompt ends with the circle's 0x5D
+// instead: the cross is still 0x5C there, which is what a skip wants)
+constexpr char CrossGlyph = 0x5C;
+
+// The hint a scripted cutscene gets, queued on the frames that should show it: the video controller is not playing a cutscene file,
+// skipping is on, and the game is watching. Queued once a step (GameController::Watching) as the file's hint is and again by every
+// display frame between the steps (HostQueueCutsceneHints), so it holds still instead of blinking on every other frame
+void QueueScriptedSkipHint()
+{
+    // A cutscene file playing is its own hint's business (DrawSkipHint); a scripted scene is watched with the video controller idle, or
+    // playing its music only, so that bit says nothing about whether a scene is on. The hint waits for a script of the scene to ask
+    // condition 572: only a scene that carries a skip of its own asks, so a scene without one is never offered a skip it cannot take
+    // (the scripts ask every step while their loop is in it, so on a scene that has a skip the hint is there from the first step)
+    if (G_VideoController == nullptr ||
+        (G_VideoController->state == VideoController::StatePlaying && G_VideoController->cutscene != nullptr) ||
+        !Platform::System::CutsceneSkip() || G_GameController == nullptr ||
+        G_GameController->State() != GameController::StateWatching || CutsceneSkipAsked() == 0)
+    {
+        return;
+    }
+
+    DrawScriptedSkipHint();
+}
+
+void DrawScriptedSkipHint()
+{
+    Renderer* renderer = G_Renderer_;
+    renderer->textScale.y = TextScale;
+    renderer->textScale.x = TextScale;
+    u32 colour;
+    GetColor(&colour, SkipHintColour);
+    renderer->colour = colour;
+    renderer->textAlignment.value = TextAlignment::BottomRight;
+    char hint[64];
+    std::snprintf(hint, sizeof(hint), "%c  %s", CrossGlyph, PortTextString(PortTextSkip));
+    QueueText(renderer, hint, ScriptedHintX, ScriptedHintY);
 }
 
 void DrawDiscError(VideoController* controller)

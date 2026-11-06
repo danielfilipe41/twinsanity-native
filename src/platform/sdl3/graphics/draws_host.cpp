@@ -1491,8 +1491,13 @@ void HostCompositeScene()
     // The picture is a quad of two triangles (the fitted rect's, or the whole screen's), in the order the vertices are in: bgfx's
     // default topology is a triangle list, so no PT state is set
     bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
-    bgfx::setTexture(0, g_compositeSampler, g_sceneColour,
-                     BGFX_SAMPLER_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    // The scene is read with the bilinear filter: the resolution scale draws the scene larger than the picture it is
+    // composited into (4x is 3840x2160 into 960x540), and point sampling that downscale threw away the detail the scale had
+    // drawn -- the supersampled frame came out as the nearest texel's blocks, aliased rather than resolved. Bilinear averages
+    // the texels under each picture pixel, which is what makes the scale's extra pixels count (linear is bgfx's default: the
+    // point flags are what ask for the nearest texel, so leaving them off is the bilinear read). At 1x the scene and the
+    // picture are the same size and every sample lands on a texel's centre, so there is nothing for the filter to change
+    bgfx::setTexture(0, g_compositeSampler, g_sceneColour, BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
     bgfx::setVertexBuffer(0, g_compositeTriangle);
     bgfx::submit(HostCompositeView, g_compositeProgram);
 

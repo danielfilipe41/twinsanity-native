@@ -59,6 +59,16 @@ void Platform::System::SetTextLanguageChoice(u32)
 {
 }
 
+// Nothing keeps the choice here (no settings file): every cutscene is skippable
+bool Platform::System::CutsceneSkip()
+{
+    return true;
+}
+
+void Platform::System::SetCutsceneSkip(bool)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

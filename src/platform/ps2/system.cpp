@@ -277,6 +277,16 @@ void Platform::System::SetTextLanguageChoice(u32)
 {
 }
 
+// The console has no settings file: retail, a cutscene file only skippable once it has been played
+bool Platform::System::CutsceneSkip()
+{
+    return false;
+}
+
+void Platform::System::SetCutsceneSkip(bool)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     sceCdCLOCK clock;

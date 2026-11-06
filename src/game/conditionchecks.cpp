@@ -769,7 +769,10 @@ f32 NoOp571Condition::Check(GameNode*, BehaviourLevel*, const u32*)
 
 f32 NoOpCutsceneSkippedCondition::Check(GameNode*, BehaviourLevel*, const u32*)
 {
-    return 0.0f;
+    // Retail always answered no. A scene that carries a skip of its own asks this every step, and the cross button pressed while it
+    // plays makes the answer yes, so the level's script takes its own end of the scene (the port's cutscene skip)
+    NoteCutsceneSkipAsked();
+    return YesNo(CutsceneSkipped() != 0);
 }
 
 // The character agent's vehicle (whether the instance has a character node isn't checked)

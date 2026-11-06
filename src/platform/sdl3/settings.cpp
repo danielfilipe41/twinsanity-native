@@ -140,6 +140,39 @@ bool g_SettingsDirty = false;
 bool g_DeadZoneLoaded = false;
 u32 g_DeadZone = 0;
 
+// Whether cutscenes can be skipped (the game options' row, which the file keeps): on unless the file says off
+bool g_CutsceneSkipLoaded = false;
+bool g_CutsceneSkip = true;
+
+void LoadCutsceneSkip()
+{
+    if (g_CutsceneSkipLoaded)
+    {
+        return;
+    }
+
+    g_CutsceneSkipLoaded = true;
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        char word[8] = {};
+        if (std::sscanf(line, "cutscene_skip %7s", word) == 1)
+        {
+            g_CutsceneSkip = std::strcmp(word, "off") != 0;
+        }
+    }
+
+    std::fclose(file);
+}
+
 void LoadDeadZone()
 {
     if (g_DeadZoneLoaded)
@@ -422,6 +455,24 @@ void HostSettingsSetDeadZone(u32 percent)
     g_SettingsDirty = true;
 }
 
+bool HostSettingsCutsceneSkip()
+{
+    LoadCutsceneSkip();
+    return g_CutsceneSkip;
+}
+
+void HostSettingsSetCutsceneSkip(bool skip)
+{
+    LoadCutsceneSkip();
+    if (skip == g_CutsceneSkip)
+    {
+        return;
+    }
+
+    g_CutsceneSkip = skip;
+    g_SettingsDirty = true;
+}
+
 void HostSettingsSetAntiAlias(AntiAlias mode)
 {
     LoadAntiAlias();
@@ -688,6 +739,7 @@ enum class Setting
     DrawDistance,
     DeadZone,
     SaveCard,
+    CutsceneSkip,
 };
 
 // Whether the line begins with the word (the leading whitespace aside, and the word complete)
@@ -742,6 +794,8 @@ bool LineIsSetting(Setting setting, const char* line, u32 group)
         return LineStarts(line, "deadzone");
     case Setting::SaveCard:
         return LineStarts(line, "save_card");
+    case Setting::CutsceneSkip:
+        return LineStarts(line, "cutscene_skip");
     }
 
     return false;
@@ -839,6 +893,8 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     PlaceSetting(lines, &count, Setting::DeadZone, 0, text);
     std::snprintf(text, sizeof(text), "save_card %u", Platform::Saves::Card());
     PlaceSetting(lines, &count, Setting::SaveCard, 0, text);
+    std::snprintf(text, sizeof(text), "cutscene_skip %s", HostSettingsCutsceneSkip() ? "on" : "off");
+    PlaceSetting(lines, &count, Setting::CutsceneSkip, 0, text);
 
     std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
     PlaceSetting(lines, &count, Setting::Window, 0, text);

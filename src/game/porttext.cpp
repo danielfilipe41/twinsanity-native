@@ -51,6 +51,9 @@ const char* const Lines[PortTextCount - PortTextFirst][Slots] = {
     {"stick dead zone", "zone morte des sticks", "totzone der sticks", "zona muerta del stick", "zona morta dello stick",
      "スティックの遊び"},
     {"card", "carte", "karte", "tarjeta", "scheda", "カード"},
+    {"cutscene skip", "passer les cinématiques", "zwischensequenzen überspringen", "saltar cinemáticas",
+     "salta le scene", "ムービーをスキップ"},
+    {"skip", "passer", "überspringen", "saltar", "salta", "スキップ"},
 };
 }
 

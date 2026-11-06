@@ -22,12 +22,12 @@ Known issues:
 - Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
 - Sometimes in game audio takes a bit to start (and cuts dialogue because of it)
+- Sometimes audio plays for a bit then stops then goes again
+- Cutscene skip only works in some cutscenes
 
 Future features:
-- Cutscene skip
 - Mod support
 - WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
-- HD textures
 - Other consoles button glyphs
 
 QOL Changes:
@@ -36,11 +36,10 @@ QOL Changes:
 - A stick dead zone, in the game options (off to 20%)
 - Multiple save pages: the save screens' pages are memory cards, stepped with L1/L2/R1/R2 (four cards, retail saves untouched)
 - Exit game option (also on pause screen the old quit game that sent u back to the title screen now closes the game and is called close game)
-- Added option to start a new game from inside the save game option on the pause menu (it returns to the title and starts the new
-  game there, so nothing of the level you were in is left loaded)
+- Added option to start a new game from inside the save game option on the pause menu
 - Removed the delay on the Save file check screens
 - Fast loading screens (on an nvme it only takes 62ms)
-
+- Cutscene skip, in the game options and on by default, The scenes' own hint is on screen while they play. Off is retail's behaviour
 ## Getting the game
 
 You need a PAL copy of Crash Twinsanity (SLES-525.68). Extracting the disc gives you `CRASH6`, `FMV` and `SLES_525.68`.
@@ -261,10 +260,11 @@ GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and wri
 | `resolution` | `1280x720`: the window's pixels (what a full screen returns to) | `960x540` |
 | `vsync` | `on`, `off` | `off` |
 | `aspect` | `stretch` (the picture fills the window), `fit` (its 16:9 kept, black bars around it) | `stretch` |
-| `scale` | `0.5`, `0.75`, `1`, `1.5`, `2`, `3`, `4`: the scene drawn at that multiple of 960x540 and then stretched to the window, so a sharper or cheaper picture whatever the window's size | `1` |
+| `scale` | `0.5`, `0.75`, `1`, `1.5`, `2`, `3`, `4`: the scene drawn at that multiple of 960x540 and then stretched to the window, so a sharper or cheaper picture whatever the window's size. Every pass is drawn at the scene's size (the geometry, the sky's half-size buffer, the UI, the particles, the decals, the shadows, the fog), and the picture is resolved from it with the bilinear filter, so the extra pixels are filtered down rather than dropped | `1` |
 | `draw_distance` | `1`, `1.5`, `2`, `3`, `4`: the pop-in distance. It multiplies the lens's 1500-unit reach (the projection and the cull), keeps a level of detail drawing its last mesh past the distance the level's data stopped it at, stretches a load wall's 2-unit reach, and makes the chunk loader keep more links of chunks loaded (retail's 2 links, up to 5). The cost is memory and what the extra geometry draws | `1` |
 | `deadzone` | `0`, `5`, `10`, `15`, `20`: the sticks' dead zone, a percentage of an axis' half range. Inside it a stick reads as the middle, and outside it is moved out to the zone's edge and scaled over the rest of the range, so the centre holds still without the outer travel shrinking. GAME OPTIONS has the row | `0` |
 | `save_card` | `0` to `3`: the card the save screens open on (their pages are the cards), written as the pages are stepped | `0` |
+| `cutscene_skip` | `on`, `off`: whether cutscenes can be skipped (the game options' row). `on` skips a cutscene file on its first viewing and lets a scripted scene with a skip of its own end; `off` is retail's, a file only once it has been played | `on` |
 
 The file is merged when it is written: your own comments and lines this build does not know are kept as they are.
 

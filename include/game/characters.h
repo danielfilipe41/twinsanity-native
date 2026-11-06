@@ -286,7 +286,7 @@ struct CrouchController
     // State 0: a knee slide or the crouch's start (circle pressed this frame or not), the next state written when there's one
     void Stand(u32 circle, s32* next) RETAIL(FUN_00143828);
     // State 5 (the circle unused) and state 6: the stick's turn, the clock's time
-    void Slide(f32 turn, s32 time, u32 unused, s32* next) RETAIL_N32(FUN_00143a58);
+    void Slide(f32 turn, s32 time, TimeClock* clock, u32 unused, s32* next) RETAIL_N32(FUN_00143a58);
     void SlideEnd(f32 turn, s32 time, u32 circle, s32* next) RETAIL_N32(FUN_00143d38);
     // The frame (CrouchFrame's): circle's press, the stick's size and turn. Whether it isn't standing
     u32 Frame(f32 circle, f32 stick, f32 turn, TimeClock* clock) RETAIL_N32(FUN_00143fd0);

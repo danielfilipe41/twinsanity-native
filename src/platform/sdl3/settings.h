@@ -77,3 +77,8 @@ f32 HostSettingsDrawDistance();
 // the pad code as its first stick is read, and written back when the options screen changes it
 u32 HostSettingsDeadZone();
 void HostSettingsSetDeadZone(u32 percent);
+
+// Whether cutscenes can be skipped: the file's `cutscene_skip` line, on when it has none. Read by the game's cutscene code and
+// written back when the options screen changes it
+bool HostSettingsCutsceneSkip();
+void HostSettingsSetCutsceneSkip(bool skip);

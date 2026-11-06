@@ -228,6 +228,14 @@ void DrawGameFrame(GameContext* context, bool playingMovie, bool redraw)
         context->gameController->SetView(playingMovie);
     }
 
+    // An extra display frame's hints are queued before the scene draws, because the scene's draw is where the overlay is flushed: a
+    // hint queued after it lands in the next frame's flush, and between two steps the next frame is a step whose own update queues it
+    // again, so the extra frames drew none and the hint blinked on every other frame
+    if (redraw)
+    {
+        HostQueueCutsceneHints();
+    }
+
     renderers->DrawRendererScenes();
     if (playingMovie)
     {
@@ -249,8 +257,6 @@ void DrawGameFrame(GameContext* context, bool playingMovie, bool redraw)
         }
 
         Platform::Graphics::DrawDecals(&g_DecalData);
-        // The cutscene's hint is queued by its update (once a step): an extra frame queues it again for its own overlay
-        HostQueueCutsceneHints();
         // The game's own drawing runs again, as on its step: it queues the overlay the next pass draws and draws the
         // effects it draws at once rather than queues (the pickup's sparkles) -- and it only draws, the stepping of all of
         // it is in Update, so a display frame cannot advance any of it

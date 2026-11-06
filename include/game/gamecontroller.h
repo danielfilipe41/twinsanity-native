@@ -479,3 +479,11 @@ extern "C"
     extern struct Material* g_AddingSkidMaterial RETAIL(D_00309924);
     extern struct Material* g_SubtractingSkidMaterial RETAIL(D_00309928);
 }
+
+// Whether the scripted cutscene the game is watching was asked to skip: the cross button pressed while watching (the level
+// scripts' condition 572, always no in retail). Only while the game watches, so a scene that skipped leaves nothing behind
+u32 CutsceneSkipped();
+// Whether a script of the scene asked condition 572 (only a scene that carries a skip of its own asks): the hint waits for it, so a
+// scene with no skip never offers one. A script asking is noted here (its condition's check)
+u32 CutsceneSkipAsked();
+void NoteCutsceneSkipAsked();

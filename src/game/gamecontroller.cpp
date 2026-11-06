@@ -11,6 +11,7 @@
 #include "game/colour.h"
 #include "game/context.h"
 #include "game/controllers.h"
+#include "game/cutscenereader.h"
 #include "game/decals.h"
 #include "game/effects.h"
 #include "game/events.h"
@@ -37,9 +38,11 @@
 #include "game/widgets.h"
 #include "platform/graphics.h"
 #include "platform/stream.h"
+#include "platform/system.h"
 #include "retail/libc.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 
 namespace
@@ -126,6 +129,11 @@ constexpr u32 TiedMessage = 0x39;
 constexpr u32 ResetKinds = ~(1u << NodeCameraLens);
 // A new run asked for from the pause menu: started the moment the title it went through is up, with no menu or save screen in between
 bool g_NewGameFromPause = false;
+// The cross button pressed in the scripted cutscene playing (GameController::Watching), from its start: what the level scripts'
+// skip condition (572) asks, so a scene that carries a skip of its own ends it, and one that does not plays on
+u32 g_CutsceneSkipped = 0;
+// Whether a script of the scene asked condition 572 (only a scene that carries a skip does)
+u32 g_CutsceneSkipAsked = 0;
 
 // One of the loading screens, at random
 u32 RandomLoadingScreen()
@@ -1005,6 +1013,8 @@ u32 GameController::HideBottomText(s32 duration)
 u32 GameController::StartCutscene(s32 duration)
 {
     u32 state = State();
+    g_CutsceneSkipped = 0;
+    g_CutsceneSkipAsked = 0;
     if (state == StatePlaying)
     {
         SetNextState(StateWatching);
@@ -1301,6 +1311,9 @@ u32 GameController::Watching(TimeClock* clock)
     if (frame == stateFrame)
     {
         StartChunks();
+        std::fprintf(stderr, "cutscene: watching begins (file %s)\n",
+                     G_VideoController != nullptr && G_VideoController->state == VideoController::StatePlaying ? "playing"
+                                                                                                            : "none");
         return NoState;
     }
 
@@ -1314,8 +1327,49 @@ u32 GameController::Watching(TimeClock* clock)
     {
         G_VideoController->Skip();
     }
+    else if (skip && Platform::System::CutsceneSkip())
+    {
+        // A scripted cutscene (no cutscene file playing): the level's scripts that carry a skip of their own end when condition
+        // 572 turns yes, and one without a skip plays to its end. No fast-forward here: running a scripted scene's frames at
+        // once is what leaves the characters and the level wherever the frames were rushed through
+        // The press is remembered for the rest of the scene whatever the scripts have asked so far: a scene asks 572 whenever its own
+        // loop comes round (some from the first step, some only part way in, most every step), so a press made before its first ask
+        // still turns the answer yes when the ask comes, and the script takes its own end of the scene. Nothing else is forced: a
+        // scene whose scripts never ask (no skip of its own) plays out, as retail's would
+        g_CutsceneSkipped = 1;
+        std::fprintf(stderr, "cutscene: skip asked (a script of this scene %s 572 yet)\n",
+                     CutsceneSkipAsked() != 0 ? "asked" : "has not asked");
+    }
+
+    // The scene's hint queued as the file's is (its own update queues it once a step): the display frames between the steps queue
+    // it again, so it holds still instead of blinking on every other one
+    QueueScriptedSkipHint();
 
     return NoState;
+}
+
+// Whether the cutscene the game watches was asked to skip (the scripts' condition 572): the cross button pressed while watching,
+// cleared when a scene starts, and answered only while the game watches
+u32 CutsceneSkipped()
+{
+    return g_CutsceneSkipped != 0 && G_GameController != nullptr &&
+           G_GameController->State() == GameController::StateWatching;
+}
+
+// Whether a script of the scene asked condition 572 (a scene that carries a skip of its own): the hint waits for that, so a scene
+// without one never offers a skip it cannot take
+u32 CutsceneSkipAsked()
+{
+    return g_CutsceneSkipAsked;
+}
+
+void NoteCutsceneSkipAsked()
+{
+    if (g_CutsceneSkipAsked == 0)
+    {
+        g_CutsceneSkipAsked = 1;
+        std::fprintf(stderr, "cutscene: a script of the scene asks 572 (it carries a skip)\n");
+    }
 }
 
 u32 GameController::FadingOut(TimeClock*)

@@ -297,11 +297,17 @@ void DrawChunkSky(Sky* sky, RenderView* view)
     Matrix4x4 skyToCamera;
     VuMultiplyMatrices(&translation, &view->toClip, &skyToCamera);
 
-    // HalfSizeScreenMatrix's half of the target's DRAWING size (target->width/height), not the display's: on the
-    // PS2 the half-size buffer is half the frame the scene is drawn into, so sizing it from displayWidth made the
-    // sky's buffer and copy disagree with the scene whenever the two differ
-    u32 halfWidth = static_cast<u32>(target->width) >> 1;
-    u32 halfHeight = static_cast<u32>(target->height) >> 1;
+    // The half-size buffer is half the frame the scene is drawn into, and that frame is the host's scene target, which the
+    // resolution scale sizes. The game's own drawing size is a fixed 512x512, so half of it stayed 256x256 however large the
+    // scene grew: the copy then stretched those texels over the whole frame as soft blocks, the one pass that ignored the
+    // scale. Without a scene target (a proof with a copy target of its own) the drawing size stands in, half of it exactly as
+    // the console's buffer is
+    const u32 frameWidth = Platform::Graphics::HostSceneWidth() != 0 ? Platform::Graphics::HostSceneWidth()
+                                                                     : static_cast<u32>(target->width);
+    const u32 frameHeight = Platform::Graphics::HostSceneHeight() != 0 ? Platform::Graphics::HostSceneHeight()
+                                                                       : static_cast<u32>(target->height);
+    u32 halfWidth = frameWidth >> 1;
+    u32 halfHeight = frameHeight >> 1;
     if (!EnsureSkyBuffer(halfWidth, halfHeight))
     {
         return;

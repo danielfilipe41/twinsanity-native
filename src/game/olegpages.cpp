@@ -202,6 +202,11 @@ MenuItem* g_VoicesItem = nullptr;
 MenuItem* g_TextsItem = nullptr;
 // The stick dead zone row, on a host whose pads keep one
 MenuItem* g_DeadZoneItem = nullptr;
+// The cutscene skip row: on by default, off for retail's
+constexpr u32 CutsceneSkipItemId = 0x2C;
+constexpr u32 CutsceneSkipChoices = 2;
+const char* const CutsceneSkipNames[CutsceneSkipChoices] = {"off", "on"};
+MenuItem* g_CutsceneSkipItem = nullptr;
 
 // The two applied as they are stepped. The texts follow the voices while they were the same language, and only a player who
 // picks a different one for them splits the two (which is what a disc with translated-in-another-slot texts wants)
@@ -770,6 +775,10 @@ void GameOptionsPage::Entered(u32 player, u32)
     {
         g_DeadZoneItem->SetIntValue(player, static_cast<s32>(Platform::Pads::DeadZonePercent() / DeadZoneSteps));
     }
+    if (g_CutsceneSkipItem != nullptr)
+    {
+        g_CutsceneSkipItem->SetIntValue(player, Platform::System::CutsceneSkip() ? 1 : 0);
+    }
     if (g_VoicesItem != nullptr)
     {
         g_VoicesItem->SetIntValue(player, static_cast<s32>(Platform::System::LanguageChoice()));
@@ -798,6 +807,16 @@ void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
         if (g_DeadZoneItem->GetIntValue(player, &deadZone) != 0)
         {
             Platform::Pads::SetDeadZonePercent(static_cast<u32>(deadZone) * DeadZoneSteps);
+        }
+    }
+
+    if (g_CutsceneSkipItem != nullptr)
+    {
+        // Applied as the row is stepped: the file keeps it, and the cutscenes after this one answer to it
+        s32 cutsceneSkip = 0;
+        if (g_CutsceneSkipItem->GetIntValue(player, &cutsceneSkip) != 0)
+        {
+            Platform::System::SetCutsceneSkip(cutsceneSkip != 0);
         }
     }
 
@@ -1234,6 +1253,14 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
         g_TextsItem = texts;
 
     }
+
+    // Whether cutscenes may be skipped: off is retail's (a cutscene file only once played), on skips the files on their first
+    // viewing and lets the levels' scripted scenes take their own skip
+    ChoiceItem* cutsceneSkip =
+        ConstructNamedChoice(Allocate<ChoiceItem>(), PortTextCutsceneSkip, CutsceneSkipItemId, CutsceneSkipNames,
+                             CutsceneSkipChoices, Platform::System::CutsceneSkip() ? 1 : 0);
+    game.Add(cutsceneSkip);
+    g_CutsceneSkipItem = cutsceneSkip;
 
     game.Add(gameBack);
 

@@ -73,6 +73,10 @@ extern "C"
     // The skip hint and the disc error's title drawn
     void DrawSkipHint(VideoController* controller) RETAIL(FUN_0029ede8);
     void DrawDiscError(VideoController* controller) RETAIL(FUN_0029ee60);
+    // The hint a scripted cutscene gets, with no cutscene file to take a string from: the button the skip is on and the word for it.
+    // Queued by the game's step and by the display frames between the steps, so it holds still
+    void DrawScriptedSkipHint();
+    void QueueScriptedSkipHint();
 #ifndef __mips__
     // The same pair queued again by a display frame between two steps (its update queued them, and its overlay drew them)
     void HostQueueCutsceneHints();

@@ -44,6 +44,12 @@ void SetLanguageChoice(u32 index);
 u32 TextLanguageChoice();
 void SetTextLanguageChoice(u32 index);
 
+// Whether cutscenes can be skipped: a cutscene file on its first viewing too (retail only lets one played before go), and a
+// scripted cutscene through the level's own skip condition (the game options' row, on by default). A platform without a settings
+// file answers its own choice, and the console answers retail
+bool CutsceneSkip();
+void SetCutsceneSkip(bool skip);
+
 
 struct DateTime
 {

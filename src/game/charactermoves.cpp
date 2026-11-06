@@ -290,7 +290,7 @@ void CrouchController::Stand(u32 circle, s32* next)
     }
 }
 
-void CrouchController::Slide(f32 turn, s32 time, u32, s32* next)
+void CrouchController::Slide(f32 turn, s32 time, TimeClock* clock, u32, s32* next)
 {
     constexpr f32 SlowSpeed = Rounded(0.2);
 
@@ -326,6 +326,14 @@ void CrouchController::Slide(f32 turn, s32 time, u32, s32* next)
             // Steered: turning to the slide's direction over the seconds left of the steering
             f32 elapsedSeconds = static_cast<f32>(elapsed) * g_SecondsPerClockUnit;
             f32 secondsLeft = static_cast<f32>(steerTicks) * g_SecondsPerClockUnit - elapsedSeconds;
+            // Retail divides the angle left by the time left of the steering and turns the whole frame at that rate, so the
+            // steering's last frame divides by the sliver it starts inside and the slide swings far past the stick's direction
+            // (at 60 Hz 9 of the frame's 149 clock units are left of a steering whose angle it then covers in that sliver, by
+            // tens of degrees, a different amount every slide). The time left taken as no less than half the frame, that frame
+            // turns at most twice its share; at the 50 Hz the discs were made for, 97 of the frame's 179 units are left and
+            // nothing changes
+            f32 halfFrame = static_cast<f32>(static_cast<s32>(clock->advance)) * g_SecondsPerClockUnit * 0.5f;
+            secondsLeft = __builtin_fmaxf(secondsLeft, halfFrame);
             ObjectPlace* place = agent->instance->place;
             RotateAndTranslate(place);
             s32 angle;
@@ -523,7 +531,7 @@ u32 CrouchController::Frame(f32 circle, f32 stick, f32 turn, TimeClock* clock)
 
             break;
         case StateSliding:
-            Slide(turn, time, pressed, &next);
+            Slide(turn, time, clock, pressed, &next);
             break;
         case StateSlideEnd:
             SlideEnd(turn, time, pressed, &next);

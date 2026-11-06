@@ -4,6 +4,7 @@
 #include "game/chunkloading.h"
 #include "game/clock.h"
 #include "game/controllers.h"
+#include "game/gamecontroller.h"
 #include "game/cutscenereader.h"
 #include "game/instancefactory.h"
 #include "game/instances.h"
@@ -14,6 +15,7 @@
 #include "game/resources.h"
 #include "game/sound.h"
 #include "game/string.h"
+#include "platform/system.h"
 #include "retail/libc.h"
 
 // The video controller playing cutscenes: starting a read cutscene once its music is prepared, taking over the instances it plays
@@ -145,7 +147,9 @@ u32 StartReadCutscene(VideoController* controller, TimeClock* clock)
     ReadNextPart(controller);
     u32 seen = CutsceneSeen(controller);
     controller->waitedFrames = 0;
-    controller->bits.skippable = seen & 1;
+    // Every cutscene file is skippable unless the game options turn that off: retail only let CROSS skip one it had played
+    // before (CutsceneSeen's flag), which made the first play of each of them a wait
+    controller->bits.skippable = Platform::System::CutsceneSkip() ? 1 : (seen & 1);
     return 1;
 }
 
@@ -472,6 +476,11 @@ void VideoController::Skip()
 
     PlayCameraTrackFrame(0.0f, &cameraTrack, &cutscene->camera, Cutscene::EndFrame, place);
     GiveBackInstances(this);
+    // Skipped is seen: the instance's persistent flag, as the cutscene's own end sets it (a skip leaves the game where watching it
+    // to its end would)
+    Agent* agent = static_cast<ObjectNodeBase*>(GetGameNode(&instance->nodes, NodeObject))->agent;
+    ChunkEntry* chunk = ChunkOfIndex(g_ChunkManager, agent->chunkIndex);
+    SetPersistentFlag(chunk->savedFlags, agent->id, 1);
     StopCutscene(this);
     state = StateFinished;
 }
@@ -485,8 +494,22 @@ extern "C"
     void HostQueueCutsceneHints()
     {
         VideoController* controller = G_VideoController;
-        if (controller == nullptr || controller->state != VideoController::StatePlaying || controller->clock == nullptr ||
-            controller->clock->flags.running == 0 || controller->bits.musicOnly != 0 || controller->cutscene == nullptr)
+        if (controller == nullptr)
+        {
+            return;
+        }
+
+        if (controller->state != VideoController::StatePlaying || controller->cutscene == nullptr)
+        {
+            // A scripted cutscene (the game watching the level's own scene, no cutscene file playing): its hint is the port's, the
+            // button and the word for it, since there is no cutscene's own string to show. The video controller's clock is the
+            // cutscene file's and is not running here, so nothing of the file's path is asked. The step queues it as well
+            // (GameController::Watching), so a display frame holds it rather than being its only chance
+            QueueScriptedSkipHint();
+            return;
+        }
+
+        if (controller->clock == nullptr || controller->clock->flags.running == 0)
         {
             return;
         }
