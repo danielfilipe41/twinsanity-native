@@ -12,7 +12,15 @@ namespace Platform::System
 void Initialise();
 // Starts what the pads, the memory cards and the sound go through
 void StartServices();
-[[noreturn]] void Exit(s32 status);
+// Ends the run. The game's own exit row (and a window's close) asks for it from inside a frame, so a host only records the ask
+// here: the process is ended at the frame's end (EndRun), never where the call was made. Ending it there tears the renderer down
+// while the draws the frame already queued are still waiting for their state and the renderer's thread is still running the frame
+// before it; the C library's exit then unloads the driver's libraries under that thread, and the process dies inside the driver
+void Exit(s32 status);
+// Whether Exit was asked for and the run has not ended yet, and the host's frame end ending it there: the game's loop has no exit
+// of its own, so what Exit asked for happens between two of its frames
+bool ExitRequested();
+[[noreturn]] void EndRun();
 
 // The console's languages (the PS2's system settings')
 enum ConsoleLanguage : s32

@@ -1,7 +1,16 @@
 # Building on Linux
 
-The platform this port is developed on: OpenGL and Vulkan both run the game. The shared requirements (32-bit, SDL3,
-Python, submodules, disc data) are in [BUILDING.md](BUILDING.md).
+The platform this port is developed on: OpenGL and Vulkan both run the game. The shared requirements (32-bit, Python,
+submodules, disc data) are in [BUILDING.md](BUILDING.md).
+
+## SDL3
+
+The game links SDL3 in statically, built from the submodule: `configure.py` builds it on the first configure (through
+`tools/build_sdl_static.sh`, which can also be run by hand) into `build/sdl3-static/install`. That is why the binary needs no
+SDL3 package to run -- the 32-bit SDL3 many 64-bit distributions do not carry included. The version is the repository's
+rather than the distribution's, and the C++ runtime and libgcc are linked in too (`-static-libstdc++ -static-libgcc`). What SDL links inside (X11, Wayland, the audio servers) it loads from the desktop at run time, so those are
+the only shared libraries left beside libc. `SDL_STATIC=0` links the system's shared SDL3 instead (a 32-bit package,
+`SDL_PREFIX` for a custom install).
 
 ## bgfx, bx and bimg
 
@@ -37,7 +46,8 @@ PLATFORM=sdl3 .venv/bin/python configure.py
 ninja game
 ```
 
-`build/host/sdl3/game-with-data` is the result. The game reads its files relative to the working directory, so run it
+`build/host/sdl3/game-with-data` is the result, and needs no SDL3 at run time (only the desktop's X11 and GL or Vulkan).
+The game reads its files relative to the working directory, so run it
 from `disc/` -- or point it at your own disc image, which needs no extraction (see
 [Saves and settings](../README.md#saves-and-settings)):
 

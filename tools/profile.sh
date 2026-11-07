@@ -2,7 +2,8 @@
 # Profiling the port from outside the game: perf(1) records where the game's time goes while you play, and this keeps the
 # command line and the output file names the same from run to run.
 #
-# The port has its own frame counter too (TWINSANITY_FPS, see the README): that one says whether the picture is on time and
+# The port has its own frame counter too (TWINSANITY_FRAME_LOG and TWINSANITY_FPS, see the README): that one says whether the
+# picture is on time and
 # what a frame costs, which is what a report about "is it running correctly" needs. This one says *where* the time went,
 # down to the function, which is what a report about "why is it slow" needs.
 #
@@ -48,8 +49,8 @@ profile: perf is not installed, and it is the external profiler this uses.
   Debian / Ubuntu: sudo apt install linux-perf
   Fedora:          sudo dnf install perf
 
-The port's own frame counter needs none of this: run the game as usual and the corner of the picture shows the frame rate,
-the logic's step rate and what a frame cost, and the same line goes to stderr once a second (TWINSANITY_FPS=0 hides it).
+The port's own frame counter needs none of this: TWINSANITY_FRAME_LOG=1 prints the same line to stderr once a second, and
+TWINSANITY_FPS=1 puts it in the corner of the picture. Both are off by default.
 EOF
     exit 1
 fi
@@ -115,7 +116,7 @@ profile: perf wrote no recording -- it could not open any events for it.
   sudo sysctl kernel.perf_event_paranoid=1    (0 in some distributions)
   In a container or sandbox, perf_event is usually disabled outright: run the game from a normal terminal.
 
-The port's own frame counter still works: TWINSANITY_FPS=0 hides it, the log line is always there.
+The port's own frame counter still works: TWINSANITY_FRAME_LOG=1 prints the line to stderr, TWINSANITY_FPS=1 adds the corner text.
 EOF
         exit 1
     fi

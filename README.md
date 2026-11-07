@@ -13,16 +13,16 @@ Nothing from the game is included in the repository. You need your own copy of t
 
 ## Status
 
-The Linux port is nearly done: the game is playable start to finish and 100% of the gems can be collected. Windows
-cross-builds from Linux and runs under Wine; every other platform has its backend only.
+Linux runs perfectly, Windows cross-builds from Linux and runs under Wine; every other platform has its backend only.
 
 Known issues:
-- Only Linux and, under Wine, Windows run the game (see [Building](docs/BUILDING.md)).
+- Still missing work for other backends.
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
 - Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
 - Sometimes audio plays for a bit then stops then goes again
 - Rarely cutscene skip's are so fast that the game doesnt have time to load the terrain (if you can reproduce it please open up an issue about it)
+- ON LINUX IT ONLY RUNS IF YOU HAVE LIBGL for 32 bit okay so if you dont have it if you have integrated graphics and amd/intel gpus download lib32-mesa if you use nvidia download the package for that google it idk
 
 Future features:
 - Mod support
@@ -39,6 +39,7 @@ QOL Changes:
 - Removed the delay on the Save file check screens
 - Fast loading screens (on an nvme it only takes 62ms)
 - Cutscene skip, in the game options and on by default. The scenes' own hint is on screen while they play. Off is retail's behaviour. Every watched scene can be skipped: a cutscene file skips outright, and a scripted scene runs out under a black fade at the `cutscene_speed` rate, so its own scripts still reach its own end. The `skip` hint is shown for every scripted scene, and a skipped scene is silent (its sounds are mixed at nothing, the music plays on) with no pad rumble or camera shake until it ends. A scene that waits on something the rate can't reach (the player, a sound) gets its picture back after 45 s rather than racing on
+
 ## Getting the game
 
 You need a PAL copy of Crash Twinsanity (SLES-525.68). Extracting the disc gives you `CRASH6`, `FMV` and `SLES_525.68`.
@@ -140,9 +141,11 @@ What a build on another region's program would take is in [DEVELOPMENT.md](docs/
 | Web (wasm32) | [docs/BUILD_WEB.md](docs/BUILD_WEB.md) | compiles TU by TU, does not link yet |
 | PS2 | [docs/BUILD_PS2.md](docs/BUILD_PS2.md) | the original decompilation build |
 
-Every build needs a 32-bit x86 toolchain (the retail data uses 32-bit pointers and fixed addresses), a 32-bit SDL3, Python
-3.10 or later and the submodules; [docs/BUILDING.md](docs/BUILDING.md) holds those, the renderers each platform takes, and
-how the shader blobs are made. Linux, start to finish:
+Every build needs a 32-bit x86 toolchain (the retail data uses 32-bit pointers and fixed addresses), Python 3.10 or later
+and the submodules; CMake as well for SDL3, which `configure.py` builds from the submodule and links in statically, so the
+binary needs no SDL3 package.
+[docs/BUILDING.md](docs/BUILDING.md) holds those, the renderers each platform takes, and how the shader blobs are made.
+Linux, start to finish:
 
 ```sh
 git submodule update --init
@@ -326,7 +329,8 @@ Use forward slashes in Windows paths (`C:/Games/Twinsanity.iso`) or double the b
 
 ## Frame rate and profiling
 
-In the corner of the picture, and once a second in the log:
+With `TWINSANITY_FRAME_LOG=1`, once a second in the log; with `TWINSANITY_FPS=1`, in the corner of the picture. Both are off by
+default, so a normal run prints nothing:
 
 ```
 59.9 fps  50 steps/s  cpu 1.32 ms  gpu 3.06 ms  412 draws
@@ -342,7 +346,8 @@ host frame 1830: fps 59.9 steps 50 cpu 1.32 ms gpu 3.06 ms draws 412 views 34 ..
   and **gpu** the card's time for the frame before.
 * **draws** is the number of draw calls the frame submitted.
 
-`TWINSANITY_FPS=0` keeps the corner text off the picture; the log line stays.
+The log line and the corner text are both off by default: `TWINSANITY_FRAME_LOG=1` turns the line on, `TWINSANITY_FPS=1` the
+corner text. Both read `0` as unset.
 
 For *where* the time goes rather than how much of it there is, use an external profiler. `tools/profile.sh` wraps perf(1):
 

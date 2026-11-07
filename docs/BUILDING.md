@@ -10,7 +10,9 @@ Each platform has its own document; this one holds what they all need.
 ## Common requirements
 
 - A 32-bit x86 build, since the retail data uses 32-bit pointers and fixed addresses.
-- A 32-bit SDL3. Set `SDL_PREFIX` if it is not in the system paths.
+- CMake, for SDL3. `configure.py` builds a 32-bit static SDL3 from `third_party/SDL` (through `tools/build_sdl_static.sh`)
+  and links it in, so the binary needs no SDL3 package at run time. `SDL_STATIC=0` links the system's shared SDL3 instead,
+  and `SDL_PREFIX` names another install either way.
 - Python 3.10 or later for the build scripts, and the submodules.
 
 ```sh

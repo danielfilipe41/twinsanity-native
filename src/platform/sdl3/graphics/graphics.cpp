@@ -19,6 +19,7 @@
 #include "game/view.h"
 // The logic step counter the HUD reads: the port's own steps, which the picture's frames are separate from
 #include "platform/hostframe.h"
+#include "platform/system.h"
 #include "platform/time.h"
 
 #include <SDL3/SDL_timer.h>
@@ -868,18 +869,26 @@ void ShowFrameStats(const bgfx::Stats* stats)
                              : 0.0f;
     g_frameStats.draws = stats->numDraw;
 
-    // The same numbers once a second in the log, for a run that is read back rather than watched (and for a report)
+    // The same numbers once a second in the log, for a run that is read back rather than watched (and for a report): a normal
+    // run prints nothing, so the line is behind its own flag (TWINSANITY_FRAME_LOG=1), apart from the picture's (TWINSANITY_FPS)
     // The packet draws named, and whatever the total has left: the passes and the batched paths, which is where a draw count worth
     // cutting would show up
-    const u32 packets = g_frameStats.submits + g_frameStats.skin + g_frameStats.screen + g_frameStats.draw2d;
-    const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
-    std::fprintf(stderr,
-                 "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u passes %u) packets %u repeats %u blended %u submits %u "
-                 "views %u tris %d textures %d programs %d\n",
-                 g_frameCounter, g_frameStats.fps, g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs,
-                 g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
-                 g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, stats->numViews,
-                 stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms);
+    static const bool logged = [] {
+        const char* value = std::getenv("TWINSANITY_FRAME_LOG");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    if (logged)
+    {
+        const u32 packets = g_frameStats.submits + g_frameStats.skin + g_frameStats.screen + g_frameStats.draw2d;
+        const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
+        std::fprintf(stderr,
+                     "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u "
+                     "passes %u) packets %u repeats %u blended %u submits %u views %u tris %d textures %d programs %d\n",
+                     g_frameCounter, g_frameStats.fps, g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs,
+                     g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
+                     g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, stats->numViews,
+                     stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms);
+    }
 
     g_frameStats.frames = 0;
     g_frameStats.steps = step;
@@ -1360,10 +1369,12 @@ void Platform::Graphics::FinishFrame()
     HostCompositeScene();
 
     // The port's own HUD and its log line, before the present it belongs to: bgfx draws the debug text with the frame it was
-    // written for, over the backbuffer the composite just filled. TWINSANITY_FPS=0 keeps it off the picture (the log line stays)
+    // written for, over the backbuffer the composite just filled. The corner text is the debug flag's, not the picture's -- a
+    // release shows the game alone -- so it appears only when TWINSANITY_FPS is set to something other than 0
+    // (TWINSANITY_FPS=1); the once-a-second log line stays either way
     static const bool shown = [] {
         const char* value = std::getenv("TWINSANITY_FPS");
-        return value == nullptr || std::strcmp(value, "0") != 0;
+        return value != nullptr && std::strcmp(value, "0") != 0;
     }();
     g_frameStats.shown = shown;
     ShowFrameStats(bgfx::getStats());
@@ -1372,6 +1383,13 @@ void Platform::Graphics::FinishFrame()
     // The uploads of packets whose model died: the frame that could still bind them is submitted and run, so their
     // bgfx buffers can be let go now (never immediately: that was why the cache kept every entry for the session)
     HostCollectRetiredDrawBuffers();
+
+    // A run the pause menu's close (or the window's close) asked to end ends here, between two frames: this frame is presented
+    // and the uploads it held are let go, so the renderer's thread has nothing left of ours when it is shut down
+    if (Platform::System::ExitRequested())
+    {
+        Platform::System::EndRun();
+    }
 }
 
 u32 Platform::Graphics::HostFrameCounter()
@@ -1724,6 +1742,7 @@ void Platform::Graphics::DrawPlacedModel(RigidModel* model, ChunkView* view, con
     // backface-cull, so neither do we (reference sdl_gfx.cpp glDisable(GL_CULL_FACE))
     constexpr u64 PassState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_WRITE_Z |
                               BGFX_STATE_DEPTH_TEST_LESS;
+
     HostRigidModelData* data = host->model;
     u32 subModels = data->subModelCount < host->count ? data->subModelCount : host->count;
     for (u32 index = 0; index < subModels; index++)

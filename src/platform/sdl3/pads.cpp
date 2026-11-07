@@ -6,6 +6,7 @@
 
 #include "graphics/bgfx_context.h"
 #include "platform/keybinds.h"
+#include "platform/system.h"
 #include "settings.h"
 
 #include <SDL3/SDL.h>
@@ -83,13 +84,12 @@ bool ValidPad(s32 port, s32 slot)
 }
 
 // The run ended: the window's close asked for it (SDL sends SDL_EVENT_QUIT when the window manager's close is used).
-// The game's loop has no exit of its own to reach here, so the platform shuts the renderer and SDL down and ends the
-// process -- otherwise the game keeps running with no window, and only a signal can stop it
-[[noreturn]] void EndTheRun()
+// This runs inside the game's frame, so it only asks for the end (Platform::System::Exit, the same ask the pause menu's close
+// makes): the frame finishes and its end shuts the renderer and SDL down and ends the process, instead of tearing them down
+// under the frame's own draws -- otherwise the game keeps running with no window, and only a signal can stop it
+void EndTheRun()
 {
-    BgfxShutdown();
-    SDL_Quit();
-    std::exit(0);
+    Platform::System::Exit(0);
 }
 
 // The input subsystems, initialized once (the entry already did it; the headless tests did not)

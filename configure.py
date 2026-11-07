@@ -113,12 +113,58 @@ def toolchain_includes():
     return [Path(os.path.normpath(line.strip())).as_posix() for line in lines[start:end]]
 
 
+# The static SDL3 a Linux host build links in (tools/build_sdl_static.sh writes it). Linking it is the default, so the
+# binary runs on a machine with no SDL3 package -- a 64-bit distribution rarely has the 32-bit one, which the port needs.
+# $SDL_PREFIX names another install, SDL_STATIC=0 links the system's shared SDL3 instead
+SDL_STATIC_INSTALL = HERE / "build" / "sdl3-static" / "install"
+
+
+def build_sdl_static():
+    """Builds the static SDL3 (tools/build_sdl_static.sh) into SDL_STATIC_INSTALL. configure.py runs it itself, so a
+    checkout needs no step before the first configure; the script is the same one a person can run by hand, and it leaves
+    the install in place for every later configure."""
+    script = HERE / "tools" / "build_sdl_static.sh"
+    if not script.is_file():
+        raise SystemExit("SDL_STATIC: tools/build_sdl_static.sh is missing; set SDL_STATIC=0 to link the system's SDL3")
+    print(f"SDL_STATIC: {SDL_STATIC_INSTALL.as_posix()}/lib/libSDL3.a is missing: building it with {script.name}",
+          file=sys.stderr)
+    # bash rather than the script's own shebang: the executable bit is not something a configure step can count on
+    if subprocess.run(["bash", script.as_posix()]).returncode != 0:
+        raise SystemExit("SDL_STATIC: tools/build_sdl_static.sh failed (it needs CMake and the 32-bit toolchain); set "
+                         "SDL_STATIC=0 to link the system's SDL3")
+
+
 def sdl_flags():
     """SDL3 compile and link flags for a 32-bit host build: $SDL_PREFIX (headers + 32-bit library) when set, else the
-    system's SDL3."""
-    prefix = os.environ.get("SDL_PREFIX", "/usr")
-    return [f"-I{prefix}/include/SDL3"], [f"-L{prefix}/lib32" if (Path(prefix) / "lib32").is_dir() else f"-L{prefix}/lib",
-                                          "-lSDL3"]
+    static SDL3 this repository builds, else the system's. With SDL_STATIC the prefix's libSDL3.a is linked in whole; the
+    drivers inside SDL (X11, Wayland, the audio servers) are dlopen'd from the desktop either way, so the game's only
+    remaining run-time libraries are the desktop's own."""
+    static = os.environ.get("SDL_STATIC", "1") != "0"
+    prefix = os.environ.get("SDL_PREFIX")
+    if prefix is None and static:
+        # The checkout's own static SDL3, built here the first time: a fresh clone then needs no step between
+        # `git submodule update --init` and configure
+        local = SDL_STATIC_INSTALL / "lib" / "libSDL3.a"
+        if not local.is_file():
+            build_sdl_static()
+        if not local.is_file():
+            raise SystemExit("SDL_STATIC: the static SDL3 build produced no libSDL3.a; set SDL_STATIC=0 to link the "
+                             "system's SDL3")
+        prefix = SDL_STATIC_INSTALL.as_posix()
+    elif prefix is None:
+        prefix = "/usr"
+    libdir = Path(prefix) / ("lib32" if (Path(prefix) / "lib32").is_dir() else "lib")
+    cflags = [f"-I{prefix}/include/SDL3"]
+    if not static:
+        return cflags, [f"-L{libdir.as_posix()}", "-lSDL3"]
+    if not (libdir / "libSDL3.a").is_file():
+        build_sdl_static()
+        if not (libdir / "libSDL3.a").is_file():
+            raise SystemExit(f"SDL_STATIC: {libdir / 'libSDL3.a'} is still missing after the build; set SDL_STATIC=0 to link "
+                             "the system's SDL3")
+    # -Bstatic around SDL3's own archive only: the archive's backends dlopen their libraries, so X11/GL/the audio servers
+    # stay the system's shared ones (and nothing has to be installed for them)
+    return cflags, [f"-L{libdir.as_posix()}", "-Wl,-Bstatic", "-lSDL3", "-Wl,-Bdynamic", "-lm", "-ldl", "-lpthread"]
 
 
 def bgfx_flags():
@@ -335,7 +381,9 @@ def main_host():
         "ninja_required_version = 1.10",
         f"cxx = {cxx}",
         f"cxxflags = {command(HOST_CXXFLAGS + sdl_cflags + bgfx_cflags)}",
-        f"ldflags = {command(['-m32', '-no-pie', '-rdynamic'] + sdl_libs + bgfx_libs)}",
+        # -static-libstdc++/-static-libgcc: the C++ runtime and libgcc linked in as well, so the only shared libraries the
+        # binary needs are the desktop's own (libc, libm, X11 and GL or Vulkan)
+        f"ldflags = {command(['-m32', '-no-pie', '-rdynamic', '-static-libstdc++', '-static-libgcc'] + sdl_libs + bgfx_libs)}",
         "",
         "rule cxx",
         "  command = $cxx $cxxflags -MMD -MF $out.d -c -o $out $in",
@@ -349,7 +397,9 @@ def main_host():
         "  command = $cxx $cxxflags $ldflags -o $out $in",
         "  description = CXXLINK $in",
         "rule configure",
-        "  command = python3 configure.py",
+        # The platform and target this build was configured with: ninja re-runs this when configure.py changes, and a bare
+        # `python3 configure.py` would fall back to the PS2 build
+        f"  command = PLATFORM={PLATFORM} TARGET={TARGET} python3 configure.py",
         "  generator = 1",
         "",
     ]
