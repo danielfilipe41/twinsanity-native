@@ -11,7 +11,7 @@ and of the sound processor it drives.
 
 | Layer | Files | What it is |
 |---|---|---|
-| The sound processor | `spu2.{h,cpp}` | The SPU2 as a device: 2 cores of 24 voices, ADPCM out of 2 MB of 16 bit words, an envelope and a 15 bit volume per voice, a dry and an effect sum per core, a reverb network, and two master volumes. |
+| The sound processor | `spu2.{h,cpp}` | The SPU2 as a device: 2 cores of 24 voices, ADPCM out of its memory of 16 bit words (the chip's 2 MB, lent 8 MB here: see "The memory's size"), an envelope and a 15 bit volume per voice, a dry and an effect sum per core, a reverb network, and two master volumes. |
 | The module | `soundmodule.{h,cpp}`, `soundmemory.{h,cpp}` | The side of the bargain `STREAM.IRX` makes: a table of the sounds in memory, a channel per voice with the key status the game polls, the volume groups, an effect per core, the memory's compaction, and the music streams. |
 | The platform | `audio.cpp`, `audio.h` | `Platform::Audio` over the module, the module's mix handed to SDL, and the movie's own PCM mixed on top. |
 
@@ -108,6 +108,17 @@ lets a one-shot read on past its own samples into whatever is under them.
 A block released back onto the memory's end is **no longer a hole in the arena's list**: it is the free space the arena grows
 into. Left in both places, the next sound that did not fit a hole was handed the released block's own address and two live
 sounds sat on top of each other.
+
+### The memory's size
+
+The host lends the module 8 MB where the chip has 2 MB (`spu2.h`'s `MemoryWords`), and a level's sound set is what made that
+necessary. The console never holds a level's sounds at once: its EE side loads each bank at one moving address
+(`ps2/stream.cpp`'s `ReadSoundBank`, `MsSetBankAddress` patching the module's table, `LoadToSpu` writing the samples there) and
+only the music rings advance that address through `ReserveSoundMemory`, so the memory a bank can occupy is a bank's. The host's
+module keeps a block per sound instead, because the game's tables name sounds for as long as they are referenced, and a level
+has more than 2 MB of them: at the chip's size the last-read banks are refused (`audio: sound N has no room`) and their sounds
+are silent for the whole level, dialogue among them. The memory here is host RAM, so the shortage is the one thing not worth
+emulating; the arena's own arithmetic, the compaction and the refusals at its ceiling are unchanged, only further away.
 
 ## Checking it
 

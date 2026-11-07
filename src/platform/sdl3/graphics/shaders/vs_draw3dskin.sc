@@ -13,14 +13,16 @@ $output v_texcoord0, v_color0
 #include <bgfx_shader.sh>
 
 uniform mat4 u_mvp;
-uniform vec4 u_lightDirs[3];
-uniform vec4 u_lightCols[3];
-uniform vec4 u_ambient;
+// The scene's lights packed into one uniform: the three directions, then the three colours, then the ambient. A submit sets the
+// light set on every draw, and the driver copies each uniform separately, so one call for the set instead of three is what keeps it
+// from being part of the per-draw cost
+uniform vec4 u_lights[7];
+
 // The material's texture scroll (renderer.h's Shader::scroll): the offset every UV takes
-uniform vec4 u_scroll;
-// The material's own colour, which only the type whose VU1 program loads it (0x1F) tints with. Its fourth lane is the
-// "written" flag: a submit that leaves the uniform alone gives zero, which reads as no tint rather than black
-uniform vec4 u_materialColour;
+// The material's uniforms packed: [0] the texture scroll (renderer.h's Shader::scroll), [1] the material's own colour, whose fourth
+// lane is the "written" flag -- a submit that leaves the uniform alone gives zero, which reads as no tint rather than black
+uniform vec4 u_material[2];
+
 // The retail skins' joint indices reach 61 over the whole disc (mesh_builder.h
 // SkinMaxJoints), so the array matches it
 uniform mat4 u_joints[128];
@@ -52,20 +54,20 @@ void main()
     vec3 world = SkinPosition(a_position, a_indices, a_weight.xyz);
     gl_Position = mul(u_mvp, vec4(world, 1.0));
     vec3 normal = normalize(a_normal.xyz * 2.0 - 1.0);
-    vec3 light = u_ambient.rgb;
-    light += u_lightCols[0].rgb * max(dot(normal, u_lightDirs[0].xyz), 0.0);
-    light += u_lightCols[1].rgb * max(dot(normal, u_lightDirs[1].xyz), 0.0);
-    light += u_lightCols[2].rgb * max(dot(normal, u_lightDirs[2].xyz), 0.0);
-    v_texcoord0 = a_texcoord0 + u_scroll.xy;
+    vec3 light = u_lights[6].rgb;
+    light += u_lights[3].rgb * max(dot(normal, u_lights[0].xyz), 0.0);
+    light += u_lights[4].rgb * max(dot(normal, u_lights[1].xyz), 0.0);
+    light += u_lights[5].rgb * max(dot(normal, u_lights[2].xyz), 0.0);
+    v_texcoord0 = a_texcoord0 + u_material[0].xy;
     // The lit vertex colour, saturated: the GS takes the vertex colour's bytes times the light
     // and keeps what fits, and TT-Lab's own shader clamps the same product; without it a
     // full light over a full ambient runs past white and only the target clamps
     // The material's colour scales the lit colour for the one type whose program does that (0x1F) and not at all for
     // every other material, whose draws leave the uniform's flag lane zero
     vec3 lit = min(a_color0.rgb * light, vec3(1.0));
-    if (u_materialColour.w != 0.0)
+    if (u_material[1].w != 0.0)
     {
-        lit = min(lit * u_materialColour.rgb, vec3(1.0));
+        lit = min(lit * u_material[1].rgb, vec3(1.0));
     }
     v_color0 = vec4(lit, a_color0.a);
 }

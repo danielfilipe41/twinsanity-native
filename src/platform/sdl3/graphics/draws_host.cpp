@@ -34,6 +34,7 @@ using Platform::Graphics::HostCreateShader;
 using Platform::Graphics::HostShader;
 
 #include <cstdio>
+
 #include <cstring>
 
 namespace
@@ -52,14 +53,13 @@ bgfx::ProgramHandle g_skinFlatProgram = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_shadowVolumeProgram = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_sampler = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_mvp = BGFX_INVALID_HANDLE;
-bgfx::UniformHandle g_lightDirs = BGFX_INVALID_HANDLE;
-bgfx::UniformHandle g_lightColours = BGFX_INVALID_HANDLE;
-bgfx::UniformHandle g_ambient = BGFX_INVALID_HANDLE;
+// The light set as one uniform: the three directions, the three colours, then the ambient (the shaders' u_lights[7])
+bgfx::UniformHandle g_lights = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_joints = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_blendWeights = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_alpha = BGFX_INVALID_HANDLE;
-bgfx::UniformHandle g_scroll = BGFX_INVALID_HANDLE;
-bgfx::UniformHandle g_materialColour = BGFX_INVALID_HANDLE;
+// The material's scroll and colour as one uniform (the shaders' u_material[2])
+bgfx::UniformHandle g_material = BGFX_INVALID_HANDLE;
 bool g_made = false;
 
 // The alpha test a draw with no material state uses: the fragment shader's u_materialAlpha set to ALWAYS, so a pass
@@ -247,14 +247,11 @@ void MakeShared()
     g_skinFlatProgram = bgfx::createProgram(skinFlatVs, skinFlatFs, true);
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_mvp = bgfx::createUniform("u_mvp", bgfx::UniformType::Mat4);
-    g_lightDirs = bgfx::createUniform("u_lightDirs", bgfx::UniformType::Vec4, 3);
-    g_lightColours = bgfx::createUniform("u_lightCols", bgfx::UniformType::Vec4, 3);
-    g_ambient = bgfx::createUniform("u_ambient", bgfx::UniformType::Vec4);
+    g_lights = bgfx::createUniform("u_lights", bgfx::UniformType::Vec4, 7);
     g_joints = bgfx::createUniform("u_joints", bgfx::UniformType::Mat4, SkinMaxJoints);
     g_blendWeights = bgfx::createUniform("u_blendWeights", bgfx::UniformType::Vec4, 4);
     g_alpha = bgfx::createUniform("u_materialAlpha", bgfx::UniformType::Vec4);
-    g_scroll = bgfx::createUniform("u_scroll", bgfx::UniformType::Vec4);
-    g_materialColour = bgfx::createUniform("u_materialColour", bgfx::UniformType::Vec4);
+    g_material = bgfx::createUniform("u_material", bgfx::UniformType::Vec4, 2);
 }
 
 // The joint matrices a skinned draw uploads, and what the last fill of them was made from: the block's address and how
@@ -537,22 +534,32 @@ bgfx::UniformHandle HostDraw3DMvp()
     return g_mvp;
 }
 
-bgfx::UniformHandle HostDraw3DLightDirs()
+bgfx::UniformHandle HostDraw3DLights()
 {
     MakeShared();
-    return g_lightDirs;
+    return g_lights;
 }
 
-bgfx::UniformHandle HostDraw3DLightColours()
+namespace
 {
-    MakeShared();
-    return g_lightColours;
+// The light set as the shaders' u_lights takes it: three directions, three colours, the ambient, in one upload
+void SetDrawLights(const f32* directions, const f32* colours, const f32* ambient)
+{
+    f32 packed[28];
+    std::memcpy(packed, directions, 12 * sizeof(f32));
+    std::memcpy(packed + 12, colours, 12 * sizeof(f32));
+    std::memcpy(packed + 24, ambient, 4 * sizeof(f32));
+    bgfx::setUniform(g_lights, packed, 7);
 }
 
-bgfx::UniformHandle HostDraw3DAmbient()
+// The material's scroll and colour as the shaders' u_material[2] takes them: one upload for the pair
+void SetDrawMaterial(const f32* scroll, const f32* colour)
 {
-    MakeShared();
-    return g_ambient;
+    f32 packed[8];
+    std::memcpy(packed, scroll, 4 * sizeof(f32));
+    std::memcpy(packed + 4, colour, 4 * sizeof(f32));
+    bgfx::setUniform(g_material, packed, 2);
+}
 }
 
 bgfx::UniformHandle HostDraw3DJoints()
@@ -675,10 +682,12 @@ u32 g_rigidQueueKind = RigidKindNone;
 // The sort's order: a submission's shared state first, so the draws that make one submission end up side by side
 bool RigidLess(const RigidQueued& a, const RigidQueued& b)
 {
-    if (a.entry != b.entry) return a.entry < b.entry;
-    if (a.state != b.state) return a.state < b.state;
-    if (a.program.idx != b.program.idx) return a.program.idx < b.program.idx;
+    // What the driver re-binds first: the texture and the pipeline, then the state. The packet comes last (below), because it only has
+    // to keep one packet's draws adjacent, and sorting it first made every submit walk the packet order -- 87% of submits bound a
+    // different texture from the one before
     if (a.texture.idx != b.texture.idx) return a.texture.idx < b.texture.idx;
+    if (a.program.idx != b.program.idx) return a.program.idx < b.program.idx;
+    if (a.state != b.state) return a.state < b.state;
     if (a.view != b.view) return a.view < b.view;
     if (a.blendFactor != b.blendFactor) return a.blendFactor < b.blendFactor;
     if (a.minifiesThroughMips != b.minifiesThroughMips) return a.minifiesThroughMips < b.minifiesThroughMips;
@@ -694,7 +703,8 @@ bool RigidLess(const RigidQueued& a, const RigidQueued& b)
     order = std::memcmp(a.cols, b.cols, sizeof(a.cols));
     if (order != 0) return order < 0;
     order = std::memcmp(a.ambient, b.ambient, sizeof(a.ambient));
-    return order < 0;
+    if (order != 0) return order < 0;
+    return a.entry < b.entry;
 }
 
 // Whether two draws make the same submission (everything but the matrix)
@@ -745,7 +755,9 @@ u32 RigidDrawKind(u64 state)
 
 // One group of draws as one instanced submit: the state, the texture and the material's uniforms are its, the matrices its instance data.
 // The pool clamps to what is left of the frame's space, so a short answer is drawn as the part that fits and the rest follows
-void SubmitRigidGroup(const RigidQueued* group, u32 count)
+// arena is the flush's one allocation and arenaStart the group's run inside it; null when the pool had no room, and the group
+// allocates its own
+void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceDataBuffer* arena, u32 arenaStart)
 {
     const RigidQueued& first = group[0];
     bgfx::setState(first.state, first.blendFactor);
@@ -762,12 +774,17 @@ void SubmitRigidGroup(const RigidQueued* group, u32 count)
 
     bgfx::setVertexBuffer(0, first.entry->vertices);
     bgfx::setIndexBuffer(first.entry->indexes);
-    bgfx::setUniform(g_lightDirs, first.dirs, 3);
-    bgfx::setUniform(g_lightColours, first.cols, 3);
-    bgfx::setUniform(g_ambient, first.ambient, 1);
-    bgfx::setUniform(g_scroll, first.scroll, 1);
-    bgfx::setUniform(g_materialColour, first.colour, 1);
+    SetDrawLights(first.dirs, first.cols, first.ambient);
+    SetDrawMaterial(first.scroll, first.colour);
     bgfx::setUniform(g_alpha, first.alpha, 1);
+
+    if (arena != nullptr)
+    {
+        bgfx::setInstanceDataBuffer(arena, arenaStart, count);
+        bgfx::submit(first.view, first.program);
+        g_counters.rigidSubmits++;
+        return;
+    }
 
     u32 done = 0;
     while (done < count)
@@ -804,12 +821,35 @@ void FlushRigidQueue()
     // Grouped by what a submission shares: the opaque draws held are depth tested and write their own samples, so their order among
     // themselves is not the picture's -- their order against a blended draw is, which is why a blended draw flushes them
     std::sort(g_rigidQueue.begin(), g_rigidQueue.end(), RigidLess);
+
+    // One instance allocation for the whole flush: the pool is a bump allocator that resets every frame, so a group asking for its own
+    // share was one call (and one copy) per submission for what is a contiguous run of matrices
+    const u32 total = static_cast<u32>(g_rigidQueue.size());
+    bgfx::InstanceDataBuffer arena = {};
+    u32 arenaCount = 0;
+    if (total > 0)
+    {
+        arenaCount = bgfx::getAvailInstanceDataBuffer(total, sizeof(RigidInstance));
+        if (arenaCount > 0)
+        {
+            bgfx::allocInstanceDataBuffer(&arena, arenaCount, sizeof(RigidInstance));
+            auto* instances = reinterpret_cast<RigidInstance*>(arena.data);
+            for (u32 index = 0; index < arenaCount; index++)
+            {
+                std::memcpy(instances[index].mvp, g_rigidQueue[index].mvp, sizeof(instances[index].mvp));
+                std::memcpy(instances[index].rot, g_rigidQueue[index].rot, sizeof(instances[index].rot));
+            }
+        }
+    }
+
     size_t start = 0;
     for (size_t index = 1; index <= g_rigidQueue.size(); index++)
     {
         if (index == g_rigidQueue.size() || !RigidSame(g_rigidQueue[start], g_rigidQueue[index]))
         {
-            SubmitRigidGroup(&g_rigidQueue[start], static_cast<u32>(index - start));
+            const u32 count = static_cast<u32>(index - start);
+            const bool inArena = static_cast<u32>(start) + count <= arenaCount;
+            SubmitRigidGroup(&g_rigidQueue[start], count, inArena ? &arena : nullptr, static_cast<u32>(start));
             start = index;
         }
     }
@@ -1099,13 +1139,11 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     }
 
     bgfx::setUniform(g_mvp, mvp, 1);
-    bgfx::setUniform(g_lightDirs, dirs, 3);
-    bgfx::setUniform(g_lightColours, colours, 3);
-    bgfx::setUniform(g_ambient, &ambient, 1);
+    SetDrawLights(reinterpret_cast<const f32*>(dirs), reinterpret_cast<const f32*>(colours),
+                  reinterpret_cast<const f32*>(&ambient));
     UploadJoints(joints, jointCount);
     bgfx::setUniform(g_blendWeights, blendUniforms, 4);
-    bgfx::setUniform(g_scroll, g_drawScroll, 1);
-    bgfx::setUniform(g_materialColour, g_drawColour, 1);
+    SetDrawMaterial(reinterpret_cast<const f32*>(&g_drawScroll), reinterpret_cast<const f32*>(&g_drawColour));
     if (alphaRef != nullptr)
     {
         const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
@@ -1185,11 +1223,9 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::setState(state | BGFX_STATE_PT_TRISTRIP);
     bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
     bgfx::setVertexBuffer(0, &buffer);
-    bgfx::setUniform(g_lightDirs, noDirections, 3);
-    bgfx::setUniform(g_lightColours, noLightColours, 3);
-    bgfx::setUniform(g_ambient, &ambient, 1);
-    bgfx::setUniform(g_scroll, g_drawScroll, 1);
-    bgfx::setUniform(g_materialColour, g_drawColour, 1);
+    SetDrawLights(reinterpret_cast<const f32*>(noDirections), reinterpret_cast<const f32*>(noLightColours),
+                  reinterpret_cast<const f32*>(&ambient));
+    SetDrawMaterial(reinterpret_cast<const f32*>(&g_drawScroll), reinterpret_cast<const f32*>(&g_drawColour));
     if (alphaRef != nullptr)
     {
         const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
@@ -1227,6 +1263,7 @@ void HostCountDraw2D()
 void HostFlushRigidInstances()
 {
     FlushRigidQueue();
+
 
 }
 

@@ -21,7 +21,6 @@ Known issues:
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
 - Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
-- Sometimes in game audio takes a bit to start (and cuts dialogue because of it)
 - Sometimes audio plays for a bit then stops then goes again
 - Rarely cutscene skip's are so fast that the game doesnt have time to load the terrain (if you can reproduce it please open up an issue about it)
 

@@ -236,9 +236,9 @@ bgfx::TextureHandle HostSubModelTexture(MaterialResource** materials, u32 index)
 void HostSetViewMatrix(const Matrix4x4* toScreen);
 const Matrix4x4* HostViewMatrix();
 
-bgfx::UniformHandle HostDraw3DLightDirs();
-bgfx::UniformHandle HostDraw3DLightColours();
-bgfx::UniformHandle HostDraw3DAmbient();
+
+
+
 bgfx::UniformHandle HostDraw3DJoints();
 bgfx::UniformHandle HostDraw3DBlendWeights();
 

@@ -73,6 +73,16 @@ bgfx::UniformHandle g_shadowLinearU = BGFX_INVALID_HANDLE;
 // opaque pixels take a shadow, retail's TEST{DEST=1}. Was 0 (gate off, everything takes the shadow, casters included)
 f32 g_shadowLinearValue[4] = {0.1f, 1000.0f, 0.0f, 1.0f};
 
+// Whether the volumes' fragment shader can pick the channel by a face's own facing (fs_shadowvolume.sc), which is what lets the
+// pair of shell draws be one. The Direct3D blobs are built on Windows (tools/build_shaders.py --platform windows --d3d) and the
+// ones checked in predate that test: a stale one writes both channels, and the resolve's difference of them is nothing, so
+// those renderers keep the pair until the blob is rebuilt
+bool ShadowShellsMerge()
+{
+    const bgfx::RendererType::Enum type = bgfx::getRendererType();
+    return type != bgfx::RendererType::Direct3D11 && type != bgfx::RendererType::Direct3D12;
+}
+
 // The resolve's fullscreen triangle: clip-space positions only (the shader derives the target's UVs from them)
 struct ResolveVertex
 {
@@ -422,11 +432,28 @@ void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4
     constexpr u64 VolumeStateOwn =
         BGFX_STATE_WRITE_R | BGFX_STATE_DEPTH_TEST_GEQUAL | BGFX_STATE_WRITE_Z | VolumeBlend;
     constexpr u64 VolumeTakeBack = BGFX_STATE_WRITE_G | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
+    // Both shells in one draw: every channel open and no culling, the fragment shader naming the channel the face's facing
+    // deserves. The blend is additive and no depth is written, so a pixel's R and G come out the same whatever order the
+    // shells arrive in, and the resolve takes their difference as it always did -- the pair's two draws become one submit of
+    // one packet, which is where the volume pass's draw and state count halves
+    constexpr u64 VolumeStateBoth = BGFX_STATE_WRITE_RGB | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
+    const bool bothShells = g_volumesOverSceneDepth && ShadowShellsMerge();
     for (u32 subModel = 0; subModel < data->subModelCount; subModel++)
     {
         // The rigid-mesh path (draws_host.cpp): parses the packet once, caches its buffers, lights are the
-        // neutral ones (a shadow volume has no lighting of its own), the matrix is the game's model-to-clip one. The
-        // additive pass keeps the shells away from the camera (CULL_CCW on this data) and the take-back the ones facing it
+        // neutral ones (a shadow volume has no lighting of its own), the matrix is the game's model-to-clip one
+        if (bothShells)
+        {
+            HostDrawRigidPacket(data->packets[subModel], data->sizes[subModel], data->vertexCounts[subModel], toScreen,
+                                nullptr, nullptr, Platform::Graphics::HostWhiteTexture(), HostShadowVolumeView,
+                                VolumeStateBoth, nullptr, VolumeShellFactor,
+                                Platform::Graphics::HostShadowVolumeProgram());
+            continue;
+        }
+
+        // The pair: the additive pass keeps the shells away from the camera (CULL_CCW on this data) and the take-back the ones
+        // facing it. The depth-less path keeps the pair whatever the renderer -- its depth write is what counts each pixel
+        // once, and one draw of both windings would have the second shell fail the test or count twice
         HostDrawRigidPacket(data->packets[subModel], data->sizes[subModel], data->vertexCounts[subModel], toScreen,
                             nullptr, nullptr, Platform::Graphics::HostWhiteTexture(), HostShadowVolumeView,
                             g_volumesOverSceneDepth ? (VolumeStateScene | BGFX_STATE_CULL_CCW)

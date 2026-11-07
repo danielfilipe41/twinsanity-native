@@ -13,13 +13,20 @@
 
 #include "common.h"
 
+#include <vector>
+
 namespace SdlAudio::Spu2
 {
 constexpr s32 CoreCount = 2;
 constexpr s32 CoreVoices = 24;
 constexpr s32 VoiceCount = CoreCount * CoreVoices;
 
-constexpr u32 MemoryWords = 0x100000;
+// The sound processor's memory, as this host lends it. The chip's is 2 MB (0x100000 words); the host's is four times that,
+// because the module here keeps a block for every sound the game's tables still name, while the console never has that many at
+// once: its EE side hands the module one moving bank address (ps2/stream.cpp's ReadSoundBank, patched in with MsSetBankAddress)
+// and only the music rings advance it, so the PS2's memory is a bank's worth rather than a level's. At the chip's own size a
+// level's later banks are refused for want of room and their sounds play silent for the whole level
+constexpr u32 MemoryWords = 0x400000;
 constexpr u32 MemoryBytes = MemoryWords * 2;
 
 // The envelope's level is 16 bit (the hardware's ENVX), full at 0x7FFF
@@ -245,7 +252,7 @@ class Device
 {
 public:
     // The sound processor's memory, in words
-    s16* Memory() { return m_memory; }
+    s16* Memory() { return m_memory.data(); }
     // Bytes of a bank's samples into memory at a word address (what a DMA write does)
     void WriteMemory(u32 wordAddress, const void* bytes, u32 byteCount);
     void Reset();
@@ -320,7 +327,9 @@ private:
                  s32 externalRight, s32& outLeft, s32& outRight);
 
     Core m_cores[CoreCount];
-    s16 m_memory[MemoryWords] = {};
+    // The heap's, not the object's: lent eight times the chip's memory, the buffer is more than a stack frame holds when a device
+    // is made locally, which the proofs do
+    std::vector<s16> m_memory = std::vector<s16>(MemoryWords, 0);
     u32 m_cycles = 0;
 };
 

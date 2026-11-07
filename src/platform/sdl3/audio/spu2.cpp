@@ -359,10 +359,7 @@ void SdlAudio::Spu2::Device::Reset()
         }
     }
 
-    for (s32 word = 0; word < static_cast<s32>(MemoryWords); word++)
-    {
-        m_memory[word] = 0;
-    }
+    m_memory.assign(MemoryWords, 0);
 
     m_cycles = 0;
 }
@@ -370,14 +367,14 @@ void SdlAudio::Spu2::Device::Reset()
 void SdlAudio::Spu2::Device::WriteMemory(u32 wordAddress, const void* bytes, u32 byteCount)
 {
     u32 words = byteCount / 2;
-    if (wordAddress >= MemoryWords)
+    if (wordAddress >= static_cast<u32>(m_memory.size()))
     {
         return;
     }
 
-    if (wordAddress + words > MemoryWords)
+    if (wordAddress + words > static_cast<u32>(m_memory.size()))
     {
-        words = MemoryWords - wordAddress;
+        words = static_cast<u32>(m_memory.size()) - wordAddress;
     }
 
     const s16* source = static_cast<const s16*>(bytes);
