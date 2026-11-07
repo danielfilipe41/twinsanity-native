@@ -9,6 +9,7 @@
 #if defined(__ANDROID__)
 #include "shaders/fs_draw2d_gles.bin.h"
 #include "shaders/fs_draw3d_gles.bin.h"
+#include "shaders/fs_draw3dflat_gles.bin.h"
 #include "shaders/fs_fxaa_gles.bin.h"
 #include "shaders/fs_particle_gles.bin.h"
 #include "shaders/fs_scenecomposite_gles.bin.h"
@@ -23,6 +24,8 @@
 #include "shaders/vs_draw2d_gles.bin.h"
 #include "shaders/vs_draw3d_gles.bin.h"
 #include "shaders/vs_draw3dskin_gles.bin.h"
+#include "shaders/vs_draw3dflat_gles.bin.h"
+#include "shaders/vs_draw3dskinflat_gles.bin.h"
 #include "shaders/vs_particle_gles.bin.h"
 #include "shaders/vs_scenecomposite_gles.bin.h"
 #include "shaders/vs_scenefog_gles.bin.h"
@@ -32,6 +35,7 @@
 #else
 #include "shaders/fs_draw2d.bin.h"
 #include "shaders/fs_draw3d.bin.h"
+#include "shaders/fs_draw3dflat.bin.h"
 #include "shaders/fs_fxaa.bin.h"
 #include "shaders/fs_particle.bin.h"
 #include "shaders/fs_scenecomposite.bin.h"
@@ -46,6 +50,8 @@
 #include "shaders/vs_draw2d.bin.h"
 #include "shaders/vs_draw3d.bin.h"
 #include "shaders/vs_draw3dskin.bin.h"
+#include "shaders/vs_draw3dflat.bin.h"
+#include "shaders/vs_draw3dskinflat.bin.h"
 #include "shaders/vs_particle.bin.h"
 #include "shaders/vs_scenecomposite.bin.h"
 #include "shaders/vs_scenefog.bin.h"
@@ -56,6 +62,7 @@
 #if defined(__EMSCRIPTEN__)
 #include "shaders/fs_draw2d_wgsl.bin.h"
 #include "shaders/fs_draw3d_wgsl.bin.h"
+#include "shaders/fs_draw3dflat_wgsl.bin.h"
 #include "shaders/fs_fxaa_wgsl.bin.h"
 #include "shaders/fs_particle_wgsl.bin.h"
 #include "shaders/fs_scenecomposite_wgsl.bin.h"
@@ -70,6 +77,8 @@
 #include "shaders/vs_draw2d_wgsl.bin.h"
 #include "shaders/vs_draw3d_wgsl.bin.h"
 #include "shaders/vs_draw3dskin_wgsl.bin.h"
+#include "shaders/vs_draw3dflat_wgsl.bin.h"
+#include "shaders/vs_draw3dskinflat_wgsl.bin.h"
 #include "shaders/vs_particle_wgsl.bin.h"
 #include "shaders/vs_scenecomposite_wgsl.bin.h"
 #include "shaders/vs_scenefog_wgsl.bin.h"
@@ -79,6 +88,7 @@
 #endif
 #include "shaders/fs_draw2d_spv.bin.h"
 #include "shaders/fs_draw3d_spv.bin.h"
+#include "shaders/fs_draw3dflat_spv.bin.h"
 #include "shaders/fs_fxaa_spv.bin.h"
 #include "shaders/fs_particle_spv.bin.h"
 #include "shaders/fs_scenecomposite_spv.bin.h"
@@ -93,6 +103,8 @@
 #include "shaders/vs_draw2d_spv.bin.h"
 #include "shaders/vs_draw3d_spv.bin.h"
 #include "shaders/vs_draw3dskin_spv.bin.h"
+#include "shaders/vs_draw3dflat_spv.bin.h"
+#include "shaders/vs_draw3dskinflat_spv.bin.h"
 #include "shaders/vs_particle_spv.bin.h"
 #include "shaders/vs_scenecomposite_spv.bin.h"
 #include "shaders/vs_scenefog_spv.bin.h"
@@ -106,6 +118,7 @@
 #if defined(TWINSANITY_HAVE_DXBC)
 #include "shaders/fs_draw2d_dxbc.bin.h"
 #include "shaders/fs_draw3d_dxbc.bin.h"
+#include "shaders/fs_draw3dflat_dxbc.bin.h"
 #include "shaders/fs_fxaa_dxbc.bin.h"
 #include "shaders/fs_particle_dxbc.bin.h"
 #include "shaders/fs_scenecomposite_dxbc.bin.h"
@@ -120,6 +133,8 @@
 #include "shaders/vs_draw2d_dxbc.bin.h"
 #include "shaders/vs_draw3d_dxbc.bin.h"
 #include "shaders/vs_draw3dskin_dxbc.bin.h"
+#include "shaders/vs_draw3dflat_dxbc.bin.h"
+#include "shaders/vs_draw3dskinflat_dxbc.bin.h"
 #include "shaders/vs_particle_dxbc.bin.h"
 #include "shaders/vs_scenecomposite_dxbc.bin.h"
 #include "shaders/vs_scenefog_dxbc.bin.h"
@@ -183,6 +198,10 @@ constexpr HostShaderBlobs ShaderBlobs[] = {
     {HOST_SHADER_GL_BLOB(vs_draw3d), vs_draw3d_spv, sizeof(vs_draw3d_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3d) HOST_SHADER_D3D_BLOB(vs_draw3d)},
     {HOST_SHADER_GL_BLOB(vs_draw3dskin), vs_draw3dskin_spv, sizeof(vs_draw3dskin_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dskin) HOST_SHADER_D3D_BLOB(vs_draw3dskin)},
     {HOST_SHADER_GL_BLOB(fs_draw3d), fs_draw3d_spv, sizeof(fs_draw3d_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3d) HOST_SHADER_D3D_BLOB(fs_draw3d)},
+    // The flat-shaded three: the same code over the let-go varyings, so only their blobs differ
+    {HOST_SHADER_GL_BLOB(vs_draw3dflat), vs_draw3dflat_spv, sizeof(vs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dflat) HOST_SHADER_D3D_BLOB(vs_draw3dflat)},
+    {HOST_SHADER_GL_BLOB(vs_draw3dskinflat), vs_draw3dskinflat_spv, sizeof(vs_draw3dskinflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dskinflat) HOST_SHADER_D3D_BLOB(vs_draw3dskinflat)},
+    {HOST_SHADER_GL_BLOB(fs_draw3dflat), fs_draw3dflat_spv, sizeof(fs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3dflat) HOST_SHADER_D3D_BLOB(fs_draw3dflat)},
     {HOST_SHADER_GL_BLOB(fs_shadowvolume), fs_shadowvolume_spv, sizeof(fs_shadowvolume_spv) HOST_SHADER_WEBGPU_BLOB(fs_shadowvolume) HOST_SHADER_D3D_BLOB(fs_shadowvolume)},
     {HOST_SHADER_GL_BLOB(vs_particle), vs_particle_spv, sizeof(vs_particle_spv) HOST_SHADER_WEBGPU_BLOB(vs_particle) HOST_SHADER_D3D_BLOB(vs_particle)},
     {HOST_SHADER_GL_BLOB(fs_particle), fs_particle_spv, sizeof(fs_particle_spv) HOST_SHADER_WEBGPU_BLOB(fs_particle) HOST_SHADER_D3D_BLOB(fs_particle)},

@@ -46,6 +46,11 @@ u32 SoundMemoryUsed();
 u32 SoundMemoryTotal();
 u32 LoadedSoundCount();
 u32 LoadedSoundId(u32 index);
+// Every loaded ID at once, into ids (up to capacity), in one pass over the module's table: the table has 0x10000 slots, so asking
+// for them one at a time scans it once a sound
+u32 LoadedSoundIds(u32* ids, u32 capacity);
+// The words the loaded sounds' blocks take, which the memory's used words come to when no block is left over
+u32 LoadedSoundWords();
 
 // Return 0, -1 for no such voice
 s32 SetVoiceVolume(s32 voice, s16 left, s16 right);

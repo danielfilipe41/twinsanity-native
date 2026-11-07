@@ -222,6 +222,9 @@ void SetUpShadowPass()
 
 void BeginShadows()
 {
+    // The draws a frame queues are submitted at the pass that reads them (draws_host.cpp): the frame copy this pass gates the
+    // resolve on has to hold the scene the volumes test against
+    HostFlushRigidInstances();
     MakeShared();
     // The coverage target is the FRAME's size (what the resolve darkens), so the resolve's overdraw and the frame's alpha copy
     // line up with it. Neither the window nor the game's screen size is necessarily it (a harness darkens a target of its own),
@@ -297,13 +300,16 @@ void BeginShadows()
 
 void EndShadows()
 {
+    // The volumes this pass drew are queued as one additive run, and the resolve below reads the coverage they write
+    HostFlushRigidInstances();
     if (!g_open)
     {
         return;
     }
 
     g_open = false;
-    if (!bgfx::isValid(g_half) || !bgfx::isValid(g_resolve) || !bgfx::getAvailTransientVertexBuffer(3, ResolveLayout()))
+    if (!bgfx::isValid(g_half) || !bgfx::isValid(g_resolve) ||
+        bgfx::getAvailTransientVertexBuffer(3, ResolveLayout()) != 3)
     {
         return;
     }

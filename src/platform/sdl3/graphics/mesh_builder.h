@@ -93,6 +93,3 @@ constexpr u32 SkinMaxJoints = 128;
 constexpr char SkinJointsUniform[] = "u_joints";
 constexpr char SkinBlendWeightsUniform[] = "u_blendWeights";
 
-// WriteJoints' dedup for the host: true when jointsAddress differs from the
-// last uploaded address (records it), false when the upload can be skipped
-bool SkinJointUploadNeeded(u32 jointsAddress);

@@ -11,6 +11,7 @@
 #include "game/math.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace
 {
@@ -92,42 +93,116 @@ bgfx::ViewId ViewOf2D(const Platform::Graphics::HostMaterial* material)
     return Platform::Graphics::HostDraw2DView;
 }
 
-void SubmitQuad(Platform::Graphics::HostMaterial* material, const Draw2DVertex* vertices)
+// The quads waiting to be drawn, all of one material: consecutive sprites of one material (a font page's glyph run, the
+// UI's pictures) go to bgfx as one submission instead of one each, since the state, the texture and the alpha test are
+// per submission and a screen's 2D list is one DMA chain on the console. A triangle list holds them: six vertexes a
+// quad, so the seam between one quad and the next needs no degenerate vertex. Only the UI's own view batches (SubmitQuad
+// says why)
+constexpr u32 BatchQuads = 256;
+
+struct QuadBatch
 {
-    bgfx::TextureHandle texture = Platform::Graphics::HostMaterialBoundTexture(material);
-    if (!bgfx::isValid(texture))
-    {
-        texture = Platform::Graphics::HostWhiteTexture();
-    }
-    if (!bgfx::getAvailTransientVertexBuffer(4, Draw2DLayout()))
+    const Platform::Graphics::HostMaterial* material = nullptr;
+    u32 quads = 0;
+    Draw2DVertex vertices[BatchQuads * 6];
+};
+
+QuadBatch g_batch;
+
+// A batch submitted: the quads in the buffer, through the material's own state and texture. The topology is bgfx's
+// default (a triangle list), which is what the batch is built as
+void SubmitQuads(const Platform::Graphics::HostMaterial* material, bgfx::ViewId view, const Draw2DVertex* vertices,
+                 u32 count)
+{
+    // The count the pool answers with is what the allocation would get: bgfx clamps the request to what is left of the
+    // frame's transient space, and the copy below fills what the caller asked for -- so a short answer must not be drawn
+    if (count == 0 || bgfx::getAvailTransientVertexBuffer(count, Draw2DLayout()) != count)
     {
         return;
     }
     bgfx::TransientVertexBuffer buffer;
-    bgfx::allocTransientVertexBuffer(&buffer, 4, Draw2DLayout());
-    auto* at = reinterpret_cast<Draw2DVertex*>(buffer.data);
-    for (u32 vertex = 0; vertex < 4; vertex++)
-    {
-        at[vertex] = vertices[vertex];
-    }
+    bgfx::allocTransientVertexBuffer(&buffer, count, Draw2DLayout());
+    std::memcpy(buffer.data, vertices, count * sizeof(Draw2DVertex));
     // The material's own blending and alpha test over the pass's (the 2D has no depth to test: withDepth false), so
     // a UI material that doesn't blend draws opaque and an alpha-tested one drops its samples
     const Platform::Graphics::HostMaterialState state = Platform::Graphics::HostMaterialStateOf(material, Draw2DPass, false);
     // The material's own bucket (the UI's, the fonts', the distortion's): retail draws 2D in the bucket its material names,
     // so a font page's quads land after the UI's and the gem's hexagons after the particles, as on the console
-    const bgfx::ViewId view = ViewOf2D(material);
     bgfx::setViewMode(view, bgfx::ViewMode::Sequential);
     Platform::Graphics::HostSceneSetView(view);
-    bgfx::setState(state.state | BGFX_STATE_PT_TRISTRIP);
+    bgfx::setState(state.state);
     bgfx::setUniform(Platform::Graphics::HostDraw2DAlphaUniform(), state.alphaReference, 1);
+    bgfx::TextureHandle texture = Platform::Graphics::HostMaterialBoundTexture(material);
+    if (!bgfx::isValid(texture))
+    {
+        texture = Platform::Graphics::HostWhiteTexture();
+    }
     // The 2D draws' textures clamp (the reference's BindTexture default, GL_CLAMP_TO_EDGE): the GS CLAMP register's
     // reset REPEAT is overridden because the 2D shaders only ever sample inside the sprite. The filter is the
     // material's own (the GS's TEX1 takes it from the shader's "linear" setting)
     bgfx::setTexture(0, Platform::Graphics::HostDraw2DSampler(), texture,
                      BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP |
-                         Platform::Graphics::HostMaterialFilter(reinterpret_cast<const Platform::Graphics::HostMaterial*>(material)));
+                         Platform::Graphics::HostMaterialFilter(material));
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(view, Platform::Graphics::HostDraw2DProgram());
+    Platform::Graphics::HostCountDraw2D();
+}
+
+// The batch drawn out: called when the material or the view changes, when the batch is full, and at the end of a frame
+// (HostFlushDraw2D, from FinishFrame, before the present), so nothing held outlives the transient pool it would have gone
+// into. It must be the frame's end and not the next frame's start: the quads are the overlay's, and one left held there
+// would be drawn a frame late -- a fade's first frame, or an instant black (after a movie, on a load), would show the
+// scene underneath for that frame, which is the picture retail never shows
+void FlushQuads()
+{
+    if (g_batch.quads == 0)
+    {
+        return;
+    }
+
+    // Cleared before the submit: a flush that finds itself holding the batch would draw it twice
+    const u32 quads = g_batch.quads;
+    g_batch.quads = 0;
+    SubmitQuads(g_batch.material, Platform::Graphics::HostDraw2DView, g_batch.vertices, quads * 6);
+}
+
+void SubmitQuad(Platform::Graphics::HostMaterial* material, const Draw2DVertex* vertices)
+{
+    const bgfx::ViewId view = ViewOf2D(material);
+
+    // The sprite's strip as two triangles, (0, 1, 2) and (2, 1, 3): the 2D pass culls nothing, so the second triangle's
+    // winding is free
+    Draw2DVertex triangles[6];
+    triangles[0] = vertices[0];
+    triangles[1] = vertices[1];
+    triangles[2] = vertices[2];
+    triangles[3] = vertices[2];
+    triangles[4] = vertices[1];
+    triangles[5] = vertices[3];
+
+    // Only the UI's own view holds its quads: a bucket view 2D shares with the 3D passes (the distortion's, whose
+    // hexagons are drawn through the same one) can take a 3D submission between two sprites, and a quad held across it
+    // would draw after that geometry instead of before it. Those buckets' sprites go one submission each, as before
+    if (view != Platform::Graphics::HostDraw2DView)
+    {
+        FlushQuads();
+        SubmitQuads(material, view, triangles, 6);
+        return;
+    }
+
+    if (g_batch.quads == BatchQuads || (g_batch.quads != 0 && g_batch.material != material))
+    {
+        FlushQuads();
+    }
+
+    if (g_batch.quads == 0)
+    {
+        // A batch that starts here is drawn in the material this quad's material names
+        g_batch.material = material;
+    }
+
+    std::memcpy(g_batch.vertices + static_cast<size_t>(g_batch.quads) * 6, triangles, sizeof(triangles));
+    g_batch.quads++;
 }
 
 // A strip of count coloured vertices submitted as a triangle strip (the PS2's first two vertices don't draw: its
@@ -136,7 +211,12 @@ void SubmitQuad(Platform::Graphics::HostMaterial* material, const Draw2DVertex* 
 // sample * colour reduces to the vertex colour)
 void SubmitStrip(Platform::Graphics::HostMaterial* material, const Draw2DVertex* vertices, u32 count)
 {
-    if (count == 0 || !bgfx::getAvailTransientVertexBuffer(count, Draw2DLayout()))
+    // The strip is a submission of its own, and it comes after the quads held so the two keep their submission order. The
+    // flush comes before the transient request: it allocates the held quads' vertices, so a request made first would count
+    // space the flush then takes and the strip's own allocation would come back short -- and the copy below fills the count
+    // the caller gave
+    FlushQuads();
+    if (count == 0 || bgfx::getAvailTransientVertexBuffer(count, Draw2DLayout()) != count)
     {
         return;
     }
@@ -168,6 +248,7 @@ void SubmitStrip(Platform::Graphics::HostMaterial* material, const Draw2DVertex*
                          Platform::Graphics::HostMaterialFilter(stripMaterial));
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(view, Platform::Graphics::HostDraw2DProgram());
+    Platform::Graphics::HostCountDraw2D();
 }
 
 // A textured vertex from fractions of the screen and of the texture (the PS2's order: place corner shows texture
@@ -183,8 +264,19 @@ Draw2DVertex TexturedVertex(f32 fractionX, f32 fractionY, f32 s, f32 t, f32 red,
 
 namespace Platform::Graphics
 {
+void HostFlushDraw2D()
+{
+    // The frame's overlay drawn out before it presents. Nothing should ever be held here (FinishFrame flushed the last
+    // frame's), so this is the belt to the frame's braces: a quad that outlived its frame would go into the next one
+    FlushQuads();
+}
+
 void HostSetScreenSize(u32 width, u32 height)
 {
+    // A frame begins here (StartFrame, on the step's own renders and the display frames alike): nothing of the last frame
+    // may be held by now (FinishFrame drew its batch out before presenting), so this only covers a frame that never
+    // presented (a quit between two presents)
+    FlushQuads();
     if (width != 0)
     {
         g_screenWidth = width;

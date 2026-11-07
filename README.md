@@ -325,6 +325,39 @@ variables override it.
 
 Use forward slashes in Windows paths (`C:/Games/Twinsanity.iso`) or double the backslashes.
 
+## Frame rate and profiling
+
+In the corner of the picture, and once a second in the log:
+
+```
+59.9 fps  50 steps/s  cpu 1.32 ms  gpu 3.06 ms  412 draws
+host frame 1830: fps 59.9 steps 50 cpu 1.32 ms gpu 3.06 ms draws 412 views 34 ...
+```
+
+* **fps** is the picture's rate: the frames the display actually took. The port presents at the settings file's `render` rate
+  (`settings.txt`, 50 by default) and vsync paces it, so this is where a dropped frame shows up.
+* **steps/s** is the game's own logic rate, which the disc fixes at 50. It is *separate* from the picture's rate, so more
+  frames than steps is right; fewer steps than 50 means the game is falling behind the console's clock and every per-frame
+  count in the game (animations, particles, movers) is running slow.
+* **cpu** is the CPU time bgfx measured between two presents (the whole frame: game step, draw submission and the present),
+  and **gpu** the card's time for the frame before.
+* **draws** is the number of draw calls the frame submitted.
+
+`TWINSANITY_FPS=0` keeps the corner text off the picture; the log line stays.
+
+For *where* the time goes rather than how much of it there is, use an external profiler. `tools/profile.sh` wraps perf(1):
+
+```
+./tools/profile.sh                 # record a run, then print the hottest functions
+./tools/profile.sh --stat          # counters only: cycles, cache and branch misses, context switches
+./tools/profile.sh --flame         # also write build/profile.folded for flamegraph.pl
+./tools/profile.sh --report build/profile.data
+```
+
+perf is a package of its own on Arch/CachyOS (`sudo pacman -S perf`), and the script says so when it is missing. Recording
+needs `kernel.perf_event_paranoid` at 2 or lower (`sudo sysctl kernel.perf_event_paranoid=2`); the game needs no rebuild for
+it, because the build keeps its symbols.
+
 ## Credits
 
 The decompilation this port is built on is [Smartkin/twinsanity-reversed](https://github.com/Smartkin/twinsanity-reversed).

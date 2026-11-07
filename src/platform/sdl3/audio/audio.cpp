@@ -272,6 +272,7 @@ u32 Platform::Audio::SoundMemoryUsed()
 
 u32 Platform::Audio::SoundMemoryTotal()
 {
+    // The processor's memory size, a constant: no lock for the same reason as PitchOfRate below
     return Module().MemoryTotal();
 }
 
@@ -289,6 +290,23 @@ u32 Platform::Audio::LoadedSoundId(u32 index)
     u32 id = Module().LoadedSoundId(index);
     UnlockAudio();
     return id;
+}
+
+u32 Platform::Audio::LoadedSoundIds(u32* ids, u32 capacity)
+{
+    // One lock for the whole list: the game asks for it every keep-alive, and a lock a sound would hold the mixer off that many times
+    LockAudio();
+    u32 count = Module().LoadedSoundIds(ids, capacity);
+    UnlockAudio();
+    return count;
+}
+
+u32 Platform::Audio::LoadedSoundWords()
+{
+    LockAudio();
+    u32 words = Module().LoadedSoundWords();
+    UnlockAudio();
+    return words;
 }
 
 void Platform::Audio::NoteSceneBegin()
@@ -411,6 +429,8 @@ s32 Platform::Audio::PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right
 
 s32 Platform::Audio::PitchOfRate(s32 rate)
 {
+    // No lock: the pitch a rate plays at is arithmetic over the rate and reads no module state (unlike the calls around
+    // it, which the device's thread may be mixing against)
     return Module().PitchOfRate(rate);
 }
 

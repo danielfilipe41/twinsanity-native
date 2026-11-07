@@ -503,6 +503,11 @@ void CheckReverb()
     core.reverb.inputLeft = static_cast<s16>(0x8000);
     core.reverb.inputRight = static_cast<s16>(0x8000);
 
+    // The registers as they were set up, before a sample has gone through them: the second run is this core copied into a
+    // fresh device, so both start from the same state (copied after the run, the core would carry the resampler's window,
+    // its noise counter and its started ramps, and the two runs would not be comparable at all)
+    const Core preset = core;
+
     // An impulse on the effect send: four voices' worth, one frame of full scale on the left
     u8 block[16];
     MakeBlock(block, BlockLoopEnd | BlockLoopStart | BlockLoop, 0, 0, 0x7);
@@ -536,8 +541,7 @@ void CheckReverb()
     Device second;
     second.Reset();
     Core& again = second.GetCore(0);
-    again = core;
-    again.resamplePosition = 0;
+    again = preset;
     u8 secondBlock[16];
     MakeBlock(secondBlock, BlockLoopEnd | BlockLoopStart | BlockLoop, 0, 0, 0x7);
     second.WriteMemory(0x1000, secondBlock, sizeof(secondBlock));
@@ -687,6 +691,18 @@ void CheckModule()
     Check("a bank loads", address != 0, "");
     CheckEqual("its samples start after the header", static_cast<s32>(address), static_cast<s32>(MemoryBase));
     Check("the module took the header's bytes off the block", module.MemoryUsed() >= 4 * 16 / 2, "");
+
+    // Every loaded ID in one pass, which is what the game's prune uses: the same set the one-at-a-time call reports
+    u32 ids[8] = {};
+    const u32 listed = module.LoadedSoundIds(ids, 8);
+    bool found = false;
+    for (u32 index = 0; index < listed; index++)
+    {
+        found = found || ids[index] == 0x1234;
+    }
+
+    Check("the loaded sounds are listed in one pass", listed >= 1, "");
+    Check("and the bank that was loaded is among them", found, "");
 
     // A voice that has not been played is free
     CheckEqual("an untouched voice is free", module.IsVoiceFree(3), 1);
@@ -867,6 +883,82 @@ void CheckPauseKeepsPlaying()
     std::snprintf(detail, sizeof(detail), "(let go after %d frames)", held);
     Check("a sound that was playing when the pause began is let go of", module.IsVoiceFree(Voice) == 1, detail);
     module.ResumeAll();
+}
+
+// The loudest sample a voice makes over a stretch of the module's mix
+s32 PeakOf(SoundModule& module, s32 frames)
+{
+    s16 block[2] = {};
+    s32 loudest = 0;
+    for (s32 frame = 0; frame < frames; frame++)
+    {
+        module.Mix(block, 1);
+        const s32 level = block[0] < 0 ? -block[0] : block[0];
+        if (level > loudest)
+        {
+            loudest = level;
+        }
+    }
+
+    return loudest;
+}
+
+// The scene skip's silence (soundmodule.cpp's HoldSilent, which sound.cpp's SilenceSceneVoices and RestoreSceneVoices drive): the
+// hold keeps the music's group sounding and mixes everything else at nothing, and lifting it leaves what the scene was still sounding
+// at nothing. The music's voice must be heard again the moment the hold lifts -- a lift that lost the groups the hold was given
+// (RestoreSceneVoices passes none of its own) held the music at nothing too, along with the scene's own
+void CheckSkipHold()
+{
+    Phase("skip hold");
+
+    SoundModule& module = Module();
+    constexpr s32 BankSound = 0x6100;
+    constexpr s32 SceneVoice = 15;
+    constexpr s32 MusicVoice = 13;
+    constexpr u32 MusicGroup = 1u << GroupShift;
+    constexpr u32 SceneGroup = 2u << GroupShift;
+
+    module.Reset();
+    // A long sound with no end flag on its blocks: both voices have to still be sounding when the hold lifts (a sound that ends
+    // clears its own tail), and the three stretches of mix below are 600 samples each at the sound's own rate -- 2400 samples of
+    // it, stopped at its data's end rather than at a flag
+    std::vector<u8> bank = MakeBank(BlockLoopStart | BlockLoop, 0, 0, 0x7, 300);
+    module.LoadSoundBank(BankSound, bank.data(), static_cast<u32>(bank.size()));
+    for (s32 group = 0; group < GroupCount; group++)
+    {
+        module.SetGroupVolume((group + 1) << GroupShift, FullGroupVolume, FullGroupVolume);
+    }
+
+    const s32 loud[1] = {static_cast<s32>(MusicGroup)};
+
+    // The scene's own voice: heard while it plays, mixed at nothing by the hold, and left at nothing by the lift (its last words
+    // finish in silence rather than coming back with the picture)
+    module.PlaySound(BankSound, SceneVoice | SceneGroup, 0x3FFF, 0x3FFF, 0x1000, 0, 0, 1);
+    const s32 sceneBefore = PeakOf(module, 600);
+    module.HoldSilent(true, loud, 1);
+    const s32 sceneHeld = PeakOf(module, 600);
+    module.HoldSilent(false, nullptr, 0);
+    const s32 sceneAfter = PeakOf(module, 600);
+
+    char detail[128];
+    std::snprintf(detail, sizeof(detail), "(before %d, held %d, after the lift %d of 32768)", sceneBefore, sceneHeld, sceneAfter);
+    Check("the scene's voice sounds before the skip", sceneBefore > 100, detail);
+    Check("the hold mixes it at nothing", sceneHeld < 100, detail);
+    Check("and it finishes in silence after the lift", sceneAfter < 100, detail);
+
+    // The music's voice: the hold leaves its group sounding, and the lift must not take it with the scene's
+    module.PlaySound(BankSound, MusicVoice | MusicGroup, 0x3FFF, 0x3FFF, 0x1000, 0, 0, 1);
+    const s32 musicHeld = PeakOf(module, 600);
+    module.HoldSilent(true, loud, 1);
+    const s32 musicInHold = PeakOf(module, 600);
+    module.HoldSilent(false, nullptr, 0);
+    const s32 musicAfter = PeakOf(module, 600);
+
+    std::snprintf(detail, sizeof(detail), "(music: held %d, in the hold %d, after the lift %d of 32768)", musicHeld, musicInHold,
+                  musicAfter);
+    Check("the music's voice sounds before the skip", musicHeld > 100, detail);
+    Check("the hold leaves the music's group sounding", musicInHold > 100, detail);
+    Check("and the lift is heard straight away, not held with the scene's", musicAfter > 100, detail);
 }
 
 // A voice that plays twice must not keep the first play's loop point: it would wrap into memory that is not its own, which is
@@ -1909,6 +2001,7 @@ int main()
     CheckModule();
     CheckMenuPlay();
     CheckPauseKeepsPlaying();
+    CheckSkipHold();
     CheckLoopPointIsPerPlay();
     CheckRepeatedPlay();
     CheckCoresMatch();

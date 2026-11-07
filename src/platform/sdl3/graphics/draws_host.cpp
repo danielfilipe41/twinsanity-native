@@ -1,15 +1,18 @@
 // 3D draw submits: rigid models, skins and blend skins through the mesh_builder's parses, cached
 // by packet handle, drawn with the instance's matrix and lights as uniforms. The game's matrices are row-vector
 // (multiply from the left), bgfx's column-major, so the model-to-clip product is transposed on upload.
-#include <cstdlib>
 
 #include "draws_host.h"
+
+#include <algorithm>
 
 #include "host_graphics.h"
 #include "mesh_builder.h"
 
 #include <cmath>
 #include <deque>
+#include <unordered_map>
+#include <vector>
 
 #include "game/graphicstables.h"
 #include "game/camerarig.h"
@@ -39,6 +42,11 @@ namespace
 // embedded blobs, the s_tex sampler and the light/matrix uniforms
 bgfx::ProgramHandle g_rigidProgram = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_skinProgram = BGFX_INVALID_HANDLE;
+// The two flat-shaded programs: the same vertex and fragment code over the flat-qualified varyings, which a shader with the
+// GS's IIP bit cleared draws with (HostMaterialState::flat). A flat draw submits these in place of the interpolated ones and
+// is otherwise identical, uniforms and all
+bgfx::ProgramHandle g_rigidFlatProgram = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_skinFlatProgram = BGFX_INVALID_HANDLE;
 // The volumes' program: the rigid vertex shader with a fragment shader that writes one constant colour, so a shell's
 // contribution is the pass's blend factor and not a fraction of the mesh's own colours (fs_shadowvolume.sc)
 bgfx::ProgramHandle g_shadowVolumeProgram = BGFX_INVALID_HANDLE;
@@ -80,6 +88,16 @@ struct DrawCacheEntry
     u32 indexCount;
     u32 checksum;
     bool used;
+    // The frame and view this entry was last drawn in: the per-frame count of distinct packets reads it, nothing else does
+    u32 lastFrame;
+    u16 lastView;
+    // The skin's parsed vertexes, kept for a shaped draw: that draw re-bakes its positions every frame and the packet would otherwise be
+    // parsed again for every one. The bake still goes into a copy of its own that the draw uploads through the transient pool, so two
+    // draws of one character in a frame keep their own shapes -- a shared baked buffer is what broke a cutscene before. Keyed by the
+    // parse's own inputs: the same packet reached with a different shape total is a different parse
+    std::vector<u8> skinVertices;
+    u32 skinVertexCount;
+    u32 skinShapes;
 };
 
 // The uploads held, one entry per live packet. An entry is never destroyed while a draw may still bind it: deleting a
@@ -87,6 +105,44 @@ struct DrawCacheEntry
 // (HostCollectRetiredDrawBuffers), once the frames that could still bind them have run. A deque keeps entries'
 // addresses stable as it grows, which the draws need while a packet is parsed.
 std::deque<DrawCacheEntry> g_entries;
+
+// What an entry was parsed from: the packet's bytes, their size and whether it was parsed as a skin. The three are what
+// tell two uploads apart, so they are the lookup's key
+struct DrawCacheKey
+{
+    const u8* packet;
+    u32 packetSize;
+    bool skinned;
+
+    bool operator==(const DrawCacheKey& other) const
+    {
+        return packet == other.packet && packetSize == other.packetSize && skinned == other.skinned;
+    }
+};
+
+struct DrawCacheKeyHash
+{
+    size_t operator()(const DrawCacheKey& key) const
+    {
+        // The packet's address carries the entropy (a level's meshes alone are thousands of entries); the size and the
+        // kind tell a packet's rigid and skinned parses apart, and the odd multipliers spread the result
+        size_t hash = reinterpret_cast<size_t>(key.packet);
+        hash ^= static_cast<size_t>(key.packetSize) * 0x9E3779B1u;
+        hash ^= static_cast<size_t>(key.skinned ? 1u : 0u) * 0x85EBCA77u;
+        return hash ^ (hash >> 16);
+    }
+};
+
+// The entries by what they were parsed from. Every draw of a live packet found its entry by walking all of g_entries, so
+// the frame's cost was the draw count times the uploads the session held; one hash probe answers it instead. The entries
+// are the deque's, whose addresses do not move
+std::unordered_map<DrawCacheKey, DrawCacheEntry*, DrawCacheKeyHash> g_entryOfPacket;
+// The entries no draw holds, so a miss takes one in constant time instead of walking the deque for the first free one
+std::vector<DrawCacheEntry*> g_freeEntries;
+// The entries a packet was parsed into, by its address: a model's death retires its packet's uploads, and finding them was
+// a walk of every entry the session held (a level's meshes are thousands). A packet has at most two (its rigid and its
+// skinned parse)
+std::unordered_map<const u8*, std::vector<DrawCacheEntry*>> g_entriesOfPacket;
 bool g_entriesMade = false;
 Platform::Graphics::HostDrawCounters g_counters = {};
 
@@ -181,6 +237,14 @@ void MakeShared()
     g_shadowVolumeProgram = bgfx::createProgram(volumeVs, volumeFs, true);
     bgfx::ShaderHandle skinFs = HostCreateShader(HostShader::Draw3DFragment);
     g_skinProgram = bgfx::createProgram(skinVs, skinFs, true);
+    // The flat-shaded pair: the rigid vertex shader is the skin one's base (both compute their world position, then light
+    // it), so the two differ only in whether the joints move the vertex first
+    bgfx::ShaderHandle rigidFlatVs = HostCreateShader(HostShader::Draw3DVertexFlat);
+    bgfx::ShaderHandle flatFs = HostCreateShader(HostShader::Draw3DFragmentFlat);
+    g_rigidFlatProgram = bgfx::createProgram(rigidFlatVs, flatFs, true);
+    bgfx::ShaderHandle skinFlatVs = HostCreateShader(HostShader::Draw3DSkinVertexFlat);
+    bgfx::ShaderHandle skinFlatFs = HostCreateShader(HostShader::Draw3DFragmentFlat);
+    g_skinFlatProgram = bgfx::createProgram(skinFlatVs, skinFlatFs, true);
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_mvp = bgfx::createUniform("u_mvp", bgfx::UniformType::Mat4);
     g_lightDirs = bgfx::createUniform("u_lightDirs", bgfx::UniformType::Vec4, 3);
@@ -191,6 +255,65 @@ void MakeShared()
     g_alpha = bgfx::createUniform("u_materialAlpha", bgfx::UniformType::Vec4);
     g_scroll = bgfx::createUniform("u_scroll", bgfx::UniformType::Vec4);
     g_materialColour = bgfx::createUniform("u_materialColour", bgfx::UniformType::Vec4);
+}
+
+// The joint matrices a skinned draw uploads, and what the last fill of them was made from: the block's address and how
+// many joints it held. Retail's WriteJoints keeps the same pair per bucket (lastJoints), so a character's submodels and
+// passes do not carry the same joints to VU1 again within one batch. The host's batch is the frame: the cache is
+// cleared once a frame (HostCollectRetiredDrawBuffers), which is as long as a joint block's matrices can stay the same --
+// an animator refills its block every step, and the same address is another object's block by the next frame
+Matrix4x4 g_jointUniforms[SkinMaxJoints];
+const Matrix4x4* g_jointCacheKey = nullptr;
+u32 g_jointCacheCount = 0;
+// The lanes of g_jointUniforms the last fill wrote real joints into (the rest are identity)
+u32 g_jointCacheFilled = 0;
+bool g_jointIdentitiesMade = false;
+
+Matrix4x4 JointIdentity()
+{
+    Matrix4x4 identity = {};
+    identity.m[0][0] = 1.0f;
+    identity.m[1][1] = 1.0f;
+    identity.m[2][2] = 1.0f;
+    identity.m[3][3] = 1.0f;
+    return identity;
+}
+
+// The draw's joints as the shader's uniform array: the joints it names, then the identity (a vertex naming a lane past
+// the skin's own joint count -- which a well-formed mesh never does -- lands at the model's origin rather than taking
+// another pose's joint). A fill of the same block the frame's last draw made is skipped: the matrices cannot have moved
+// since, and a level's characters are several draws each
+void UploadJoints(const Matrix4x4* joints, u32 jointCount)
+{
+    if (!g_jointIdentitiesMade)
+    {
+        g_jointIdentitiesMade = true;
+        for (u32 joint = 0; joint < SkinMaxJoints; joint++)
+        {
+            g_jointUniforms[joint] = JointIdentity();
+        }
+    }
+
+    if (joints != g_jointCacheKey || jointCount != g_jointCacheCount)
+    {
+        g_jointCacheKey = joints;
+        g_jointCacheCount = jointCount;
+        const u32 upto = jointCount < SkinMaxJoints ? jointCount : SkinMaxJoints;
+        for (u32 joint = 0; joint < upto; joint++)
+        {
+            g_jointUniforms[joint] = joints[joint];
+        }
+
+        // The lanes this pose is shorter than the last one were that pose's joints: back to the identity, so a short pose
+        // after a long one does not leave a model's vertexes on another's joints
+        for (u32 joint = upto; joint < g_jointCacheFilled; joint++)
+        {
+            g_jointUniforms[joint] = JointIdentity();
+        }
+        g_jointCacheFilled = upto;
+    }
+
+    bgfx::setUniform(g_joints, g_jointUniforms, SkinMaxJoints);
 }
 
 void MakeEntries()
@@ -204,6 +327,9 @@ void MakeEntries()
     // The handles in the retire list are the bgfx instance's that is gone with it
     g_retiredBuffers.clear();
     g_drawFrame = 0;
+    g_entryOfPacket.clear();
+    g_entriesOfPacket.clear();
+    g_freeEntries.clear();
     for (DrawCacheEntry& entry : g_entries)
     {
         entry.packet = nullptr;
@@ -214,33 +340,34 @@ void MakeEntries()
         entry.indexCount = 0;
         entry.checksum = 0;
         entry.used = false;
+        g_freeEntries.push_back(&entry);
     }
 }
 
 // The entry of a packet (nullptr: none)
 DrawCacheEntry* FindEntry(const u8* packet, u32 packetSize, bool skinned)
 {
-    for (DrawCacheEntry& entry : g_entries)
-    {
-        if (entry.used && entry.packet == packet && entry.packetSize == packetSize && entry.skinned == skinned)
-        {
-            return &entry;
-        }
-    }
+    const auto found = g_entryOfPacket.find({packet, packetSize, skinned});
+    return found == g_entryOfPacket.end() ? nullptr : found->second;
+}
 
-    return nullptr;
+// The entry a parsed packet was put in, under the key its draws look it up with and under the packet's address, which is
+// what its retirement finds it by
+void RegisterEntry(DrawCacheEntry* entry)
+{
+    g_entryOfPacket[{entry->packet, entry->packetSize, entry->skinned}] = entry;
+    g_entriesOfPacket[entry->packet].push_back(entry);
 }
 
 // A free entry, else a new one. Entries are never evicted: a live upload must not be destroyed while a draw the
 // frame has already queued still binds it (see g_entries' comment).
 DrawCacheEntry* TakeEntry()
 {
-    for (DrawCacheEntry& entry : g_entries)
+    if (!g_freeEntries.empty())
     {
-        if (!entry.used)
-        {
-            return &entry;
-        }
+        DrawCacheEntry* entry = g_freeEntries.back();
+        g_freeEntries.pop_back();
+        return entry;
     }
 
     g_entries.emplace_back();
@@ -253,6 +380,11 @@ DrawCacheEntry* TakeEntry()
     entry.indexCount = 0;
     entry.checksum = 0;
     entry.used = false;
+    entry.lastFrame = ~0u;
+    entry.lastView = 0xFFFF;
+    entry.skinVertices.clear();
+    entry.skinVertexCount = 0;
+    entry.skinShapes = 0;
     return &entry;
 }
 
@@ -369,6 +501,18 @@ bgfx::ProgramHandle HostDraw3DSkinProgram()
     return g_skinProgram;
 }
 
+bgfx::ProgramHandle HostDraw3DFlatProgram()
+{
+    MakeShared();
+    return g_rigidFlatProgram;
+}
+
+bgfx::ProgramHandle HostDraw3DSkinFlatProgram()
+{
+    MakeShared();
+    return g_skinFlatProgram;
+}
+
 bgfx::TextureHandle HostSubModelTexture(MaterialResource** materials, u32 index)
 {
     if (materials == nullptr || materials[index] == nullptr || materials[index]->material == nullptr)
@@ -478,6 +622,202 @@ void HostModelClipMatrix(const Matrix4x4* world, const Matrix4x4* toScreen, Matr
     }
 }
 
+// One instance of a rigid packet: the draw's model-to-clip matrix and nothing else. The light set stays the submit's uniform (a group
+// only holds draws whose light matches), so an instance is the sixteen floats the vertex shader multiplies by
+struct RigidInstance
+{
+    f32 mvp[16];
+    // The model's rotation, three rows: the vertex shader turns the scene's light directions by it
+    f32 rot[12];
+};
+
+// A rigid draw waiting for the frame's flush: everything its submit sets, plus its matrix. A submission is one draw call through bgfx
+// whatever it carries, and more than half of a scene frame's rigid draws are a packet the frame already drew
+struct RigidQueued
+{
+    DrawCacheEntry* entry;
+    bgfx::ViewId view;
+    u64 state;
+    u32 blendFactor;
+    bgfx::TextureHandle texture;
+    bgfx::ProgramHandle program;
+    bool minifiesThroughMips;
+    f32 alpha[4];
+    f32 scroll[4];
+    f32 colour[4];
+    // The scene's lights (not the model's own, which ride the instance data) and the model's rotation
+    f32 dirs[12];
+    f32 cols[12];
+    f32 ambient[4];
+    f32 mvp[16];
+    f32 rot[12];
+};
+
+// The draws a frame holds before submitting them. Only opaque draws are held: a blended draw's place in the frame's order is its own, so
+// it and everything held before it are submitted where it comes
+constexpr u32 RigidQueueMost = 8192;
+std::vector<RigidQueued> g_rigidQueue;
+
+// TEMPORARY probe (TWINSANITY_TEST_AUDIO): why two draws of one packet in one view still do not make one submission, and how much of
+// a frame the shadow volume pass is (the volumes blend with a constant factor, so the queue submits each of them alone)
+// What a draw's blend allows: an opaque draw or one that only ever adds to the frame commutes with its neighbours in the run, so
+// the queue may hold a run of them and submit it as one. Every other blended draw keeps its exact place in the frame and goes alone
+enum RigidKind : u32
+{
+    RigidKindNone,
+    RigidKindOpaque,
+    RigidKindAdditive,
+    RigidKindOrdered,
+};
+u32 g_rigidQueueKind = RigidKindNone;
+
+
+// The sort's order: a submission's shared state first, so the draws that make one submission end up side by side
+bool RigidLess(const RigidQueued& a, const RigidQueued& b)
+{
+    if (a.entry != b.entry) return a.entry < b.entry;
+    if (a.state != b.state) return a.state < b.state;
+    if (a.program.idx != b.program.idx) return a.program.idx < b.program.idx;
+    if (a.texture.idx != b.texture.idx) return a.texture.idx < b.texture.idx;
+    if (a.view != b.view) return a.view < b.view;
+    if (a.blendFactor != b.blendFactor) return a.blendFactor < b.blendFactor;
+    if (a.minifiesThroughMips != b.minifiesThroughMips) return a.minifiesThroughMips < b.minifiesThroughMips;
+
+    int order = std::memcmp(a.alpha, b.alpha, sizeof(a.alpha));
+    if (order != 0) return order < 0;
+    order = std::memcmp(a.scroll, b.scroll, sizeof(a.scroll));
+    if (order != 0) return order < 0;
+    order = std::memcmp(a.colour, b.colour, sizeof(a.colour));
+    if (order != 0) return order < 0;
+    order = std::memcmp(a.dirs, b.dirs, sizeof(a.dirs));
+    if (order != 0) return order < 0;
+    order = std::memcmp(a.cols, b.cols, sizeof(a.cols));
+    if (order != 0) return order < 0;
+    order = std::memcmp(a.ambient, b.ambient, sizeof(a.ambient));
+    return order < 0;
+}
+
+// Whether two draws make the same submission (everything but the matrix)
+bool RigidSame(const RigidQueued& a, const RigidQueued& b)
+{
+    return a.entry == b.entry && a.view == b.view && a.state == b.state && a.blendFactor == b.blendFactor &&
+           a.texture.idx == b.texture.idx && a.program.idx == b.program.idx &&
+           a.minifiesThroughMips == b.minifiesThroughMips &&
+           std::memcmp(a.alpha, b.alpha, sizeof(a.alpha)) == 0 &&
+           std::memcmp(a.scroll, b.scroll, sizeof(a.scroll)) == 0 &&
+           std::memcmp(a.colour, b.colour, sizeof(a.colour)) == 0 &&
+           std::memcmp(a.dirs, b.dirs, sizeof(a.dirs)) == 0 &&
+           std::memcmp(a.cols, b.cols, sizeof(a.cols)) == 0 &&
+           std::memcmp(a.ambient, b.ambient, sizeof(a.ambient)) == 0;
+}
+
+u32 RigidDrawKind(u64 state)
+{
+    if ((state & BGFX_STATE_BLEND_MASK) == 0)
+    {
+        return RigidKindOpaque;
+    }
+
+    // A draw that writes depth is tested against what it has already written, so the order inside a run can change which of its
+    // fragments pass: it keeps its place
+    if ((state & BGFX_STATE_WRITE_Z) != 0)
+    {
+        return RigidKindOrdered;
+    }
+
+    if ((state & BGFX_STATE_BLEND_EQUATION_MASK) != BGFX_STATE_BLEND_EQUATION(BGFX_STATE_BLEND_EQUATION_ADD))
+    {
+        return RigidKindOrdered;
+    }
+
+    // The destination is only ever added to (dst ONE, ADD), which is what makes the run's order the same picture: the sums commute.
+    // The shadow volumes add a constant factor per shell and the additive material preset adds the texture's alpha
+    const u64 func = state & BGFX_STATE_BLEND_MASK;
+    if (func == BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE) ||
+        func == BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_FACTOR, BGFX_STATE_BLEND_ONE) ||
+        func == BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_SRC_ALPHA, BGFX_STATE_BLEND_ONE))
+    {
+        return RigidKindAdditive;
+    }
+
+    return RigidKindOrdered;
+}
+
+// One group of draws as one instanced submit: the state, the texture and the material's uniforms are its, the matrices its instance data.
+// The pool clamps to what is left of the frame's space, so a short answer is drawn as the part that fits and the rest follows
+void SubmitRigidGroup(const RigidQueued* group, u32 count)
+{
+    const RigidQueued& first = group[0];
+    bgfx::setState(first.state, first.blendFactor);
+    const bgfx::TextureHandle texture = bgfx::isValid(first.texture) ? first.texture : HostWhiteTexture();
+    if (first.minifiesThroughMips)
+    {
+        bgfx::setTexture(0, g_sampler, texture);
+    }
+    else
+    {
+        // The largest mip level alone, as a shader that never minifies through its chain reads it
+        bgfx::setTexture(0, g_sampler, texture, 0, UINT16_MAX, 0, 1, UINT32_MAX, 0, 0);
+    }
+
+    bgfx::setVertexBuffer(0, first.entry->vertices);
+    bgfx::setIndexBuffer(first.entry->indexes);
+    bgfx::setUniform(g_lightDirs, first.dirs, 3);
+    bgfx::setUniform(g_lightColours, first.cols, 3);
+    bgfx::setUniform(g_ambient, first.ambient, 1);
+    bgfx::setUniform(g_scroll, first.scroll, 1);
+    bgfx::setUniform(g_materialColour, first.colour, 1);
+    bgfx::setUniform(g_alpha, first.alpha, 1);
+
+    u32 done = 0;
+    while (done < count)
+    {
+        const u32 available = bgfx::getAvailInstanceDataBuffer(count - done, sizeof(RigidInstance));
+        if (available == 0)
+        {
+            return;
+        }
+
+        bgfx::InstanceDataBuffer buffer;
+        bgfx::allocInstanceDataBuffer(&buffer, available, sizeof(RigidInstance));
+        auto* instances = reinterpret_cast<RigidInstance*>(buffer.data);
+        for (u32 index = 0; index < available; index++)
+        {
+            std::memcpy(instances[index].mvp, group[done + index].mvp, sizeof(instances[index].mvp));
+            std::memcpy(instances[index].rot, group[done + index].rot, sizeof(instances[index].rot));
+        }
+
+        bgfx::setInstanceDataBuffer(&buffer, 0, available);
+        bgfx::submit(first.view, first.program);
+        g_counters.rigidSubmits++;
+        done += available;
+    }
+}
+
+void FlushRigidQueue()
+{
+    if (g_rigidQueue.empty())
+    {
+        return;
+    }
+
+    // Grouped by what a submission shares: the opaque draws held are depth tested and write their own samples, so their order among
+    // themselves is not the picture's -- their order against a blended draw is, which is why a blended draw flushes them
+    std::sort(g_rigidQueue.begin(), g_rigidQueue.end(), RigidLess);
+    size_t start = 0;
+    for (size_t index = 1; index <= g_rigidQueue.size(); index++)
+    {
+        if (index == g_rigidQueue.size() || !RigidSame(g_rigidQueue[start], g_rigidQueue[index]))
+        {
+            SubmitRigidGroup(&g_rigidQueue[start], static_cast<u32>(index - start));
+            start = index;
+        }
+    }
+
+    g_rigidQueue.clear();
+    g_rigidQueueKind = RigidKindNone;
+}
+
 bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, const Matrix4x4* mvp,
                          const Matrix4x4* world, const ModelLights* lights, bgfx::TextureHandle texture,
                          bgfx::ViewId view, u64 state, const f32* alphaRef, u32 blendFactor,
@@ -517,52 +857,115 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
         entry->indexCount = mesh.indexCount;
         entry->checksum = mesh.checksum;
         entry->used = true;
+        RegisterEntry(entry);
         g_counters.rigidChecksum ^= mesh.checksum;
     }
 
-    Vector4 dirs[3];
-    Vector4 colours[3];
-    Vector4 ambient = {};
-    LightUniforms(lights, world, dirs, colours, &ambient);
+    // The frame's distinct packets against its draws: a packet drawn more than once in one view (a prop the level repeats) is what an
+    // instanced submit would collapse into a single draw
+    if (entry->lastFrame == g_drawFrame && entry->lastView == static_cast<u16>(view))
+    {
+        g_counters.rigidRepeats++;
+    }
+    else
+    {
+        entry->lastFrame = g_drawFrame;
+        entry->lastView = static_cast<u16>(view);
+        g_counters.rigidPackets++;
+    }
+
+    // The scene's lights as they are, and the model's rotation: the vertex shader turns the one by the other per instance, so every
+    // draw of a frame under one lighting environment shares the submit's uniforms (LightUniforms' arithmetic, moved into the shader)
+    f32 lightDirs[12];
+    f32 lightCols[12];
+    f32 lightAmbient[4];
+    f32 rotation[12] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    if (lights != nullptr && world != nullptr && lights->directions != nullptr && lights->colours != nullptr &&
+        lights->ambient != nullptr)
+    {
+        std::memcpy(lightDirs, lights->directions, sizeof(lightDirs));
+        std::memcpy(lightCols, lights->colours, sizeof(lightCols));
+        std::memcpy(lightAmbient, lights->ambient, sizeof(lightAmbient));
+        for (u32 row = 0; row < 3; row++)
+        {
+            rotation[row * 4 + 0] = world->m[row][0];
+            rotation[row * 4 + 1] = world->m[row][1];
+            rotation[row * 4 + 2] = world->m[row][2];
+            rotation[row * 4 + 3] = 0.0f;
+        }
+    }
+    else
+    {
+        // LightUniforms' neutral wash: no directional contributes, the ambient is white
+        const f32 neutralDirs[12] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+        const f32 white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        std::memcpy(lightDirs, neutralDirs, sizeof(lightDirs));
+        std::memset(lightCols, 0, sizeof(lightCols));
+        std::memcpy(lightAmbient, white, sizeof(lightAmbient));
+    }
     // The material's own texture when it has one (the PS2 uploads each material's shader texture before its packet),
     // else the 1x1 white texture the fragment shader reduces to the vertex colour
-    bgfx::setState(state, blendFactor);
-    if (minifiesThroughMips)
-    {
-        bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
-    }
-    else
-    {
-        // A shader that never minifies through a mip samples the largest level bilinearly (the GS's TEX1 minifying
-        // filter is the shader's own, not a mip one; TT-Lab's MinifiesThroughMips(UnlitSkydome) is false). The bind
-        // covers the largest level alone -- firstMip 0, one level -- and the sampler's LOD is clamped to it, so a
-        // texture carrying a mip chain is read from level 0 exactly as the console reads it. The flags stay
-        // UINT32_MAX (the cached texture's own: bilinear min/mag, MIP_POINT unreachable within one level) and the
-        // level range rides the binding alone, so the texture's chain and every other draw of it are untouched
-        bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture(), 0, UINT16_MAX, 0, 1,
-                         UINT32_MAX, 0, 0);
-    }
-    bgfx::setVertexBuffer(0, entry->vertices);
-    bgfx::setIndexBuffer(entry->indexes);
-    bgfx::setUniform(g_mvp, mvp, 1);
-    bgfx::setUniform(g_lightDirs, dirs, 3);
-    bgfx::setUniform(g_lightColours, colours, 3);
-    bgfx::setUniform(g_ambient, &ambient, 1);
-    bgfx::setUniform(g_scroll, g_drawScroll, 1);
-    bgfx::setUniform(g_materialColour, g_drawColour, 1);
-    // The uniform's w is the brighten flag, not AFAIL (which only the host reads, for the rejected samples' second
-    // pass): a brighten draw's fragment shader must write its alpha as its colour for DST_COLOR, ONE to multiply the
-    // background by 1 + As
+    f32 alpha[4];
     if (alphaRef != nullptr)
     {
-        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
-        bgfx::setUniform(g_alpha, alpha, 1);
+        // The uniform's w is the brighten flag, not AFAIL (which only the host reads, for the rejected samples' second pass): a
+        // brighten draw's fragment shader must write its alpha as its colour for DST_COLOR, ONE to multiply the background by 1 + As
+        alpha[0] = alphaRef[0];
+        alpha[1] = alphaRef[1];
+        alpha[2] = alphaRef[2];
+        alpha[3] = alphaRef[4];
     }
     else
     {
-        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+        std::memcpy(alpha, g_noAlphaTest, sizeof(alpha));
     }
-    bgfx::submit(view, bgfx::isValid(program) ? program : g_rigidProgram);
+
+    RigidQueued queued = {};
+    queued.entry = entry;
+    queued.view = view;
+    queued.state = state;
+    queued.blendFactor = blendFactor;
+    queued.texture = texture;
+    queued.program = bgfx::isValid(program) ? program : g_rigidProgram;
+    queued.minifiesThroughMips = minifiesThroughMips;
+    std::memcpy(queued.alpha, alpha, sizeof(queued.alpha));
+    std::memcpy(queued.scroll, &g_drawScroll, sizeof(queued.scroll));
+    std::memcpy(queued.colour, &g_drawColour, sizeof(queued.colour));
+    std::memcpy(queued.dirs, lightDirs, sizeof(queued.dirs));
+    std::memcpy(queued.cols, lightCols, sizeof(queued.cols));
+    std::memcpy(queued.ambient, lightAmbient, sizeof(queued.ambient));
+    std::memcpy(queued.mvp, mvp, sizeof(queued.mvp));
+    std::memcpy(queued.rot, rotation, sizeof(queued.rot));
+
+
+    const u32 kind = RigidDrawKind(state);
+    if (kind == RigidKindOrdered)
+    {
+        // Its place in the frame's order is its own: everything held is submitted before it and it goes alone
+        g_counters.rigidBlended++;
+        FlushRigidQueue();
+        g_rigidQueueKind = RigidKindOrdered;
+        g_rigidQueue.push_back(queued);
+        FlushRigidQueue();
+    }
+    else
+    {
+        // A run only ever holds one kind: the draws held are submitted when the kind changes, so an additive run keeps the place in
+        // the frame it was drawn at
+        if (g_rigidQueueKind != RigidKindNone && g_rigidQueueKind != kind)
+        {
+            FlushRigidQueue();
+        }
+
+        if (g_rigidQueue.size() >= RigidQueueMost)
+        {
+            FlushRigidQueue();
+        }
+
+        g_rigidQueueKind = kind;
+        g_rigidQueue.push_back(queued);
+    }
+
     g_counters.rigidDraws++;
     return true;
 }
@@ -570,7 +973,8 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
 bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 shapeCount, const Matrix4x4* mvp,
                         const Matrix4x4* world, const ModelLights* lights, const Matrix4x4* joints, u32 jointCount,
                         const f32* blendWeights, u32 blendCount, bgfx::TextureHandle texture, bgfx::ViewId view,
-                        u64 state, const f32* alphaRef, const HostBlendPart* blendPart, const s32* blendShapeIds)
+                        u64 state, const f32* alphaRef, const HostBlendPart* blendPart, const s32* blendShapeIds,
+                        bgfx::ProgramHandle program)
 {
     if (packet == nullptr || packetSize == 0 || mvp == nullptr || joints == nullptr || jointCount == 0)
     {
@@ -585,11 +989,24 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     const bool shaped = blendPart != nullptr && blendShapeIds != nullptr && blendWeights != nullptr &&
                         blendCount != 0 && blendPart->shapeCount != 0;
 
+    // The rigid draws held are submitted first: a skin draw may blend, and its order against them is its own
+    FlushRigidQueue();
+
     MakeShared();
     MakeEntries();
     DrawCacheEntry* entry = FindEntry(packet, packetSize, true);
     Ps2SkinMesh mesh;
-    if (entry == nullptr || shaped)
+    // A shaped draw of a packet this entry already parsed: the unshaped vertexes it baked from last frame are what it bakes from again
+    // (the shapes move positions, never the triangle list), so the entry's copy is used and the packet is not parsed once a draw
+    const bool parsedCopy = entry != nullptr && shaped && entry->skinVertexCount == vertexCount &&
+                            entry->skinShapes == shapeCount && !entry->skinVertices.empty();
+    if (parsedCopy)
+    {
+        mesh.vertices = entry->skinVertices;
+        mesh.vertexCount = entry->skinVertexCount;
+        mesh.indexCount = entry->indexCount;
+    }
+    else if (entry == nullptr || shaped)
     {
         if (!ParseSkinSubModel(packet, packetSize, vertexCount, shapeCount, &mesh) || mesh.vertices.empty() ||
             mesh.indexes.empty())
@@ -617,45 +1034,27 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
         entry->indexCount = mesh.indexCount;
         entry->checksum = mesh.checksum;
         entry->used = true;
+        RegisterEntry(entry);
         g_counters.skinChecksum ^= mesh.checksum;
     }
 
-    // The cached upload holds the mesh without shapes (a cache entry outlives
-    // the frame's weights): the draw's own offsets go into the parsed copy
-    if (shaped)
+    // The parsed vertexes kept for the shaped draws that follow (see skinVertices): a plain skin never needs them, its upload is whole
+    if (shaped && !parsedCopy)
     {
-        BakeBlendShapes(blendPart, blendShapeIds, blendWeights, blendCount, &mesh);
+        entry->skinVertices = mesh.vertices;
+        entry->skinVertexCount = mesh.vertexCount;
+        entry->skinShapes = shapeCount;
     }
 
     // The joint matrices upload as-is (same row-vector convention as the
     // mvp); past SkinMaxJoints the tail is dropped (the retail skins' indices
-    // stop at 61), short of it the rest is identity
-    static Matrix4x4 jointUniforms[SkinMaxJoints];
-    for (u32 joint = 0; joint < SkinMaxJoints; joint++)
-    {
-        if (joint < jointCount)
-        {
-            jointUniforms[joint] = joints[joint];
-        }
-        else
-        {
-            // An unused slot: the identity, so a vertex naming one (an index past the skin's own joint count, which a
-            // well-formed mesh never does) lands at the model's origin rather than taking joint 0's transform
-            std::memset(&jointUniforms[joint], 0, sizeof(Matrix4x4));
-            jointUniforms[joint].m[0][0] = 1.0f;
-            jointUniforms[joint].m[1][1] = 1.0f;
-            jointUniforms[joint].m[2][2] = 1.0f;
-            jointUniforms[joint].m[3][3] = 1.0f;
-        }
-    }
-
+    // stop at 61), short of it the rest is identity (UploadJoints)
     Vector4 blendUniforms[4] = {};
     for (u32 blend = 0; blend < 4 && blend < blendCount && blendWeights != nullptr; blend++)
     {
         blendUniforms[blend].x = blendWeights[blend];
     }
 
-    SkinJointUploadNeeded(static_cast<u32>(reinterpret_cast<size_t>(joints)));
     Vector4 dirs[3];
     Vector4 colours[3];
     Vector4 ambient = {};
@@ -666,18 +1065,28 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     // a caster out of its own shadow. The RGB is unchanged; only the written alpha is forced to zero. Opaque draws
     // need the full mark (identity RGB, alpha ZERO/ZERO), since forcing only the alpha half leaves the RGB factors at
     // enum 0 and the driver draws black.
+    // The cached upload holds the mesh without shapes (a cache entry outlives
+    // the frame's weights): the draw's own offsets go into the parsed copy
+    if (shaped)
+    {
+        BakeBlendShapes(blendPart, blendShapeIds, blendWeights, blendCount, &mesh);
+    }
+
     bgfx::setState(MarkedForCaster(state));
     bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
     if (shaped)
     {
         // This frame's vertexes only (the cache's index buffer still holds:
-        // the shapes move positions, never the triangle list)
-        bgfx::TransientVertexBuffer bound;
-        bgfx::allocTransientVertexBuffer(&bound, mesh.vertexCount, SkinLayout());
-        if (bound.data == nullptr)
+        // the shapes move positions, never the triangle list). The pool's answer is the allocation bgfx would give:
+        // it clamps to what is left of the frame's space and still hands back a non-null, shorter buffer, so a request
+        // that comes back short must not be written into at all
+        if (bgfx::getAvailTransientVertexBuffer(mesh.vertexCount, SkinLayout()) != mesh.vertexCount)
         {
             return false;  // the frame's transient pool is full: nothing to draw with
         }
+
+        bgfx::TransientVertexBuffer bound;
+        bgfx::allocTransientVertexBuffer(&bound, mesh.vertexCount, SkinLayout());
 
         std::memcpy(bound.data, mesh.vertices.data(), mesh.vertices.size());
         bgfx::setVertexBuffer(0, &bound);
@@ -693,7 +1102,7 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     bgfx::setUniform(g_lightDirs, dirs, 3);
     bgfx::setUniform(g_lightColours, colours, 3);
     bgfx::setUniform(g_ambient, &ambient, 1);
-    bgfx::setUniform(g_joints, jointUniforms, SkinMaxJoints);
+    UploadJoints(joints, jointCount);
     bgfx::setUniform(g_blendWeights, blendUniforms, 4);
     bgfx::setUniform(g_scroll, g_drawScroll, 1);
     bgfx::setUniform(g_materialColour, g_drawColour, 1);
@@ -706,13 +1115,14 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     {
         bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
     }
-    bgfx::submit(view, g_skinProgram);
+    // The flat-shaded program for a shader with IIP cleared, else the interpolating one
+    bgfx::submit(view, bgfx::isValid(program) ? program : g_skinProgram);
     g_counters.skinDraws++;
     return true;
 }
 
 bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgfx::ViewId view, u64 state,
-                         const f32* alphaRef)
+                         const f32* alphaRef, bgfx::ProgramHandle program)
 {
     // A screen model's strip (the skid marks are the game's only models): its world-space places through the
     // model-to-clip matrix, drawn with the vertexes' own colours through the 1x1 white texture. Unlike the rigid and
@@ -723,6 +1133,7 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
         return false;
     }
 
+    FlushRigidQueue();
     MakeShared();
     const bgfx::VertexLayout layout = RigidLayout();
     // The transient vertex buffer the strip is written into: bgfx clamps the request to what is left of the frame's
@@ -774,7 +1185,6 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::setState(state | BGFX_STATE_PT_TRISTRIP);
     bgfx::setTexture(0, g_sampler, bgfx::isValid(texture) ? texture : HostWhiteTexture());
     bgfx::setVertexBuffer(0, &buffer);
-    bgfx::setUniform(g_mvp, mvp, 1);
     bgfx::setUniform(g_lightDirs, noDirections, 3);
     bgfx::setUniform(g_lightColours, noLightColours, 3);
     bgfx::setUniform(g_ambient, &ambient, 1);
@@ -789,13 +1199,35 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     {
         bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
     }
-    bgfx::submit(view, g_rigidProgram);
+    // The flat-shaded program for a material whose shader cleared IIP (the skid marks' own does not: it sets gouraud 1),
+    // else the interpolating one -- the same choice the rigid and skin paths make per pass
+    // The rigid vertex shader takes its model-to-clip matrix per instance (the packet path's instancing), so the strip is one
+    // instance of its own
+    RigidInstance instance = {{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f}};
+    std::memcpy(instance.mvp, mvp, sizeof(instance.mvp));
+    bgfx::InstanceDataBuffer instances;
+    bgfx::allocInstanceDataBuffer(&instances, 1, sizeof(RigidInstance));
+    std::memcpy(instances.data, &instance, sizeof(instance));
+    bgfx::setInstanceDataBuffer(&instances, 0, 1);
+    bgfx::submit(view, bgfx::isValid(program) ? program : g_rigidProgram);
+    g_counters.screenDraws++;
     return true;
 }
 
 const HostDrawCounters& HostDrawCounts()
 {
     return g_counters;
+}
+
+void HostCountDraw2D()
+{
+    g_counters.draw2dDraws++;
+}
+
+void HostFlushRigidInstances()
+{
+    FlushRigidQueue();
+
 }
 
 
@@ -811,12 +1243,12 @@ void HostSetSubModelScroll(MaterialResource** materials, u32 index)
     HostSetDrawScroll(material);
 }
 
-void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material)
+void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material, const f32* scrollUVs)
 {
-    // The submodel's material's scroll, which the next 3D draw's vertex shader adds to every UV (the retail
-    // Shader::scroll WriteScroll hands the VU1 as the fourth component of the scroll uniform, the offset the
-    // animated scrolls and the animation's own UV offset produce). A material without scroll state (or with no
-    // resource) leaves the draw unmoved
+    // The scroll of the shader the next 3D draw's pass is, which its vertex shader adds to every UV (the retail
+    // Shader::scroll WriteScroll hands the VU1 as the fourth component of the scroll uniform, the offset the animated
+    // scrolls and the animation's own UV offset produce). Each shader has its own, so a material whose second pass
+    // scrolls moves that pass's UVs. A material without scroll state (or with no resource) leaves the draw unmoved
     if (material == nullptr)
     {
         g_drawScroll[0] = 0.0f;
@@ -830,8 +1262,9 @@ void HostSetDrawScroll(const Platform::Graphics::HostMaterial* material)
         return;
     }
 
-    g_drawScroll[0] = material->scroll[0];
-    g_drawScroll[1] = material->scroll[1];
+    // The pass's offset when the caller names one, else the material's own (its first shader's)
+    g_drawScroll[0] = scrollUVs != nullptr ? scrollUVs[0] : material->scroll[0];
+    g_drawScroll[1] = scrollUVs != nullptr ? scrollUVs[1] : material->scroll[1];
     g_drawScroll[2] = 0.0f;
     g_drawScroll[3] = 0.0f;
     // The material's colour reaches the vertex shader for the one type whose program reads it (0x1F); anything else tints
@@ -1514,31 +1947,45 @@ void HostRetireDrawPacket(const u8* packet)
         return;
     }
 
-    for (DrawCacheEntry& entry : g_entries)
+    // A held batch would draw through vertexes this retires: it goes first
+    FlushRigidQueue();
+
+    const auto parsed = g_entriesOfPacket.find(packet);
+    if (parsed == g_entriesOfPacket.end())
     {
-        if (!entry.used || entry.packet != packet)
+        return;
+    }
+
+    for (DrawCacheEntry* entry : parsed->second)
+    {
+        if (!entry->used)
         {
             continue;
         }
 
         // The upload goes, but not yet: a draw submitted this frame may still bind it
-        if (bgfx::isValid(entry.vertices) || bgfx::isValid(entry.indexes))
+        if (bgfx::isValid(entry->vertices) || bgfx::isValid(entry->indexes))
         {
             RetiredDrawBuffers retired;
-            retired.vertices = entry.vertices;
-            retired.indexes = entry.indexes;
+            retired.vertices = entry->vertices;
+            retired.indexes = entry->indexes;
             retired.frame = g_drawFrame;
             g_retiredBuffers.push_back(retired);
         }
 
-        entry.packet = nullptr;
-        entry.packetSize = 0;
-        entry.used = false;
-        entry.indexCount = 0;
-        entry.checksum = 0;
-        entry.vertices.idx = bgfx::kInvalidHandle;
-        entry.indexes.idx = bgfx::kInvalidHandle;
+        g_entryOfPacket.erase({entry->packet, entry->packetSize, entry->skinned});
+        entry->packet = nullptr;
+        entry->packetSize = 0;
+        entry->skinned = false;
+        entry->used = false;
+        entry->indexCount = 0;
+        entry->checksum = 0;
+        entry->vertices.idx = bgfx::kInvalidHandle;
+        entry->indexes.idx = bgfx::kInvalidHandle;
+        g_freeEntries.push_back(entry);
     }
+
+    g_entriesOfPacket.erase(parsed);
 }
 
 void HostCollectRetiredDrawBuffers()
@@ -1546,12 +1993,19 @@ void HostCollectRetiredDrawBuffers()
     // Called once a frame, after bgfx::frame(): an upload retired in frame N is let go at N + 2, by which point the
     // encoder that bound it and the frame it ran in are both done
     g_drawFrame++;
-    for (size_t index = 0; index < g_retiredBuffers.size();)
+    // The joint upload's dedup is the frame's (see g_jointUniforms): the next frame's first skinned draw fills again,
+    // whatever block it draws, since the pose that block holds may have moved on
+    g_jointCacheKey = nullptr;
+    g_jointCacheCount = 0;
+    // Compacted in one pass rather than erased where found: a chunk wipe retires a whole level's uploads at once, and
+    // erasing each in turn moved every entry after it -- the count squared per frame the wipe happened
+    size_t kept = 0;
+    for (size_t index = 0; index < g_retiredBuffers.size(); index++)
     {
-        const RetiredDrawBuffers& retired = g_retiredBuffers[index];
+        const RetiredDrawBuffers retired = g_retiredBuffers[index];
         if (g_drawFrame < retired.frame + 2)
         {
-            index++;
+            g_retiredBuffers[kept++] = retired;
             continue;
         }
 
@@ -1563,8 +2017,8 @@ void HostCollectRetiredDrawBuffers()
         {
             bgfx::destroy(retired.indexes);
         }
-
-        g_retiredBuffers.erase(g_retiredBuffers.begin() + static_cast<long>(index));
     }
+
+    g_retiredBuffers.resize(kept);
 }
 }

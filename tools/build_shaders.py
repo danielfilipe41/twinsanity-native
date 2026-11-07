@@ -37,6 +37,11 @@ SHADER_OF = {
     "fs_draw2d": "varying.def.sc",
     "vs_draw3d": "varying_draw3d.def.sc",
     "fs_draw3d": "varying_draw3d.def.sc",
+    # The flat-shaded three: the same bodies over a let-go varying set (the GS's IIP cleared), which is why their sources only
+    # include the ones above and only their varying def differs
+    "vs_draw3dflat": "varying_draw3dflat.def.sc",
+    "vs_draw3dskinflat": "varying_draw3dflat.def.sc",
+    "fs_draw3dflat": "varying_draw3dflat.def.sc",
     "fs_shadowvolume": "varying_draw3d.def.sc",
     "vs_draw3dskin": "varying_draw3d.def.sc",
     "vs_particle": "particle.def.sc",

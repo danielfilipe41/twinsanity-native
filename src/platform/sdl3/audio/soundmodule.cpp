@@ -284,9 +284,14 @@ void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
         device.Mix(left, right);
         stereo[frame * 2] = static_cast<s16>(left);
         stereo[frame * 2 + 1] = static_cast<s16>(right);
-
-        TrackChannels();
     }
+
+    // The voices' key status once a mix rather than once a sample: what it reads (whether a voice is sounding, where it is
+    // reading) only moves at the processor's block boundary, 28 samples, so a chunk of 1024 sees every change it would see
+    // sample by sample -- and the walk of 48 voices, and of the streams they name, is not repeated 48000 times a second.
+    // A looping stream that went right round its region inside one chunk would be counted as one pass rather than two,
+    // which no track a level plays comes close to
+    TrackChannels();
 
     if (AudioProbe())
     {
@@ -609,10 +614,16 @@ void SdlAudio::Spu2::SoundModule::NoteSceneBegin()
 
 void SdlAudio::Spu2::SoundModule::HoldSilent(bool held, const s32* musicGroups, u32 musicGroupCount)
 {
-    m_loudGroupCount = 0;
-    for (u32 group = 0; group < musicGroupCount && group < 4; group++)
+    // The groups are the hold's own, and a lift is usually given none (sound.cpp's RestoreSceneVoices): the ones the hold was
+    // given stay, so what the lift lets go of is what the hold was not keeping loud -- the music's voices among them, which a
+    // lift that emptied the list would hold at nothing along with the scene's own
+    if (held || musicGroupCount != 0)
     {
-        m_loudGroups[m_loudGroupCount++] = musicGroups[group];
+        m_loudGroupCount = 0;
+        for (u32 group = 0; group < musicGroupCount && group < 4; group++)
+        {
+            m_loudGroups[m_loudGroupCount++] = musicGroups[group];
+        }
     }
 
     if (held)
@@ -852,6 +863,10 @@ void SdlAudio::Spu2::SoundModule::TrackChannels()
         {
             // Held long enough: a line has finished by now, and a track that loops would otherwise never be heard again
             m_tail[voice] = false;
+            // The hold drove the voice's own hardware volume to nothing, and the ramps only write a voice whose channel's level
+            // has moved -- so the sound's level is put back here. Without it a sound still sounding when its hold ran out kept
+            // the nothing it was given: silent until something moved its volume, which is a sound that stops and comes back
+            device.SetVoiceVolume(voice, RegisterOfLevel(channel.levelLeft), RegisterOfLevel(channel.levelRight));
         }
 
         if (m_tail[voice])
@@ -938,6 +953,11 @@ u32 SdlAudio::Spu2::SoundModule::LoadSoundBank(u32 sound, const u8* data, u32 si
         CompactSoundMemory();
         if (!m_memory.Allocate(words, address, sound))
         {
+            // No room even with the gaps closed: the sound's samples are not in the memory, so every play of it is refused (a play
+            // wants its block), which is heard as that sound missing -- a level's dialogue while its music plays on. Said here
+            // because the caller cannot tell: the read that queued the bank counts as one that worked
+            std::fprintf(stderr, "audio: sound %u has no room (%u of %u words used, %u wanted)\n", sound, m_memory.Used(),
+                         MemoryWords, words);
             return 0;
         }
     }
@@ -965,6 +985,39 @@ u32 SdlAudio::Spu2::SoundModule::LoadedSoundCount() const
         if (m_sounds[sound].used)
         {
             count++;
+        }
+    }
+
+    return count;
+}
+
+u32 SdlAudio::Spu2::SoundModule::LoadedSoundWords() const
+{
+    u32 words = 0;
+    for (u32 sound = 0; sound < SoundSlots; sound++)
+    {
+        if (m_sounds[sound].used)
+        {
+            words += m_sounds[sound].words;
+        }
+    }
+
+    return words;
+}
+
+u32 SdlAudio::Spu2::SoundModule::LoadedSoundIds(u32* ids, u32 capacity) const
+{
+    if (ids == nullptr || capacity == 0)
+    {
+        return 0;
+    }
+
+    u32 count = 0;
+    for (u32 sound = 0; sound < SoundSlots && count < capacity; sound++)
+    {
+        if (m_sounds[sound].used)
+        {
+            ids[count++] = sound;
         }
     }
 

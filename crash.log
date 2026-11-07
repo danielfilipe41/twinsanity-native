@@ -1,0 +1,30 @@
+
+=== Crash Twinsanity host crash ===
+SIGSEGV (bad memory access)
+at 2026-11-06 22:07:00
+si_addr 0x00000000
+si_code 0x00000001
+gs 0x00000063
+fs 0x00000000
+es 0x0000002b
+ds 0x0000002b
+edi 0xeba9e670
+esi 0xf473d9f0
+ebp 0xf473d938
+esp 0xf473d8d8
+ebx 0xf473d9e4
+edx 0xc4e18ed0
+ecx 0x000000c0
+eax 0x00000000
+trapno 0x0000000e
+err 0x00000004
+eip 0xf7473670
+cs 0x00000023
+eflags 0x00210206
+uesp 0xf473d8d8
+ss 0x0000002b
+
+backtrace (innermost first; the addresses can be read with
+  addr2line -f -C -e <the built binary> <address>
+):
+/usr/lib32/libc.so.6(+0x1fb670) [0xf7473670]

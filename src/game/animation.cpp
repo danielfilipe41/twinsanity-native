@@ -373,6 +373,13 @@ JointAnimation* NewJointAnimation(OgiJoint* joint, JointAnimation* parent)
 
 JointAnimation* GetJointAnimationFromParentJoint(JointAnimation* parent, OgiJoint* joint)
 {
+    // A joint whose parent has no animation of its own (a model with more children on one joint than an animation holds) has
+    // none either: nothing of it is in the tree, and asking for it again must not read through the nothing
+    if (parent == nullptr)
+    {
+        return nullptr;
+    }
+
     u32 count = parent->bits.childCount;
     if (!(count < JointAnimation::MostChildren))
     {
@@ -394,29 +401,59 @@ JointAnimation* GetJointAnimationFromParentJoint(JointAnimation* parent, OgiJoin
     return animation;
 }
 
+namespace
+{
+// A joint's animation, made from its parent's when the walk has not made it yet. retail walks a model's joints in index order and
+// its own data has every parent before its children, so the parent's animation is always the one the joint before made. A model
+// whose joints are not in that order (or whose parent is an index the walk has already passed) had a null parent here, and the
+// child's animation was asked for under it -- GetJointAnimationFromParentJoint read the child count through the null, which is the
+// crash that brought this here. Walking up to the parent and back down makes the same tree whatever order the joints are in, so a
+// model that was built correctly comes out exactly as it did
+JointAnimation* JointAnimationOfJoint(OgiAnimator* animator, u32 index, u32 depth)
+{
+    SizedArray<JointAnimation*>* joints = animator->joints;
+    if (joints == nullptr || joints->data == nullptr || index >= static_cast<u32>(joints->size) ||
+        depth >= static_cast<u32>(joints->size))
+    {
+        // Past the table, or a parent chain longer than the model's joints (a parent that loops back on its child): no animation
+        return nullptr;
+    }
+
+    if (joints->data[index] != nullptr)
+    {
+        return joints->data[index];
+    }
+
+    OgiJoint* joint = &animator->ogi->joints[index];
+    JointAnimation* animation;
+    if (joint->parent == GameOGI::NoJoint || joint->parent == index)
+    {
+        // The root, made once and shared by every joint that names no parent
+        if (animator->root == nullptr)
+        {
+            animator->root = NewJointAnimation(joint, nullptr);
+            animator->root->bits.value = 0;
+        }
+
+        animation = animator->root;
+    }
+    else
+    {
+        JointAnimation* parent = JointAnimationOfJoint(animator, joint->parent, depth + 1);
+        animation = parent != nullptr ? GetJointAnimationFromParentJoint(parent, joint) : nullptr;
+    }
+
+    joints->data[index] = animation;
+    return animation;
+}
+}
+
 void SetJointAnimations(OgiAnimator* animator, u32 jointCount)
 {
+    // Every joint's animation, from its parent's (JointAnimationOfJoint says why this does not just read the parent's slot)
     for (u32 index = 0; index < jointCount; index++)
     {
-        OgiJoint* joint = &animator->ogi->joints[index];
-        JointAnimation* animation;
-        if (joint->parent == GameOGI::NoJoint)
-        {
-            if (animator->root == nullptr)
-            {
-                JointAnimation* root = NewJointAnimation(joint, nullptr);
-                animator->root = root;
-                root->bits.value = 0;
-            }
-
-            animation = animator->root;
-        }
-        else
-        {
-            animation = GetJointAnimationFromParentJoint(animator->joints->data[joint->parent], joint);
-        }
-
-        animator->joints->data[index] = animation;
+        JointAnimationOfJoint(animator, index, 0);
     }
 }
 
@@ -1168,7 +1205,11 @@ void BindExitPoints(OgiAnimator* animator)
         if (index < own)
         {
             OgiExitPoint* exitPoint = &animator->ogi->exitPoints[index];
-            if (exitPoint->joint != GameOGI::NoJoint)
+            // The exit point's joint is a joint index of its model's: one past the joints (a model with no joints, or a
+            // point whose joint was cut from the model's data) has no animation to be on, and the read past the table would
+            // leave the point's matrix made through whatever is there
+            if (exitPoint->joint != GameOGI::NoJoint && animator->joints != nullptr && animator->joints->data != nullptr &&
+                exitPoint->joint < static_cast<u32>(animator->joints->size))
             {
                 ExitPointAnimation* animation = animator->exitPoints->data[index];
                 animation->exitPoint = exitPoint;
@@ -1581,7 +1622,12 @@ void AddJointRotation(JointAnimator* animator, const Vector4* rotation)
 
 u32 CopyJointTransform(const OgiAnimator* animator, u32 index, Matrix4x4* out)
 {
-    JointAnimation* joint = animator->joints != nullptr ? animator->joints->data[index] : nullptr;
+    // The caller's index is a joint index of the animator's model: one past the joints it has (a hull's joint from another
+    // model's data) has no matrix to copy, and reading past the table would hand one back from whatever is there
+    JointAnimation* joint = animator->joints != nullptr && animator->joints->data != nullptr &&
+                                   index < static_cast<u32>(animator->joints->size)
+                               ? animator->joints->data[index]
+                               : nullptr;
     if (joint == nullptr)
     {
         return 0;

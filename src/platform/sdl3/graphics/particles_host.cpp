@@ -740,8 +740,10 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
 
     MakeShared();
     const bool quadValid = bgfx::isValid(g_quadBuffer);
+    // The pool's answer is what the allocation would get: it clamps the request to the frame's remaining space, and the
+    // copy below fills every instance the page drew, so a short answer must not be submitted
     const u32 available = bgfx::getAvailInstanceDataBuffer(static_cast<u32>(instances.size()), sizeof(HostParticleInstance));
-    if (!quadValid || available == 0)
+    if (!quadValid || available != static_cast<u32>(instances.size()))
     {
         return;
     }
@@ -961,7 +963,9 @@ bool SubmitDecals(DecalData* decals, u32 key, const StqVertex* vertices, u32 cou
     }
 
     MakeShared();
-    if (!bgfx::getAvailTransientVertexBuffer(count, StqLayout()))
+    // The count the pool answers with is the allocation it would give (bgfx clamps to the frame's remaining space): the
+    // copy below fills the whole list, so a short answer must not be drawn
+    if (bgfx::getAvailTransientVertexBuffer(count, StqLayout()) != count)
     {
         return false;
     }
@@ -1024,8 +1028,10 @@ void DrawDecals(DecalData* decals)
         }
     }
 
-    // Every key's list, a type material at a time (the PS2's DrawDecals: the list is emptied as it is drawn)
-    std::vector<StqVertex> vertices;
+    // Every key's list, a type material at a time (the PS2's DrawDecals: the list is emptied as it is drawn). The buffer
+    // is kept between frames: it is rebuilt every one, and a fresh vector reserved each time was an allocation in the path
+    static std::vector<StqVertex> vertices;
+    vertices.clear();
     vertices.reserve(decals->count * 4);
     for (u32 key = 0; key < DecalData::KeyCount; key++)
     {

@@ -445,13 +445,17 @@ void SdlAudio::Spu2::Device::DecodeSamples(s32 core, s32 index)
 {
     Voice& voice = m_cores[core].voices[index];
 
-    UpdateBlockHeader(core, index);
-
     // The voice reads a block ahead; once this much is buffered there is nothing to fetch
     if (static_cast<s32>(voice.fifoWrite - voice.fifoRead) > 12)
     {
         return;
     }
+
+    // The block's header is read for the block about to be fetched, and only when something is fetched: the memory is the 2 MB
+    // table and the read walks into it cold, so reading it on a call that returns at once (the common one, a voice buffered ahead)
+    // was a memory read a four samples per voice that told nothing new -- the flags only move on with the block, which the fetch
+    // below is what advances
+    UpdateBlockHeader(core, index);
 
     if (voice.Active())
     {

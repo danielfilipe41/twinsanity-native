@@ -87,10 +87,10 @@ const Platform::Graphics::HostMaterial* SubModelMaterial(MaterialResource** mate
 // does the same); and its shader never minifies through a mip, so its texture is bound to the largest level alone
 // (HostDrawRigidPacket's minifiesThroughMips, the sky's style in shadersettings.cpp)
 void DrawSkyPacket(const u8* packet, u32 size, u32 vertexCount, const Matrix4x4* skyToCamera,
-                   bgfx::TextureHandle texture, u64 state, const f32* alphaRef)
+                   bgfx::TextureHandle texture, u64 state, const f32* alphaRef, bgfx::ProgramHandle program)
 {
     Platform::Graphics::HostDrawRigidPacket(packet, size, vertexCount, skyToCamera, nullptr, nullptr, texture,
-                                            HostSkyView, state, alphaRef, UINT32_MAX, BGFX_INVALID_HANDLE, false);
+                                            HostSkyView, state, alphaRef, UINT32_MAX, program, false);
 }
 
 // The sky's objects, made lazily on first use (after BgfxInit, owned by the process): the offscreen buffer's
@@ -177,8 +177,10 @@ bgfx::VertexLayout SkyCopyLayout()
 // (the PS2's FinishSky has bilinear off: two screen pixels for one texel), no depth, straight colour write
 void DrawSkyCopy(u32 width, u32 height)
 {
+    // The sky parts are queued draws like any other (draws_host.cpp), and this copy reads the buffer they were drawn into
+    Platform::Graphics::HostFlushRigidInstances();
     if (!bgfx::isValid(g_skyColour) || width == 0 || height == 0 ||
-        !bgfx::getAvailTransientVertexBuffer(4, SkyCopyLayout()))
+        bgfx::getAvailTransientVertexBuffer(4, SkyCopyLayout()) != 4)
     {
         return;
     }
@@ -345,7 +347,9 @@ void DrawChunkSky(Sky* sky, RenderView* view)
         u32 index;
         u32 subModel;
     };
-    std::vector<SkyPart> parts;
+    // The list is rebuilt every frame and the sky's parts are a handful: the buffer is kept rather than allocated again
+    static std::vector<SkyPart> parts;
+    parts.clear();
     for (u32 index = 0; index < host->count; index++)
     {
         Platform::Graphics::HostRigidModel* model = host->models[index];
@@ -389,9 +393,14 @@ void DrawChunkSky(Sky* sky, RenderView* view)
             const HostMaterial* material = SubModelMaterial(model->materials, subModel);
             HostSetSubModelScroll(model->materials, subModel);
             const HostMaterialState partState = HostMaterialStateOf(material, SkyPassState, true);
+            // A sky shader that cleared IIP draws its parts flat too (the sky's own materials' shaders are the disc's,
+            // and shadersettings.cpp writes every type's PRMODE from them, the sky's included): the flat rigid program,
+            // else nothing and the draw keeps the shared one
             DrawSkyPacket(packet, size, vertexCount, &skyToCamera,
                           HostSubModelTexture(model->materials, subModel), partState.state,
-                          partState.alphaReference);
+                          partState.alphaReference,
+                          partState.flat ? Platform::Graphics::HostDraw3DFlatProgram()
+                                         : bgfx::ProgramHandle{bgfx::kInvalidHandle});
             }
         }
     }

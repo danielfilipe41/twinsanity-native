@@ -588,7 +588,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
     bool offsetMode = false;
     f32 positionScale = SkinDefaultPositionScale;
     f32 uvScale = SkinDefaultUvScale;
-    bool started = false;
     bool ok = true;
     // The packet is one RET DMA tag (the size word and its zero) then the VIF1 program, exactly as
     // the reference's own decode starts (its `word = 2`)
@@ -745,7 +744,6 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
                 rowC.clear();
                 rowD.clear();
                 rowCount = 0;
-                started = true;
             }
             if (address == VuSkinScaleAddress)
             {
@@ -877,14 +875,3 @@ bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32
     return true;
 }
 
-bool SkinJointUploadNeeded(u32 jointsAddress)
-{
-    static u32 lastJoints = 0;
-    if (jointsAddress == lastJoints)
-    {
-        return false;
-    }
-
-    lastJoints = jointsAddress;
-    return true;
-}

@@ -5,6 +5,11 @@
 // The root is either the folder the disc was extracted into (the usual case) or a disc image, which the player may point the
 // port at instead (Platform::GameData): the image's own file system answers every path then, through the reader in
 // iso9660.h, and the volume is read-only.
+//
+// A disc folder's files run to hundreds of megabytes, and the 32-bit build's off_t is 32 bits unless it is told otherwise:
+// the calls below carry 64-bit offsets the way iso9660.cpp's do. It has to be set before any header of this file is read
+#define _FILE_OFFSET_BITS 64
+
 #include "platform/files.h"
 
 #include "iso9660.h"
@@ -12,13 +17,24 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
+// A file call with a 64-bit offset on every host (a 32-bit `long` would wrap a large disc file on Windows)
+#if defined(_WIN32)
+#define HOST_SEEK(file, offset, whence) _fseeki64((file), static_cast<__int64>(offset), (whence))
+#define HOST_TELL(file) _ftelli64(file)
+#else
+#define HOST_SEEK(file, offset, whence) fseeko((file), static_cast<off_t>(offset), (whence))
+#define HOST_TELL(file) ftello(file)
+#endif
+
 // A handle's slot: its stream and the lock its operations take (the stream's read position is shared state; the stream
 // channels read through ReadAt, which doesn't move it)
 struct HostFile
@@ -137,9 +153,50 @@ bool MatchesLower(const std::string& candidate, const std::string& wanted)
     return true;
 }
 
+std::string LowerString(const std::string& text)
+{
+    std::string lower = text;
+    for (char& letter : lower)
+    {
+        if (letter >= 'A' && letter <= 'Z')
+        {
+            letter = static_cast<char>(letter - 'A' + 'a');
+        }
+    }
+    return lower;
+}
+
+// A folder's entries by their lower case names, read once: the disc is read-only, so its listing cannot change under the
+// walk, and the game opens hundreds of its files (every one of them a miss in the file system's own lookup, since the disc
+// is upper case and the game asks in lower). Each folder was listed again per open before this
+std::mutex g_NamesMutex;
+std::unordered_map<std::string, std::map<std::string, std::string>> g_DirectoryNames;
+// A host path the walk has resolved, by the path asked for: another lookup of the same name needs no walk at all
+std::unordered_map<std::string, std::string> g_ResolvedPaths;
+
+const std::map<std::string, std::string>& DirectoryNames(const std::string& directory)
+{
+    std::lock_guard<std::mutex> lock(g_NamesMutex);
+    const auto found = g_DirectoryNames.find(directory);
+    if (found != g_DirectoryNames.end())
+    {
+        return found->second;
+    }
+
+    std::map<std::string, std::string> names;
+    std::error_code error;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, error))
+    {
+        const std::string name = entry.path().filename().string();
+        names.emplace(LowerString(name), name);
+    }
+
+    return g_DirectoryNames.emplace(directory, std::move(names)).first->second;
+}
+
 // The path with each component resolved case-insensitively, or empty when one has no match: a component is taken as it
-// is when the file system has it (a case-insensitive one does, so the scan only runs where it's needed)
-std::string ResolveInsensitive(const std::string& path)
+// is when the file system has it (a case-insensitive one does, so the walk only runs where it's needed)
+std::string ResolveInsensitiveWalk(const std::string& path)
 {
     std::filesystem::path resolved;
     for (const std::filesystem::path& part : std::filesystem::path(path))
@@ -152,23 +209,42 @@ std::string ResolveInsensitive(const std::string& path)
             continue;
         }
 
-        std::filesystem::path directory = resolved.empty() ? std::filesystem::path(".") : resolved;
-        bool matched = false;
-        for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, error))
-        {
-            if (MatchesLower(entry.path().filename().string(), part.string()))
-            {
-                resolved = entry.path();
-                matched = true;
-                break;
-            }
-        }
-        if (!matched)
+        const std::filesystem::path directory = resolved.empty() ? std::filesystem::path(".") : resolved;
+        const std::map<std::string, std::string>& names = DirectoryNames(directory.string());
+        const auto found = names.find(LowerString(part.string()));
+        if (found == names.end())
         {
             return {};
         }
+
+        resolved = directory / found->second;
     }
     return resolved.string();
+}
+
+// The walk, remembered. Only the disc's own tree is remembered as missing: the saves' folders are written while the game
+// runs, and a name that is not there yet has to be looked for again
+std::string ResolveInsensitive(const std::string& path)
+{
+    {
+        std::lock_guard<std::mutex> lock(g_NamesMutex);
+        const auto found = g_ResolvedPaths.find(path);
+        if (found != g_ResolvedPaths.end())
+        {
+            return found->second;
+        }
+    }
+
+    const std::string resolved = ResolveInsensitiveWalk(path);
+    const bool discPath = !g_Root.empty() && path.compare(0, g_Root.size(), g_Root) == 0 &&
+                          (path.size() == g_Root.size() || path[g_Root.size()] == '/');
+    if (!resolved.empty() || discPath)
+    {
+        std::lock_guard<std::mutex> lock(g_NamesMutex);
+        g_ResolvedPaths[path] = resolved;
+    }
+
+    return resolved;
 }
 
 bool Exists(const std::string& path)
@@ -521,6 +597,12 @@ void Platform::Files::SetRoot(const char* path)
     g_ImageRoot = false;
     g_BuildKnown = false;
     g_Serial = "";
+    // The names and paths were the disc the last root pointed at
+    {
+        std::lock_guard<std::mutex> lock(g_NamesMutex);
+        g_ResolvedPaths.clear();
+        g_DirectoryNames.clear();
+    }
     Platform::Iso9660::Close();
     if (path == nullptr)
     {
@@ -712,8 +794,17 @@ s32 Platform::Files::Open(const char* path, s32 flags)
     const std::string renamed = RenamedPath(path, true);
     if (!renamed.empty())
     {
-        return OpenExact(renamed.c_str(), flags);
+        const s32 renamedFile = OpenExact(renamed.c_str(), flags);
+        if (renamedFile >= 0)
+        {
+            return renamedFile;
+        }
     }
+
+    // Neither the name nor the disc's own for it: said here, once per name, since a disc whose names are none of the ones this
+    // port serves fails on all of its files at once and the game's own "cannot open" says nothing about why (the README lists this
+    // line as how a disc it has no names for is heard from)
+    NoteMissing(path);
     return -1;
 }
 
@@ -825,11 +916,11 @@ s32 Platform::Files::Seek(s32 file, s32 offset, Whence whence)
         handle->imagePosition = static_cast<u64>(position);
         return static_cast<s32>(handle->imagePosition);
     }
-    if (std::fseek(handle->stream, static_cast<long>(offset), HostWhence(whence)) != 0)
+    if (HOST_SEEK(handle->stream, offset, HostWhence(whence)) != 0)
     {
         return -1;
     }
-    const long position = std::ftell(handle->stream);
+    const s64 position = HOST_TELL(handle->stream);
     return position < 0 ? -1 : static_cast<s32>(position);
 }
 
@@ -865,7 +956,7 @@ s32 Platform::Files::ReadAt(s32 file, u32 offset, void* buffer, s32 size)
         const s32 read = Platform::Iso9660::ReadAt(handle->imageOffset + offset, buffer, wanted);
         return read < 0 ? -1 : read;
     }
-    if (std::fseek(handle->stream, static_cast<long>(offset), SEEK_SET) != 0)
+    if (HOST_SEEK(handle->stream, offset, SEEK_SET) != 0)
     {
         return -1;
     }

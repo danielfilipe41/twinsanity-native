@@ -171,7 +171,11 @@ def main_windows():
     bgfx_prefix = os.environ.get("BGFX_PREFIX", "third_party/bgfx/.build/win32_mingw-gcc")
     # Direct3D 11 and 12 take DXBC, which only a shaderc built for Windows makes (tools/build_shaders.py --d3d); the
     # blobs are optional, so the build carries the renderers only when the generated headers are there
-    if (HERE / "src" / "platform" / "sdl3" / "graphics" / "shaders" / "vs_draw2d_dxbc.bin.h").is_file():
+    # The blobs are one generated set (tools/build_shaders.py writes every shader in one run), so the build takes them only
+    # when the set is whole: the flat-shaded three are the newest mail, and a set made before them would leave the Direct3D
+    # rows without bytecode
+    shaders = HERE / "src" / "platform" / "sdl3" / "graphics" / "shaders"
+    if (shaders / "vs_draw2d_dxbc.bin.h").is_file() and (shaders / "vs_draw3dflat_dxbc.bin.h").is_file():
         cflags_extra = ["-DTWINSANITY_HAVE_DXBC=1"]
     else:
         cflags_extra = []
@@ -487,6 +491,24 @@ def main_host():
             # The particle pages' picture proof: the default chunk's particle section's three page records and the
             # texture each page's material samples (through the game's own g_MaterialTable.Acquire and ReadMaterial),
             # written out as a PPM so the page's art can be looked at; `ninja page-proof`
+            # The material-pass proof: the submissions a material's submodel draw makes (its shaders in turn, each with the
+            # registers it sends, and each shader's rejected samples), for materials built by hand -- so it needs no disc.
+            # Links the whole game the way the other graphics proofs do, since graphics.cpp reaches the game's symbols;
+            # `ninja material-pass-proof`
+            "build build/host/tools/material_passes_proof.o: cxx tools/material_passes_proof.cpp",
+            f"build build/host/material_passes_proof: link "
+            + " ".join(obj for obj in src_objects if not obj.endswith("entry.cpp.o"))
+            + " " + " ".join(data_objects) + " build/host/tools/material_passes_proof.o",
+            "build material-pass-proof: phony build/host/material_passes_proof",
+            # The joint tree proof: the animations SetJointAnimations builds from a model's joints, for skeletons built
+            # by hand -- in retail's own parent-first order, child-first (the order that crashed), and the shapes a
+            # model's data cannot have (a self-parent, a parent past the joints, more children than an animation holds).
+            # Links the whole game the way the other proofs do; `ninja joint-tree-proof`
+            "build build/host/tools/joint_tree_proof.o: cxx tools/joint_tree_proof.cpp",
+            f"build build/host/joint_tree_proof: link "
+            + " ".join(obj for obj in src_objects if not obj.endswith("entry.cpp.o"))
+            + " " + " ".join(data_objects) + " build/host/tools/joint_tree_proof.o",
+            "build joint-tree-proof: phony build/host/joint_tree_proof",
             "build build/host/tools/pageproof.o: cxx tools/pageproof.cpp",
             f"build build/host/page_proof: link "
             + " ".join(obj for obj in src_objects if not obj.endswith("entry.cpp.o"))
@@ -508,7 +530,9 @@ def main_host():
             "build build/host/audio_proof: link build/host/tools/audio_spu2_proof.o "
             "build/host/sdl3/src/platform/sdl3/audio/spu2.cpp.o "
             "build/host/sdl3/src/platform/sdl3/audio/soundmemory.cpp.o "
-            "build/host/sdl3/src/platform/sdl3/audio/soundmodule.cpp.o",
+            "build/host/sdl3/src/platform/sdl3/audio/soundmodule.cpp.o "
+            # The module's probes stamp what they say with the clock (AudioProbeMs), so the host's timer comes with it
+            "build/host/sdl3/src/platform/null/time.cpp.o",
             "build audio-proof: phony build/host/audio_proof",
             "",
         ]

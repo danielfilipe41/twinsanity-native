@@ -69,6 +69,10 @@ constexpr PressureBit PressureBits[] = {
 
 bool g_Opened[PortCount] = {};
 SDL_Gamepad* g_Pads[PortCount] = {};
+// How many reads a port with no pad waits before listing the gamepads again. SDL_GetGamepads allocates its array, and a
+// session played on the keyboard would otherwise ask (and allocate) every frame for a controller that is not there
+constexpr s32 PadRetryReads = 30;
+s32 g_PadRetry[PortCount] = {};
 u8 g_Align[PortCount][6] = {};
 bool g_SdlTried = false;
 bool g_SdlReady = false;
@@ -131,10 +135,19 @@ SDL_Gamepad* ConnectedPad(s32 port)
         SDL_CloseGamepad(pad);
         g_Pads[port] = nullptr;
         pad = nullptr;
+        // A pad went away: the next read looks for the one after it straight away
+        g_PadRetry[port] = 0;
     }
 
     if (pad == nullptr)
     {
+        if (g_PadRetry[port] > 0)
+        {
+            g_PadRetry[port]--;
+            return nullptr;
+        }
+
+        g_PadRetry[port] = PadRetryReads;
         s32 count = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&count);
         if (ids != nullptr)

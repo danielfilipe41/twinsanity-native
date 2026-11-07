@@ -37,6 +37,39 @@ void SettingsPath(char* path)
     std::snprintf(path, PathLength, "%s/settings.txt", base);
 }
 
+// The file's lines, read once and kept: every option's reader scans them (each one used to open, read and close the file for
+// its own line alone). A write drops them, so a reader that runs after the file was written reads what was written
+bool g_LinesLoaded = false;
+std::vector<std::string> g_Lines;
+
+const std::vector<std::string>& SettingsLines()
+{
+    if (g_LinesLoaded)
+    {
+        return g_Lines;
+    }
+
+    g_LinesLoaded = true;
+    g_Lines.clear();
+
+    char path[PathLength];
+    SettingsPath(path);
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return g_Lines;
+    }
+
+    char line[LineLength];
+    while (std::fgets(line, sizeof(line), file) != nullptr)
+    {
+        g_Lines.emplace_back(line);
+    }
+
+    std::fclose(file);
+    return g_Lines;
+}
+
 // The picture's rate when the file has none: the disc's field rate, so the host presents exactly when the game steps
 constexpr s32 DefaultRenderRate = 50;
 bool g_RenderRateLoaded = false;
@@ -52,26 +85,15 @@ void LoadRenderRate()
     }
 
     g_RenderRateLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         int rate = 0;
         // 0 is unlimited (the picture presents as fast as the frame is drawn)
-        if (std::sscanf(line, "render %d", &rate) == 1 && rate >= 0)
+        if (std::sscanf(line.c_str(), "render %d", &rate) == 1 && rate >= 0)
         {
             g_RenderRate = rate;
         }
     }
-
-    std::fclose(file);
 }
 
 // The file's `antialias` line: the picture's antialiasing. Read once before the renderer makes the first frame's targets
@@ -87,19 +109,10 @@ void LoadAntiAlias()
     }
 
     g_AntiAliasLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         char word[16] = {};
-        if (std::sscanf(line, "antialias %15s", word) != 1)
+        if (std::sscanf(line.c_str(), "antialias %15s", word) != 1)
         {
             continue;
         }
@@ -118,8 +131,6 @@ void LoadAntiAlias()
             g_AntiAlias = AntiAlias::Off;
         }
     }
-
-    std::fclose(file);
 }
 
 // The display's own lines (`window`, `resolution`, `vsync`, `aspect`, `scale`): the host's picture rather than the game's
@@ -161,25 +172,14 @@ void LoadCutsceneSkip()
     }
 
     g_CutsceneSkipLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         char word[8] = {};
-        if (std::sscanf(line, "cutscene_skip %7s", word) == 1)
+        if (std::sscanf(line.c_str(), "cutscene_skip %7s", word) == 1)
         {
             g_CutsceneSkip = std::strcmp(word, "off") != 0;
         }
     }
-
-    std::fclose(file);
 }
 
 void LoadCutsceneSpeed()
@@ -190,25 +190,14 @@ void LoadCutsceneSpeed()
     }
 
     g_CutsceneSpeedLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         unsigned speed = 0;
-        if (std::sscanf(line, "cutscene_speed %u", &speed) == 1)
+        if (std::sscanf(line.c_str(), "cutscene_speed %u", &speed) == 1)
         {
             g_CutsceneSpeed = speed < MinCutsceneSpeed ? MinCutsceneSpeed : (speed > MaxCutsceneSpeed ? MaxCutsceneSpeed : speed);
         }
     }
-
-    std::fclose(file);
 }
 
 void LoadDeadZone()
@@ -219,25 +208,14 @@ void LoadDeadZone()
     }
 
     g_DeadZoneLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         unsigned percent = 0;
-        if (std::sscanf(line, "deadzone %u", &percent) == 1)
+        if (std::sscanf(line.c_str(), "deadzone %u", &percent) == 1)
         {
             g_DeadZone = percent > Platform::Pads::MaxDeadZone ? Platform::Pads::MaxDeadZone : percent;
         }
     }
-
-    std::fclose(file);
 }
 
 void LoadDisplay()
@@ -248,50 +226,38 @@ void LoadDisplay()
     }
 
     g_DisplayLoaded = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         unsigned width = 0;
         unsigned height = 0;
         char word[16] = {};
-        unsigned number = 0;
         float scale = 0.0f;
-        if (std::sscanf(line, "resolution %ux%u", &width, &height) == 2)
+        if (std::sscanf(line.c_str(), "resolution %ux%u", &width, &height) == 2)
         {
             g_PictureWidth = width;
             g_PictureHeight = height;
         }
-        else if (std::sscanf(line, "window %15s", word) == 1)
+        else if (std::sscanf(line.c_str(), "window %15s", word) == 1)
         {
             std::snprintf(g_DisplayWindow, sizeof(g_DisplayWindow), "%s", word);
         }
-        else if (std::sscanf(line, "vsync %15s", word) == 1)
+        else if (std::sscanf(line.c_str(), "vsync %15s", word) == 1)
         {
             g_DisplayVsync = std::strcmp(word, "off") != 0;
         }
-        else if (std::sscanf(line, "aspect %15s", word) == 1)
+        else if (std::sscanf(line.c_str(), "aspect %15s", word) == 1)
         {
             std::snprintf(g_DisplayAspect, sizeof(g_DisplayAspect), "%s", word);
         }
-        else if (std::sscanf(line, "scale %f", &scale) == 1 && scale > 0.0f)
+        else if (std::sscanf(line.c_str(), "scale %f", &scale) == 1 && scale > 0.0f)
         {
             g_DisplayScale = scale;
         }
-        else if (std::sscanf(line, "draw_distance %f", &scale) == 1 && scale > 0.0f)
+        else if (std::sscanf(line.c_str(), "draw_distance %f", &scale) == 1 && scale > 0.0f)
         {
             g_DrawDistance = scale;
         }
     }
-
-    std::fclose(file);
 }
 
 // The file's `language` line, and its `text_language` line when the texts aren't in the speech's language: read once, as the
@@ -373,27 +339,18 @@ void LoadLanguage()
     Platform::System::ConsoleLanguage text = Platform::System::LanguageEnglish;
     bool textNamed = false;
 
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file != nullptr)
+    for (const std::string& line : SettingsLines())
     {
-        char line[LineLength];
-        while (std::fgets(line, sizeof(line), file) != nullptr)
+        char word[16] = {};
+        if (std::sscanf(line.c_str(), "language %15s", word) == 1)
         {
-            char word[16] = {};
-            if (std::sscanf(line, "language %15s", word) == 1)
-            {
-                g_Language = LanguageOf(word);
-            }
-            else if (std::sscanf(line, "text_language %15s", word) == 1)
-            {
-                text = LanguageOf(word);
-                textNamed = true;
-            }
+            g_Language = LanguageOf(word);
         }
-
-        std::fclose(file);
+        else if (std::sscanf(line.c_str(), "text_language %15s", word) == 1)
+        {
+            text = LanguageOf(word);
+            textNamed = true;
+        }
     }
 
     // The texts are in the language played in unless the file names another
@@ -679,41 +636,30 @@ void HostSettingsApplyOnce()
     }
 
     g_Applied = true;
-    char path[PathLength];
-    SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file == nullptr)
-    {
-        return;
-    }
-
     s16 left[Groups] = {};
     s16 right[Groups] = {};
     u32 stereo = g_MusicStereo;
     u8 widescreen = g_WidescreenTv;
-    char line[LineLength];
-    while (std::fgets(line, sizeof(line), file) != nullptr)
+    for (const std::string& line : SettingsLines())
     {
         // "group <number> <left> <right>", "stereo <number>", "widescreen <number>"
         u32 group = 0;
         int a = 0;
         int b = 0;
-        if (std::sscanf(line, "group %u %d %d", &group, &a, &b) == 3 && group < Groups)
+        if (std::sscanf(line.c_str(), "group %u %d %d", &group, &a, &b) == 3 && group < Groups)
         {
             left[group] = static_cast<s16>(a);
             right[group] = static_cast<s16>(b);
         }
-        else if (std::sscanf(line, "stereo %d", &a) == 1)
+        else if (std::sscanf(line.c_str(), "stereo %d", &a) == 1)
         {
             stereo = static_cast<u32>(a);
         }
-        else if (std::sscanf(line, "widescreen %d", &a) == 1)
+        else if (std::sscanf(line.c_str(), "widescreen %d", &a) == 1)
         {
             widescreen = static_cast<u8>(a);
         }
     }
-
-    std::fclose(file);
     // A file with everything zero holds the data's initials (the group volumes are bss, and the stereo's own is StereoOff): it was
     // written before the game set its own options, and applying it silences the game. The game's options (its save's) win over it
     bool silent = true;
@@ -869,10 +815,11 @@ void PlaceSetting(FileLines& lines, u32* count, Setting setting, u32 group, cons
             continue;
         }
 
-        // A duplicate of the line just placed, or a line being removed
+        // A duplicate of the line just placed, or a line being removed. The copy is a line's own size, so it cannot be told
+        // the wrong one
         for (u32 other = index; other + 1 < *count; other++)
         {
-            std::memcpy(lines[other], lines[other + 1], LineLength);
+            std::memcpy(lines[other], lines[other + 1], sizeof(lines[other]));
         }
         (*count)--;
     }
@@ -890,19 +837,22 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     u32 count = 0;
     char path[PathLength];
     SettingsPath(path);
-    std::FILE* file = std::fopen(path, "rb");
-    if (file != nullptr)
+    // The file as it was read (SettingsLines' lines, the readers' own): the merge starts from what is there, without a
+    // second read of it
+    for (const std::string& line : SettingsLines())
     {
-        while (count < MaxFileLines && std::fgets(lines[count], LineLength, file) != nullptr)
+        if (count >= MaxFileLines)
         {
-            size_t length = std::strlen(lines[count]);
-            while (length != 0 && (lines[count][length - 1] == '\n' || lines[count][length - 1] == '\r'))
-            {
-                lines[count][--length] = '\0';
-            }
-            count++;
+            break;
         }
-        std::fclose(file);
+
+        std::snprintf(lines[count], LineLength, "%s", line.c_str());
+        size_t length = std::strlen(lines[count]);
+        while (length != 0 && (lines[count][length - 1] == '\n' || lines[count][length - 1] == '\r'))
+        {
+            lines[count][--length] = '\0';
+        }
+        count++;
     }
 
     char text[LineLength];
@@ -959,7 +909,7 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     std::snprintf(text, sizeof(text), "scale %g", static_cast<double>(g_DisplayScale));
     PlaceSetting(lines, &count, Setting::Scale, 0, text);
 
-    file = std::fopen(path, "wb");
+    std::FILE* file = std::fopen(path, "wb");
     if (file == nullptr)
     {
         return;
@@ -970,6 +920,8 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
         std::fprintf(file, "%s\n", lines[index]);
     }
     std::fclose(file);
+    // What was written is the file now: the next reader's scan starts from it rather than from what this read held
+    g_LinesLoaded = false;
 }
 
 void HostSettingsKeep()

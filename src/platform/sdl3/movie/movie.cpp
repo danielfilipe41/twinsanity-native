@@ -517,6 +517,10 @@ void Platform::Movie::QueuePicture(Player* player)
     }
     if (bgfx::isValid(host->texture))
     {
+        // A copy, not bgfx::makeRef over the decoded frame: a reference has to stay unchanged for two bgfx::frame calls
+        // (bgfx.h's note on makeRef), and this buffer is the decoder's own -- the next picture is converted into it on the
+        // next step, while the frame that referenced it may still be rendering. The copy costs one frame's worth of bytes
+        // per picture, which is small beside the decode that made them
         const bgfx::Memory* memory = bgfx::copy(host->rgba.data(), static_cast<u32>(host->rgba.size()));
         u16 pitch = static_cast<u16>(host->current.width * 4);
         bgfx::updateTexture2D(host->texture, 0, 0, 0, 0, static_cast<u16>(host->current.width),
@@ -555,7 +559,7 @@ void Platform::Movie::Draw(Player* player, const Area& area, s32 width, s32 heig
         MovieCorner(right, top, 1.0f, vTop),
         MovieCorner(right, bottom, 1.0f, vBottom),
     };
-    if (!bgfx::getAvailTransientVertexBuffer(4, MovieLayout()))
+    if (bgfx::getAvailTransientVertexBuffer(4, MovieLayout()) != 4)
     {
         return;
     }

@@ -658,6 +658,10 @@ extern "C"
     // The samples of the sounds the game no longer has, let go of: a skip reads a level's banks as it races through it, and the blocks
     // of what no table holds any more would otherwise fill the module's memory until every later bank is refused
     void ReleaseSoundsTheGameLost();
+    // A level's sounds that nothing in the game names any more: the table keeps what its readers read (a resource a reader found
+    // already there stays even with no references), and the level just left keeps those entries holding the processor's memory.
+    // Called where a level is unloaded, before the next one's banks are read
+    void ReleaseUnreferencedSounds();
     void RestoreSceneVoices();
     // The voices the game has playing that a music player does not own: what a skipped scene is still saying (the skip's silence is
     // held until they have finished, so nothing of the scene comes back when the mix opens)

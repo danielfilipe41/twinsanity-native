@@ -13,6 +13,7 @@
 #include "game/sound.h"
 #include "game/stream.h"
 #include "game/string.h"
+#include "platform/audio.h"
 #include "platform/graphics.h"
 #include "retail/libc.h"
 
@@ -778,6 +779,16 @@ SoundTable* SoundTable::Construct(SoundTable* table, u32 count)
 
 void SoundTableQueueSamples(ResourceTable* table, s32 read, u32, u32 end)
 {
+    // The processor's 2 MB holds every sound the game has kept: a level's banks are read in one burst, and one that does not fit
+    // is refused (the module says so on stderr) -- heard as that sound missing for the level, its dialogue among them. What no
+    // table holds any more is let go of here, before the burst rather than after it: the keep-alive's prune does the same every
+    // 36 frames, and this is the moment the pile-up it is for actually happens
+    const u32 total = Platform::Audio::SoundMemoryTotal();
+    if (total != 0 && Platform::Audio::SoundMemoryUsed() * 10 >= total * 9)
+    {
+        ReleaseSoundsTheGameLost();
+    }
+
     GameReadersStorage* storage = g_ReadersStorages[MainReaders];
     for (u32 index = 0; index < static_cast<u32>(read); index++)
     {

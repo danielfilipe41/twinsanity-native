@@ -422,7 +422,10 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
     const f32 scaleX = 2.0f / (static_cast<f32>(HostDisplayWidth()) * GsUnitsPerPixel);
     const f32 scaleY = 2.0f / (static_cast<f32>(HostDisplayHeight()) * GsUnitsPerPixel);
 
-    std::vector<StqVertex> vertices;
+    // The effect's own hexagons are built again every frame: the buffer is kept (the particle path's own pattern) rather
+    // than a fresh vector reserved per frame
+    static std::vector<StqVertex> vertices;
+    vertices.clear();
     vertices.reserve(12 * HexagonVertices);
     for (u8* at = block; at != nullptr; at = NextBlock(HeadOf(at)))
     {
@@ -503,8 +506,11 @@ void DrawDistortionBlock(u8* block, u8* table, const Matrix4x4* matrix, Material
     g_distortionChecksum =
         vertices.empty() ? 0u : HashBytes(5381u, vertices.data(), vertices.size() * sizeof(StqVertex));
 
+    // The count the pool answers with is what the allocation would get (bgfx clamps to the frame's remaining space):
+    // the copy below fills the whole list, so a short answer must not be drawn
     if (vertices.empty() || hostMaterial == nullptr || hostMaterial->program == HostInvalidHandle ||
-        !bgfx::getAvailTransientVertexBuffer(static_cast<u32>(vertices.size()), StqLayout()))
+        bgfx::getAvailTransientVertexBuffer(static_cast<u32>(vertices.size()), StqLayout()) !=
+            static_cast<u32>(vertices.size()))
     {
         return;
     }

@@ -157,6 +157,12 @@ public:
     u32 MemoryTotal() const;
     u32 LoadedSoundCount() const;
     u32 LoadedSoundId(u32 index) const;
+    // Every loaded ID at once, in slot order, into ids (up to capacity). The table has 0x10000 slots and LoadedSoundId scans it from
+    // the start for each index, so a caller letting go of many sounds wants this one scan rather than one a sound
+    u32 LoadedSoundIds(u32* ids, u32 capacity) const;
+    // The words the loaded sounds' own blocks take: what MemoryUsed() comes to when nothing is left over. The two apart say whether
+    // the memory is held by sounds (the game still naming them) or by blocks nothing in the module names any more
+    u32 LoadedSoundWords() const;
     s32 PlaySound(u32 sound, u32 voiceAndGroup, s16 left, s16 right, u16 pitch, u32 attack, u32 release, u32 loops);
 
     s32 PitchOfRate(s32 rate);

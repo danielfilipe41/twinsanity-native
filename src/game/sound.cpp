@@ -21,6 +21,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 // A scene being skipped runs unheard, and muting what already sounds is only half of it: the scene's scripts go on starting sounds as
 // it runs, and one started after a mute was heard. So nothing is played at all while this is on (PlaySoundOnVoice and PlaySoundAt
@@ -734,9 +735,38 @@ extern "C"
     // SoundById does not look in, and whose two sounds were being let go of by every prune)
     bool SoundIsStillHeld(u32 id)
     {
-        if (id <= 0xFFFF && SoundById(static_cast<u16>(id)) != nullptr)
+        // The table is asked by index (SoundById's low 15 bits), and two IDs can share one index: what it answers with is this
+        // sound only when it is the sound the processor knows the block by, or a sound that has left is kept in memory by whatever
+        // took its place
+        if (id <= 0xFFFF)
         {
-            return true;
+            const GameSound* sound = SoundById(static_cast<u16>(id));
+            if (sound != nullptr && sound->soundId == id)
+            {
+                return true;
+            }
+        }
+
+        // The languages' voice tables: a voice's ID is above the game's table's mask, so SoundById cannot find it there (it stops at
+        // the game's table's capacity), and a language's dialogue was being let go of by every prune while its own table still held
+        // it -- every later play of it then refused for having no samples, which is a line heard twice in one game
+        GameResources* resources = G_GameResourcesObjectPointer;
+        if (resources != nullptr && resources->voices != nullptr)
+        {
+            for (u32 language = 0; language < resources->languageCount; language++)
+            {
+                ResourceTable* voices = resources->voices[language];
+                if (voices == nullptr)
+                {
+                    continue;
+                }
+
+                auto* sound = static_cast<GameSound*>(voices->items[id & ResourceIndexMask]);
+                if (sound != nullptr && sound->soundId == id)
+                {
+                    return true;
+                }
+            }
         }
 
         GameController* controller = G_GameController;
@@ -772,13 +802,104 @@ extern "C"
             return;
         }
 
-        const u32 loaded = Platform::Audio::LoadedSoundCount();
+        // Every loaded ID at once: the module's table has 0x10000 slots and LoadedSoundId scans it from the start for each index,
+        // so asking for them one at a time cost a scan a sound -- and a lock a sound -- every keep-alive
+        static std::vector<u32> ids;
+        const u32 slots = Platform::Audio::LoadedSoundCount();
+        ids.resize(slots != 0 ? slots : 1);
+        const u32 loaded = slots != 0 ? Platform::Audio::LoadedSoundIds(ids.data(), slots) : 0;
+        u32 letGo = 0;
+        u32 named = 0;
+        // How the sounds the game still names are named: a count above one is a reference nothing lets go of, which is a sound
+        // whose block can never be released however long the level has been left
+        u32 namedMost = 0;
+        u32 namedTwice = 0;
         for (u32 index = 0; index < loaded; index++)
         {
-            const u32 id = Platform::Audio::LoadedSoundId(index);
-            if (!SoundIsStillHeld(id))
+            const u32 id = ids[index];
+            if (SoundIsStillHeld(id))
             {
-                Platform::Audio::ReleaseSound(id);
+                named++;
+                if (id <= 0xFFFF)
+                {
+                    GameSound* sound = SoundById(static_cast<u16>(id));
+                    const u32 references = sound != nullptr ? HeaderOf(sound)->bits.references : 0;
+                    if (references > namedMost)
+                    {
+                        namedMost = references;
+                    }
+
+                    if (references > 1)
+                    {
+                        namedTwice++;
+                    }
+                }
+
+                continue;
+            }
+
+            Platform::Audio::ReleaseSound(id);
+            letGo++;
+        }
+
+#ifndef __mips__
+        // The memory's own account, for a run whose sound is filling up: how much of it is in use, how much of that is the loaded
+        // sounds' own blocks (the rest is blocks the module lost its name for), and how many of them the game still names. Blocks the
+        // game still names are the game's tables holding references they never let go of: the prune cannot help those, and they are
+        // what a level's sounds leaving memory behind looks like. Every sixteenth pass, so a run's log is readable
+        static const bool probing = std::getenv("TWINSANITY_TEST_AUDIO") != nullptr;
+        static u32 calls = 0;
+        const u32 used = Platform::Audio::SoundMemoryUsed();
+        if (probing && used * 2 >= total && (calls++ % 16) == 0)
+        {
+            std::fprintf(stderr,
+                         "audio: sound memory %u of %u words: %u in %u loaded sounds, %u let go this pass, %u still named "
+                         "(%u of them by more than one reference, up to %u)\n",
+                         used, total, Platform::Audio::LoadedSoundWords(), loaded, letGo, named, namedTwice, namedMost);
+        }
+#endif
+    }
+
+    // A table's sounds that nothing references any more, let go of: an entry a reader found already there is kept even with no
+    // references (resources.h's kept bit), so a level that is left behind leaves its sounds holding the processor's memory with
+    // nothing left to play them. A sound's samples go with its entry: its block is the processor's, and the sound itself is the table's
+    void ReleaseUnreferencedIn(ResourceTable* table)
+    {
+        const u32 capacity = table->bits.capacity;
+        for (u32 index = 0; index < capacity; index++)
+        {
+            auto* sound = static_cast<GameSound*>(table->items[index]);
+            if (sound == nullptr || HeaderOf(sound)->bits.references != 0)
+            {
+                continue;
+            }
+
+            table->items[index] = nullptr;
+            sound->Destroy(DestroyAndFree);
+        }
+    }
+
+    // Called where a level is unloaded, before the next one's banks are read, so what is left with no references is the level just
+    // left -- and a level the game is still in has its objects' references on everything its scripts can play
+    extern "C" void ReleaseUnreferencedSounds()
+    {
+        GameResources* resources = G_GameResourcesObjectPointer;
+        if (resources == nullptr || resources->sounds == nullptr)
+        {
+            return;
+        }
+
+        ReleaseUnreferencedIn(resources->sounds);
+        // The played language's voice table is the same kind of leftover, and the bigger one: a level's dialogue is read into it and
+        // the table keeps it after the level is gone (and a scene skipped through leaves the lines it never reached)
+        if (resources->voices != nullptr)
+        {
+            for (u32 language = 0; language < resources->languageCount; language++)
+            {
+                if (resources->voices[language] != nullptr)
+                {
+                    ReleaseUnreferencedIn(resources->voices[language]);
+                }
             }
         }
     }

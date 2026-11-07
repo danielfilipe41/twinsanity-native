@@ -10,6 +10,9 @@
 #include "game/stream.h"
 #include "retail/libc.h"
 
+#include <cstdio>
+#include <unordered_map>
+
 extern "C"
 {
     extern const GccVTableEntry g_ResourceIdIteratorVTable[] RETAIL(VirtualTable_303370);
@@ -125,6 +128,19 @@ ResourceTable* SoundTableOf(GameResources* resources, ResourceTable* voices, u16
     ResourceTable* sounds = resources->sounds;
     return id != NoSoundId && sounds->items[id & ResourceIndexMask] != nullptr ? sounds : voices;
 }
+
+// The takes of a sound still outstanding, by the table they went to. Which table a sound belongs to is decided from the tables'
+// contents, and the takes are what fill them: a sound taken as a voice because the game's own table had nothing at its index then
+// would be released against the game's table once something else had been loaded into that index -- the voice's reference taken
+// for good, and the game sound's counted down for a take that was not its own. Every take is therefore counted here and every
+// release takes one back from a table that still has one, so the two counts come down together whatever the contents do in between
+// (an index is shared by an ID above the table's mask and one below it, so both tables can hold one)
+struct SoundTakes
+{
+    u32 sounds;
+    u32 voices;
+};
+std::unordered_map<u16, SoundTakes> g_SoundTakes;
 
 void* EmptyObject(u32)
 {
@@ -465,8 +481,25 @@ void LoadObjectResources(ResourceReferences* references, const u16* objectId, Ga
 
     if (references->lists[ResourceSounds] != nullptr && resources->sounds != nullptr)
     {
-        ForEachId(references->lists[ResourceSounds],
-                  [&](u16 id) { TakeResource(SoundTableOf(resources, voices, id), id, EmptySound); });
+        ForEachId(references->lists[ResourceSounds], [&](u16 id) {
+            ResourceTable* table = SoundTableOf(resources, voices, id);
+            // Where the take goes, for its release to come back from: the decision is made from contents the takes change, so the
+            // answer at the release need not be the one here (see SoundTakes)
+            if (id != UndefinedId)
+            {
+                SoundTakes& takes = g_SoundTakes[id];
+                if (table != nullptr && table == resources->sounds)
+                {
+                    takes.sounds++;
+                }
+                else
+                {
+                    takes.voices++;
+                }
+            }
+
+            TakeResource(table, id, EmptySound);
+        });
     }
 
     TakeResource(objects, *objectId, EmptyObject);
@@ -482,8 +515,36 @@ void ReleaseObjectResources(ResourceReferences* references, const u16* objectId,
     ResourceTable* voices = VoicesOf(resources);
     if (references->lists[ResourceSounds] != nullptr && resources->sounds != nullptr)
     {
-        ForEachId(references->lists[ResourceSounds],
-                  [&](u16 id) { ReleaseResource(SoundTableOf(resources, voices, id), id, FreeSound); });
+        ResourceTable* sounds = resources->sounds;
+        ForEachId(references->lists[ResourceSounds], [&](u16 id) {
+            // The table the take went to (SoundTakes), not the one the contents would choose now: the contents are what the takes
+            // themselves change, and releasing against the wrong one leaves the take's reference taken for good and counts a
+            // stranger's down. A release with no take recorded (a sound the game took before this bookkeeping existed) falls back
+            // to the contents, as before
+            ResourceTable* table = SoundTableOf(resources, voices, id);
+            const auto found = g_SoundTakes.find(id);
+            if (found != g_SoundTakes.end())
+            {
+                SoundTakes& takes = found->second;
+                if (takes.sounds != 0 && (takes.sounds >= takes.voices || takes.voices == 0))
+                {
+                    table = sounds;
+                    takes.sounds--;
+                }
+                else if (takes.voices != 0)
+                {
+                    table = voices;
+                    takes.voices--;
+                }
+
+                if (takes.sounds == 0 && takes.voices == 0)
+                {
+                    g_SoundTakes.erase(found);
+                }
+            }
+
+            ReleaseResource(table, id, FreeSound);
+        });
     }
 
     if (references->lists[ResourceScripts] != nullptr && scripts != nullptr)

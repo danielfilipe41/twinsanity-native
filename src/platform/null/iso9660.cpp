@@ -13,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -139,35 +140,61 @@ s32 ReadBytes(u64 offset, void* buffer, s32 size)
     const u64 available = g_Bytes - offset;
     const size_t wanted = available < static_cast<u64>(size) ? static_cast<size_t>(available) : static_cast<size_t>(size);
 
-    size_t done = 0;
-    while (done < wanted)
+    if (g_Stride == SectorSize)
     {
-        const u64 logical = offset + done;
-        u64 raw = logical;
-        size_t chunk = wanted - done;
-        if (g_Stride != SectorSize)
+        size_t done = 0;
+        while (done < wanted)
         {
-            // One read per logical sector: skip the header before it and the trailer after it
-            const u64 sector = logical / SectorSize;
-            const size_t inside = static_cast<size_t>(logical % SectorSize);
-            raw = sector * g_Stride + g_UserOffset + inside;
-            const size_t room = static_cast<size_t>(SectorSize) - inside;
-            if (chunk > room)
+            if (ISO_SEEK(g_Image, offset + done) != 0)
             {
-                chunk = room;
+                break;
+            }
+            const size_t got = std::fread(destination + done, 1, wanted - done, g_Image);
+            done += got;
+            if (got == 0)
+            {
+                break;
             }
         }
+        return static_cast<s32>(done);
+    }
 
-        if (ISO_SEEK(g_Image, raw) != 0)
+    // A raw dump: the sectors the read spans are taken in runs, the whole run read at once (sync headers and ECC with it) and
+    // its user bytes copied out of it. A read was one seek and one read per 2048-byte sector before this, so a chunk of a
+    // level cost dozens of system calls a read; the runs are capped so a very large read needs no very large buffer
+    constexpr u32 SectorsPerRun = 128;
+    static std::vector<u8> run;
+    const u64 firstSector = offset / SectorSize;
+    const size_t inside = static_cast<size_t>(offset % SectorSize);
+    const u64 lastSector = (offset + wanted - 1) / SectorSize;
+    size_t done = 0;
+    for (u64 sector = firstSector; sector <= lastSector && done < wanted;)
+    {
+        const u64 left = lastSector - sector + 1;
+        const u32 count = left < SectorsPerRun ? static_cast<u32>(left) : SectorsPerRun;
+        const size_t bytes = static_cast<size_t>(count) * g_Stride;
+        if (run.size() < bytes)
+        {
+            run.resize(bytes);
+        }
+
+        if (ISO_SEEK(g_Image, sector * g_Stride) != 0 || std::fread(run.data(), 1, bytes, g_Image) != bytes)
         {
             break;
         }
-        const size_t got = std::fread(destination + done, 1, chunk, g_Image);
-        done += got;
-        if (got != chunk)
+
+        for (u32 index = 0; index < count && done < wanted; index++)
         {
-            break;
+            // The first sector starts inside its user bytes, the ones after it at their first
+            const size_t skip = sector + index == firstSector ? inside : 0;
+            const size_t room = static_cast<size_t>(SectorSize) - skip;
+            const size_t take = wanted - done < room ? wanted - done : room;
+            std::memcpy(destination + done, run.data() + static_cast<size_t>(index) * g_Stride + g_UserOffset + skip,
+                        take);
+            done += take;
         }
+
+        sector += count;
     }
     return static_cast<s32>(done);
 }
@@ -178,6 +205,21 @@ u32 ReadSectors(u32 lba, u32 count, u8* destination)
     return read <= 0 ? 0 : static_cast<u32>(read) / SectorSize;
 }
 
+// The folders read so far, by the sector they start at: the volume is read-only, so a listing made once stays right, and a
+// path's lookup walked the same folders from the root every time it opened a file
+std::unordered_map<u32, std::vector<Record>> g_directories;
+
+// What a path was found to be (or that it was not): a level asks for the same file over and over (its textures, its sounds,
+// its chunks), and every ask walked the folders from the root again
+struct PathAnswer
+{
+    bool found = false;
+    u64 offset = 0;
+    u32 size = 0;
+};
+
+std::unordered_map<std::string, PathAnswer> g_paths;
+
 // The directory's records, or an empty list when it does not read whole
 std::vector<Record> ListDirectory(u32 lba, u32 size)
 {
@@ -185,6 +227,11 @@ std::vector<Record> ListDirectory(u32 lba, u32 size)
     if (size == 0)
     {
         return records;
+    }
+    const auto known = g_directories.find(lba);
+    if (known != g_directories.end())
+    {
+        return known->second;
     }
     const u32 sectors = (size + SectorSize - 1) / SectorSize;
     std::vector<u8> bytes(static_cast<size_t>(sectors) * SectorSize);
@@ -210,6 +257,8 @@ std::vector<Record> ListDirectory(u32 lba, u32 size)
         records.push_back(Decode(bytes.data() + position));
         position += length;
     }
+
+    g_directories.emplace(lba, records);
     return records;
 }
 
@@ -365,6 +414,9 @@ void Platform::Iso9660::Close()
     g_VolumeId[0] = '\0';
     g_RootLba = 0;
     g_RootSize = 0;
+    // The answers were this volume's: another image has its own folders and its own files at other sectors
+    g_paths.clear();
+    g_directories.clear();
 }
 
 bool Platform::Iso9660::IsOpen()
@@ -385,6 +437,74 @@ const char* Platform::Iso9660::VolumeId()
     return g_VolumeId;
 }
 
+namespace
+{
+// The volume's answer for a path's components, walking the folders from the root: the callers cache it
+PathAnswer LookUpPath(const std::vector<std::string>& components)
+{
+    PathAnswer answer;
+    u32 directoryLba = g_RootLba;
+    u32 directorySize = g_RootSize;
+    for (size_t index = 0; index < components.size(); index++)
+    {
+        const std::vector<Record> records = ListDirectory(directoryLba, directorySize);
+        if (records.empty())
+        {
+            return answer;
+        }
+
+        const Record* found = nullptr;
+        for (const Record& record : records)
+        {
+            if (NameMatches(record.name, components[index]))
+            {
+                found = &record;
+                break;
+            }
+        }
+        if (found == nullptr)
+        {
+            return answer;
+        }
+
+        const bool last = index + 1 == components.size();
+        if (last)
+        {
+            if (found->directory)
+            {
+                return answer;
+            }
+            answer.found = true;
+            answer.offset = static_cast<u64>(found->lba) * SectorSize;
+            answer.size = found->size;
+            return answer;
+        }
+
+        if (!found->directory)
+        {
+            return answer;
+        }
+        directoryLba = found->lba;
+        directorySize = found->size;
+    }
+    return answer;
+}
+
+// The path in the case the volume records its names in, which is what makes two asks for one file the same ask
+std::string UpperPath(const char* gamePath)
+{
+    std::string key(gamePath != nullptr ? gamePath : "");
+    for (char& letter : key)
+    {
+        if (letter >= 'a' && letter <= 'z')
+        {
+            letter = static_cast<char>(letter - 'a' + 'A');
+        }
+    }
+    return key;
+}
+}
+
 bool Platform::Iso9660::Find(const char* gamePath, u64* offset, u32* size)
 {
     const std::vector<std::string> components = Components(gamePath);
@@ -399,50 +519,23 @@ bool Platform::Iso9660::Find(const char* gamePath, u64* offset, u32* size)
         return false;
     }
 
-    u32 directoryLba = g_RootLba;
-    u32 directorySize = g_RootSize;
-    for (size_t index = 0; index < components.size(); index++)
+    const std::string key = UpperPath(gamePath);
+    const auto known = g_paths.find(key);
+    const PathAnswer& answer = known != g_paths.end() ? known->second : g_paths.emplace(key, LookUpPath(components)).first->second;
+    if (!answer.found)
     {
-        const std::vector<Record> records = ListDirectory(directoryLba, directorySize);
-        if (records.empty())
-        {
-            return false;
-        }
-
-        const Record* found = nullptr;
-        for (const Record& record : records)
-        {
-            if (NameMatches(record.name, components[index]))
-            {
-                found = &record;
-                break;
-            }
-        }
-        if (found == nullptr)
-        {
-            return false;
-        }
-
-        const bool last = index + 1 == components.size();
-        if (last)
-        {
-            if (found->directory)
-            {
-                return false;
-            }
-            *offset = static_cast<u64>(found->lba) * SectorSize;
-            *size = found->size;
-            return true;
-        }
-
-        if (!found->directory)
-        {
-            return false;
-        }
-        directoryLba = found->lba;
-        directorySize = found->size;
+        return false;
     }
-    return false;
+
+    if (offset != nullptr)
+    {
+        *offset = answer.offset;
+    }
+    if (size != nullptr)
+    {
+        *size = answer.size;
+    }
+    return true;
 }
 
 s32 Platform::Iso9660::ReadAt(u64 offset, void* buffer, s32 size)

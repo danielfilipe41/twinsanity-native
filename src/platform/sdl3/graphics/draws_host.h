@@ -177,10 +177,11 @@ CHECK_SIZE(HostScreenModel, 0x10);
 // The strip a screen model holds, submitted through the shared 3D program: its world-space places by the model-to-clip
 // matrix (the view's to-screen one), its own colours through the 1x1 white texture (no screen model is textured). The
 // caller owns the view's rect and frame buffer (HostSceneSetView) and the state the model's material produced
-// (HostMaterialStateOf: the marks' add or subtract preset, no depth writes, the destination test's depth gate). Returns
-// whether it submitted (false: no model, no vertexes, no matrix)
+// (HostMaterialStateOf: the marks' add or subtract preset, no depth writes, the destination test's depth gate). `program`
+// is the pass's own program -- the flat-shaded rigid one for a material whose shader cleared IIP -- and the shared rigid
+// program when it is invalid. Returns whether it submitted (false: no model, no vertexes, no matrix)
 bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgfx::ViewId view, u64 state,
-                         const f32* alphaRef);
+                         const f32* alphaRef, bgfx::ProgramHandle program);
 
 // The scene's offscreen target the 3D passes draw into (RGBA8 colour carrying the frame's alpha + D24S8 depth),
 // made lazily at the window's size. The PS2 draws into its frame buffer and the shadow pass copies that frame's
@@ -219,6 +220,10 @@ void HostCompositeSetTarget(bgfx::FrameBufferHandle framebuffer);
 // bgfx is up; owned by the process, torn down with bgfx itself)
 bgfx::ProgramHandle HostDraw3DProgram();
 bgfx::ProgramHandle HostDraw3DSkinProgram();
+// The same two over the flat-qualified varyings: a pass whose shader has the GS's IIP bit cleared (HostMaterialState::flat)
+// draws with these, which is the console's flat shading. Everything else about the draw is identical
+bgfx::ProgramHandle HostDraw3DFlatProgram();
+bgfx::ProgramHandle HostDraw3DSkinFlatProgram();
 // The texture a rigid/skin submodel's material draws with: the material's bound texture, else the 1x1 white
 // texture (the fragment shader's sample * colour then reduces to the vertex colour, the PS2's untextured shaders).
 // The PS2 uploads each material's shader texture before its packet (materials.cpp's WriteShaders), so every pass
@@ -260,11 +265,12 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
 // the weights) bake their vertex offsets into the positions before the
 // upload; those vertexes follow the draw's weights, so a draw with active
 // shapes uploads a transient vertex buffer rather than the cached one
+// program overrides the skin program when valid (HostDraw3DSkinFlatProgram for a flat pass), as the rigid path's does
 bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 shapeCount, const Matrix4x4* mvp,
                         const Matrix4x4* world, const ModelLights* lights, const Matrix4x4* joints, u32 jointCount,
                         const f32* blendWeights, u32 blendCount, bgfx::TextureHandle texture, bgfx::ViewId view,
                         u64 state, const f32* alphaRef = nullptr, const HostBlendPart* blendPart = nullptr,
-                        const s32* blendShapeIds = nullptr);
+                        const s32* blendShapeIds = nullptr, bgfx::ProgramHandle program = BGFX_INVALID_HANDLE);
 
 // The shadow-caster mark: a draw's state with the frame's alpha forced to bit 7 = 0, so the shadow volumes skip the
 // pixel (retail's DATE/DATM=0 test; the resolve's gate reads that bit). Opaque draws get the full mark, blended ones
@@ -278,9 +284,11 @@ u64 MarkedForCaster(u64 state);
 void HostRetireDrawPacket(const u8* packet);
 void HostCollectRetiredDrawBuffers();
 
-// The submodel's material's texture scroll, which the next 3D draw's vertex shader adds to every UV (retail's
-// Shader::scroll). Call before each HostDrawRigidPacket/HostDrawSkinPacket; a null material clears it
-void HostSetDrawScroll(const HostMaterial* material);
+// A shader's own texture scroll, which the next 3D draw's vertex shader adds to every UV (retail's Shader::scroll: each
+// shader of a material has its own). Call before each HostDrawRigidPacket/HostDrawSkinPacket; scrollUVs is the offset the
+// pass's shader has, or null for the material's own (shader 0's, which is all a single-shader material has -- every later
+// shader's block lives beside the material, in graphics.cpp). A null material clears the scroll
+void HostSetDrawScroll(const HostMaterial* material, const f32* scrollUVs = nullptr);
 // The same, from a model's material array and submodel index (the way HostSubModelTexture names one), so the 3D
 // loops and the sky set it in a line each
 void HostSetSubModelScroll(MaterialResource** materials, u32 index);
@@ -296,8 +304,27 @@ struct HostDrawCounters
 {
     u32 rigidDraws;
     u32 skinDraws;
+    // The rigid packets a frame drew and the draws of a packet already drawn in the same view that frame: their ratio is what one
+    // instanced submit could collapse. Keyed by view as well as packet, since the shadow pass drawing a caster twice a frame is not
+    // the same submission's work
+    u32 rigidPackets;
+    u32 rigidRepeats;
+    u32 rigidBlended;
+    // The submissions those draws actually made: the instanced batch's, which is what the draw count falls to
+    u32 rigidSubmits;
+    // The strip models (the skid marks): parsed from the game's own vertex bytes, no packet, so their own count
+    u32 screenDraws;
+    // The 2D batch's submits: one per material and view the quads were flushed in, from the draw2d module's own submitters
+    u32 draw2dDraws;
     u32 rigidChecksum;
     u32 skinChecksum;
 };
 const HostDrawCounters& HostDrawCounts();
+
+// One 2D submit made (the draw2d's two submitters call it as they hand their quads to bgfx)
+void HostCountDraw2D();
+
+// The rigid draws held for the next one are handed to bgfx: the draws between them that are not rigid (the skin and screen model
+// paths, the frame's end) call this first, so the submission order stays the order the draws came in
+void HostFlushRigidInstances();
 }

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 
 void Platform::System::Initialise()
 {
@@ -93,13 +94,22 @@ u32 Platform::System::CutsceneSkipSpeed()
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);
-    std::tm local = *std::localtime(&now);
+    // localtime fills a buffer the C library shares between its callers, and the stream workers and the audio thread are
+    // alive while the game stamps a save: the buffer is taken and read under a lock
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    const std::tm* local = std::localtime(&now);
+    if (local == nullptr)
+    {
+        return DateTime{};
+    }
+
     DateTime dateTime;
-    dateTime.year = static_cast<u16>(local.tm_year + 1900);
-    dateTime.month = static_cast<u8>(local.tm_mon + 1);
-    dateTime.day = static_cast<u8>(local.tm_mday);
-    dateTime.hour = static_cast<u8>(local.tm_hour);
-    dateTime.minute = static_cast<u8>(local.tm_min);
-    dateTime.second = static_cast<u8>(local.tm_sec);
+    dateTime.year = static_cast<u16>(local->tm_year + 1900);
+    dateTime.month = static_cast<u8>(local->tm_mon + 1);
+    dateTime.day = static_cast<u8>(local->tm_mday);
+    dateTime.hour = static_cast<u8>(local->tm_hour);
+    dateTime.minute = static_cast<u8>(local->tm_min);
+    dateTime.second = static_cast<u8>(local->tm_sec);
     return dateTime;
 }

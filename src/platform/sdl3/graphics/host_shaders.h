@@ -16,6 +16,12 @@ enum class HostShader
     Draw3DVertex,
     Draw3DSkinVertex,
     Draw3DFragment,
+    // The same three with the GS's IIP bit cleared: a shader that asks for flat shading draws each triangle with its
+    // provoking vertex's values instead of interpolating (varying_draw3dflat.def.sc). The draws pick between the two by
+    // the pass's own gouraud setting (HostMaterialState::flat)
+    Draw3DVertexFlat,
+    Draw3DSkinVertexFlat,
+    Draw3DFragmentFlat,
     ShadowVolumeFragment,
     ParticleVertex,
     ParticleFragment,

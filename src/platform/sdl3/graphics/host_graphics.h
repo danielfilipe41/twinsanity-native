@@ -81,8 +81,9 @@ constexpr u32 HostShaderSettingAlphaReference = 4;
 constexpr u32 HostShaderSettingDestinationTest = 6;
 constexpr u32 HostShaderSettingDestinationMode = 7;
 constexpr u32 HostShaderSettingDepthTest = 8;
-// Gouraud shading (IIP): the marks' material carries the 1 ShaderConstruct leaves, the host's 3D program always shading
-// with the vertexes' colours
+// Gouraud shading (IIP): the marks' material carries the 1 ShaderConstruct leaves. A shader that clears it draws flat, which
+// is what the particles' page shaders do (particles.cpp's settings.gouraud = 0) and the host's flat-qualified 3D programs
+// draw (HostMaterialState::flat)
 constexpr u32 HostShaderSettingGouraud = 10;
 constexpr u32 HostShaderSettingOwnAlpha = 17;
 constexpr u32 HostShaderSettingAlphaA = 18;
@@ -186,13 +187,10 @@ struct HostMaterial
     // can tell a shader type apart from the one the host's programs were written for
     u8 shaderType;
     // A material whose file carries more than one shader: the console draws every one of them (materials.cpp's
-    // FlushMaterial -> WriteShaders), each pass sampling the first shader's texture. Only the fields a later pass
-    // differs by are kept, because the game's material storage is a fixed 0x70 bytes.
+    // FlushMaterial -> WriteShaders), each pass sampling the first shader's texture. Their own 30 setting bytes (the
+    // GS's registers are the shader's, so a later pass's blend, depth test, alpha test with its AFAIL, and destination
+    // test are its own) live beside the material, which is a fixed 0x70 bytes with no room for them
     u8 passCount;
-    u8 passBlends[HostMaterialPasses - 1];
-    u8 passPreset[HostMaterialPasses - 1];
-    u8 passDepth[HostMaterialPasses - 1];
-    u8 passFlags[HostMaterialPasses - 1];   // bit 0: noDepthWrites, bit 1: alphaTest
     // The first shader's alpha-failure action (the file's setting byte 5: the GS's AFAIL, 0 KEEP, 1 FB_ONLY,
     // 2 ZB_ONLY, 3 RGB_ONLY). The fragment shader drops a failing sample, which is KEEP; FB_ONLY instead writes its
     // colour and leaves the depth, so the draws issue a second pass for it
@@ -203,8 +201,7 @@ struct HostMaterial
     u8 colour[4];
     // The 4-aligned fields end at the scroll block; the bytes after it are these and the tail
     static constexpr u32 HostFixedBytes = 6 * sizeof(u32) + 2 * sizeof(u16) + sizeof(GameTexture*) +
-                                          sizeof(f32) * 6 + HostShaderSettings + 4 + 1 + 4 * (HostMaterialPasses - 1) + 1 +
-                                          sizeof(u8) * 4;
+                                          sizeof(f32) * 6 + HostShaderSettings + 4 + 1 + 1 + sizeof(u8) * 4;
     u8 reserved[MaterialStorage - HostFixedBytes];
 };
 static_assert(sizeof(HostMaterial) == MaterialStorage, "a host material fills the game's material storage");
@@ -354,6 +351,10 @@ struct HostMaterialState
     // failure action (AFAIL), which only the host reads (FailedSampleState), and [4] marks a "brighten" draw, whose
     // fragment shader writes its alpha as its colour for the state's DST_COLOR, ONE blend (the GS's Cd·As + Cd)
     f32 alphaReference[5];
+    // The shader's gouraud setting (its IIP bit, settings byte 10) is cleared: the GS draws its triangles with the provoking
+    // vertex's values instead of interpolating them, which the draws reach with the flat-qualified programs
+    // (HostShader::Draw3DVertexFlat and its siblings; the sky's own shader keeps the interpolated ones)
+    bool flat;
 };
 
 // The state a submodel's material draws with: its first shader's settings (the material's shaderSettings, or a
@@ -362,6 +363,23 @@ struct HostMaterialState
 // u_materialAlpha because bgfx has no fixed-function one. withDepth tells whether the pass depth-tests (the 3D
 // passes do, the 2D one doesn't: a UI quad has no depth to test and only its blending and alpha test apply)
 HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseState, bool withDepth);
+
+// One of the material's shaders' scroll offset (renderer.h's Shader::scroll, which each shader has its own of: the
+// draws add it to every UV). Shader 0's is the material's own; a later shader's is kept beside it. Returns false when the
+// material has no such shader (or is null), leaving *uv untouched
+bool HostMaterialShaderScroll(const HostMaterial* material, u32 shader, f32* uv);
+
+// A material's later shader as ReadMaterial keeps it: its 30 setting bytes and its scroll block beside the material's fixed
+// 0x70. The headless material proof's way to make a multi-shader material without a disc (tools/material_passes_proof.cpp)
+void HostMaterialSetLaterShader(HostMaterial* material, u32 shader, const u8* settings, const f32* phases,
+                                const f32* speeds);
+
+// The submissions a material's submodel draw makes (graphics.cpp's MaterialDrawPassesOf): one entry a shader, plus the
+// pass over a shader's alpha-test rejected samples when its failure action writes them. *states holds the state each
+// submits with and *shaders the material's shader each draws the texture of; returns the number of submissions, or 0 when
+// the capacity is smaller than they are (HostMaterialPasses * 2 is always enough). The material proof's entry point
+u32 HostMaterialDrawPasses(const HostMaterial* material, u64 baseState, HostMaterialState* states, u8* shaders,
+                           u32 capacity);
 // // the filter's pass draws in submission order over the frame. Its readback blits on view 34 (bgfx
 // runs a view's blits before its draws, so the blit needs a later view than the filter's pass; 34 keeps it out of the
 // buckets' range, where 26 is the fonts')
@@ -531,6 +549,10 @@ void MakePageModeMaterials(struct ParticlePage* page);
 // The screen the strips' pixels are fractions of (StartFrame keeps it: the frame's size, the window's while no frame
 // started). Sprites' fractions map onto the view directly without it
 void HostSetScreenSize(u32 width, u32 height);
+
+// The 2D quads held for batching, drawn out: FinishFrame calls it before the frame presents, so a quad never lands in the
+// next frame's view (draw2d.cpp's header says why that matters)
+void HostFlushDraw2D();
 
 // The same size read back (the shadow pass sizes its half-res target from it)
 void HostScreenSize(u32* width, u32* height);

@@ -3,6 +3,7 @@
 #include "game/math.h"
 #include "game/instances.h"
 #include "game/place.h"
+#include "platform/time.h"
 
 #include <unordered_map>
 #include <vector>
@@ -124,13 +125,19 @@ void HostFrame::ForgetShadowSteps(const ShadowEntry* first, const ShadowEntry* s
 
 void HostFrame::BeginLogicStep()
 {
+    // Whether a display frame will be eased between this step and the next: the picture presents faster than the logic
+    // steps (or unlimited, paced by the display or vsync), so the frames that draw without a step have something to ease
+    // from. At the disc's own rate there are none -- WaitVSync makes every present a step's own -- and the samples would be
+    // copied every step (whole joint arrays among them) only to be read by nobody
+    const bool eased = Platform::Time::DisplayRate() == 0 || Platform::Time::DisplayRate() > Platform::Time::FrameRate();
+
     // The sample a step's own draw wrote is the one the display frames after it ease from; an instance that step didn't
     // draw has nothing to ease from, and one not seen for a long time is dropped (instances are freed and their memory
     // handed to another)
     for (auto it = g_Instances.begin(); it != g_Instances.end();)
     {
         Remembered& entry = it->second;
-        if (entry.step == g_Step)
+        if (eased && entry.step == g_Step)
         {
             entry.previous = entry.current;
             entry.hasPrevious = true;
@@ -152,7 +159,7 @@ void HostFrame::BeginLogicStep()
     for (auto it = g_Poses.begin(); it != g_Poses.end();)
     {
         RememberedPose& pose = it->second;
-        if (pose.step == g_Step && pose.previous.size() == pose.current.size())
+        if (eased && pose.step == g_Step && pose.previous.size() == pose.current.size())
         {
             pose.previous = pose.current;
             pose.hasPrevious = true;

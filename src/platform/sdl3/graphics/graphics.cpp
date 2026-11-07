@@ -17,6 +17,8 @@
 #include "game/shaderanimation.h"
 #include "game/stream.h"
 #include "game/view.h"
+// The logic step counter the HUD reads: the port's own steps, which the picture's frames are separate from
+#include "platform/hostframe.h"
 #include "platform/time.h"
 
 #include <SDL3/SDL_timer.h>
@@ -48,7 +50,8 @@ std::vector<size_t> g_FrameMemorySizes;
 size_t g_FrameMemoryChunk = 0;
 size_t g_FrameMemoryUsed = 0;
 
-// The frame FinishFrame last presented (the probes' gate: HostFrameCounter)
+// One past the frame FinishFrame last presented, which is the index the next one takes (the probes' gate:
+// HostFrameCounter)
 u32 g_frameCounter = 0;
 
 void ResetFrameMemory()
@@ -191,9 +194,9 @@ bool TexturePinned(const GameTexture* texture)
     return found != g_texturePins.end() && found->second != 0;
 }
 
-// The material's later passes' alpha test (defined with the table further down): the quarantine's release is the last
-// reference to it
-static void MaterialPassAlphaRemove(const void* material);
+// The material's later shaders' settings and textures (defined with their table further down): the quarantine's release is
+// the last reference to them
+static void RemoveMaterialLater(const void* material);
 
 // A freed texture's upload and bytes let go: nothing that still draws names it
 void ReleaseFreedTexture(GameTexture* texture)
@@ -247,8 +250,8 @@ void ReleaseOldestFreedMaterial()
         ReleaseFreedTexture(freed.texture);
     }
 
-    // Nothing can draw through the material's bytes any more, so its later passes' alpha test goes with it
-    MaterialPassAlphaRemove(freed.host);
+    // Nothing can draw through the material's bytes any more, so its later shaders' settings and textures go with it
+    RemoveMaterialLater(freed.host);
     Platform::Graphics::HostMemory::Free(freed.host);
     Platform::Graphics::HostMemory::Free(freed.resource);
 }
@@ -320,81 +323,123 @@ struct HostMaterialAnimation
 
 std::vector<HostMaterialAnimation> g_MaterialAnimations;
 
-// A material's later shaders' textures: the console uploads each shader's own texture before its packet (materials.cpp's
-// WriteShaders, TextureOf(shader)), so pass k samples shader k's image and not the first's. The game's material storage is
-// a fixed 0x70 bytes with no room for the handles, so they live here, beside it, from ReadMaterial until DeleteMaterial
-struct HostMaterialPassTexture
+// A material's later shaders, beside its storage (the game's material is a fixed 0x70 bytes with no room for them). Two
+// things are each shader's own and not the first one's: its 30 setting bytes -- the GS writes TEST (ATST, AREF and AFAIL,
+// the action a sample that fails the test is written with), ALPHA (ABE and the preset), ZBUF (ZTST and its write) and
+// DATE from the registers the shader being drawn sends (shadersettings.cpp's PixelTest and DepthBuffer) -- and its image,
+// which materials.cpp's WriteShaders uploads before that shader's packet, so pass k samples shader k's picture
+struct HostMaterialLater
 {
-    const Platform::Graphics::HostMaterial* material;
+    // Shader k's settings, at index k - 1 (shader 0's are the material's own, in its shaderSettings)
+    u8 settings[Platform::Graphics::HostMaterialPasses - 1][Platform::Graphics::HostShaderSettings];
+    // Shader k's own scroll block (renderer.h's Shader::scrollPhases, scrollSpeeds and scroll: each shader has its own,
+    // advanced by its own scroll modes and its own animation), at index k - 1
+    HostShaderScroll scroll[Platform::Graphics::HostMaterialPasses - 1];
+    // Shader k's own image, at index k (shader 0's is the material's gameTexture, and null here)
     GameTexture* textures[Platform::Graphics::HostMaterialPasses];
 };
 
-std::vector<HostMaterialPassTexture> g_MaterialPassTextures;
+// By the material they belong to, from ReadMaterial until the quarantine lets the material's bytes go. Hashed, not a
+// list walked per draw: every later pass of a multi-shader material looks its entry up, and a level's scenery holds
+// thousands of those materials. An entry per material is what a fixed table beside the material cannot be (no room)
+std::unordered_map<const Platform::Graphics::HostMaterial*, HostMaterialLater> g_MaterialLater;
 
-HostMaterialPassTexture* FindMaterialPassTexture(const Platform::Graphics::HostMaterial* material)
+HostMaterialLater* FindMaterialLater(const void* material)
 {
-    for (HostMaterialPassTexture& entry : g_MaterialPassTextures)
-    {
-        if (entry.material == material)
-        {
-            return &entry;
-        }
-    }
-
-    return nullptr;
+    const auto found = g_MaterialLater.find(static_cast<const Platform::Graphics::HostMaterial*>(material));
+    return found == g_MaterialLater.end() ? nullptr : &found->second;
 }
 
-// The material's later passes' textures (pass 0 is the material's own gameTexture, and null here)
-void AddMaterialPassTextures(Platform::Graphics::HostMaterial* material, GameTexture* const* textures, u32 count)
+// One of the material's later shaders' settings, byte for byte (a material with no such shader leaves them clear)
+void MaterialLaterSettingsOf(const void* material, u32 pass, u8* settings)
 {
-    bool any = false;
-    HostMaterialPassTexture entry = {};
-    entry.material = material;
-    for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+    std::memset(settings, 0, Platform::Graphics::HostShaderSettings);
+    HostMaterialLater* later = FindMaterialLater(material);
+    if (later == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
     {
-        entry.textures[pass] = pass < count ? textures[pass] : nullptr;
-        any = any || entry.textures[pass] != nullptr;
+        // ShaderConstruct's default for the fields a clear block would read as "no": the one that matters is IIP, whose 0
+        // means flat shading, so a later shader with no settings beside the material draws interpolated like the first one
+        settings[Platform::Graphics::HostShaderSettingGouraud] = 1;
+        return;
     }
 
-    if (any)
+    std::memcpy(settings, later->settings[pass], Platform::Graphics::HostShaderSettings);
+}
+
+// The settings and scroll block ReadMaterialShaders read for the material's later shaders, kept for the draws and for
+// the frame step that advances them
+void MaterialLaterStoreShader(const void* material, u32 pass, const u8* settings, const HostShaderScroll& scroll)
+{
+    if (material == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
     {
-        g_MaterialPassTextures.push_back(entry);
+        return;
+    }
+
+    HostMaterialLater& later = g_MaterialLater[static_cast<const Platform::Graphics::HostMaterial*>(material)];
+    std::memcpy(later.settings[pass], settings, Platform::Graphics::HostShaderSettings);
+    later.scroll[pass] = scroll;
+}
+
+// The material's later passes' textures (pass 0 is the material's own gameTexture, and null here). Every slot is written,
+// a material with no image for a pass included: the entry can belong to the address a material that died at it held (the
+// quarantine keeps that one's bytes alive, so the allocator hands the same block out again), and an image left there would
+// be drawn by a shader that samples none
+void AddMaterialPassTextures(Platform::Graphics::HostMaterial* material, GameTexture* const* textures, u32 count)
+{
+    HostMaterialLater* later = FindMaterialLater(material);
+    bool any = false;
+    for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+    {
+        any = any || (pass < count && textures[pass] != nullptr);
+    }
+
+    // A single-shader material with nothing to keep by side (the common case) leaves no entry at all
+    if (later == nullptr)
+    {
+        if (!any)
+        {
+            return;
+        }
+
+        later = &g_MaterialLater[material];
+    }
+
+    for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+    {
+        later->textures[pass] = pass < count ? textures[pass] : nullptr;
     }
 }
 
 // A later pass's texture, null when the material has none for it
 GameTexture* MaterialPassTexture(const Platform::Graphics::HostMaterial* material, u32 pass)
 {
-    HostMaterialPassTexture* entry = FindMaterialPassTexture(material);
-    if (entry == nullptr || pass >= Platform::Graphics::HostMaterialPasses)
+    HostMaterialLater* later = FindMaterialLater(material);
+    if (later == nullptr || pass >= Platform::Graphics::HostMaterialPasses)
     {
         return nullptr;
     }
 
-    return entry->textures[pass];
+    return later->textures[pass];
 }
 
-// The references those textures took go with the material
+// The references those textures took go with the material, and its later shaders' settings with them
 void RemoveMaterialPassTextures(const Platform::Graphics::HostMaterial* material)
 {
-    for (size_t index = 0; index < g_MaterialPassTextures.size(); index++)
+    HostMaterialLater* later = FindMaterialLater(material);
+    if (later == nullptr)
     {
-        if (g_MaterialPassTextures[index].material != material)
-        {
-            continue;
-        }
-
-        for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
-        {
-            if (g_MaterialPassTextures[index].textures[pass] != nullptr)
-            {
-                ReleaseTexture(g_MaterialPassTextures[index].textures[pass]);
-            }
-        }
-
-        g_MaterialPassTextures.erase(g_MaterialPassTextures.begin() + static_cast<long>(index));
         return;
     }
+
+    for (u32 pass = 1; pass < Platform::Graphics::HostMaterialPasses; pass++)
+    {
+        if (later->textures[pass] != nullptr)
+        {
+            ReleaseTexture(later->textures[pass]);
+        }
+    }
+
+    g_MaterialLater.erase(material);
 }
 
 
@@ -550,80 +595,13 @@ u32 SkipShader(Stream* stream, s32 type, bool* textured, u8* settings, HostShade
     return static_cast<u32>(textureId);
 }
 
-// A material's later shaders' own alpha test, beside the material (its storage is a fixed 0x70 bytes with no room):
-// the GS writes ATST and AREF from the shader being drawn, so pass k's test is not the first shader's.
-//
-// A map, not a fixed table: an entry lives from ReadMaterial until the quarantine lets the material's bytes go, and a
-// level that streams thousands of materials would otherwise fill a fixed table and silently draw every later pass with
-// a cleared test (NEVER at reference 0, which writes nothing)
-struct MaterialPassAlpha
+// A material's later shaders let go: the references their images took and the settings kept beside the material. The
+// entry's settings hold nothing the material needs once its bytes are gone, since no draw can reach it again
+static void RemoveMaterialLater(const void* material)
 {
-    u8 method[Platform::Graphics::HostMaterialPasses - 1];
-    u8 reference[Platform::Graphics::HostMaterialPasses - 1];
-};
-static std::unordered_map<const void*, MaterialPassAlpha> g_materialPassAlpha;
-
-static void MaterialPassAlphaRemove(const void* material)
-{
-    if (material != nullptr)
-    {
-        g_materialPassAlpha.erase(material);
-    }
+    RemoveMaterialPassTextures(static_cast<const Platform::Graphics::HostMaterial*>(material));
 }
 
-static MaterialPassAlpha* MaterialPassAlphaSlot(const void* material, bool create)
-{
-    if (material == nullptr)
-    {
-        return nullptr;
-    }
-
-    const auto found = g_materialPassAlpha.find(material);
-    if (found != g_materialPassAlpha.end())
-    {
-        return &found->second;
-    }
-
-    if (!create)
-    {
-        return nullptr;
-    }
-
-    // Value-initialised: a material with no later shaders has every byte clear
-    return &g_materialPassAlpha[material];
-}
-
-static void MaterialPassAlphaStore(const void* material, u32 pass, u8 method, u8 reference)
-{
-    if (material == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
-    {
-        return;
-    }
-
-    MaterialPassAlpha* slot = MaterialPassAlphaSlot(material, true);
-    if (slot != nullptr)
-    {
-        slot->method[pass] = method;
-        slot->reference[pass] = reference;
-    }
-}
-
-static void MaterialPassAlphaOf(const void* material, u32 pass, u8* method, u8* reference)
-{
-    *method = 0;
-    *reference = 0;
-    if (material == nullptr || pass >= Platform::Graphics::HostMaterialPasses - 1)
-    {
-        return;
-    }
-
-    const MaterialPassAlpha* slot = MaterialPassAlphaSlot(material, false);
-    if (slot != nullptr)
-    {
-        *method = slot->method[pass];
-        *reference = slot->reference[pass];
-    }
-}
 
 // A material's shaders read past (shaderclasses.cpp's ReadMaterialShaders): the programs' key, the bucket, the name and each
 // shader's type and bytes. Returns the first shader's texture ID, with *textured saying whether it samples one,
@@ -632,7 +610,8 @@ static void MaterialPassAlphaOf(const void* material, u32 pass, u8* method, u8* 
 u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShaderScroll* scroll,
                         u32* shaderTextureIds, u32* shaderCountOut, bool* makesBillboard, s32* firstShaderType,
                         ShaderAnimation** animations, u32 animationSlots, u32* bucketOut,
-                        u8 (*laterSettings)[Platform::Graphics::HostShaderSettings] = nullptr, u8* colourOut = nullptr)
+                        u8 (*laterSettings)[Platform::Graphics::HostShaderSettings] = nullptr, u8* colourOut = nullptr,
+                        HostShaderScroll* laterScrolls = nullptr)
 {
     s64 activatedShaders;
     stream->ReadS64(&activatedShaders);
@@ -680,11 +659,19 @@ u32 ReadMaterialShaders(Stream* stream, bool* textured, u8* settings, HostShader
         {
             shaderTextureIds[index] = shaderTextureId;
         }
-        // The settings each shader carries: which pass a multi-shader material's second draw is, and which filter,
-        // alpha preset and alpha-failure action the audit needs to know before any of them can be reproduced
-            if (index > 0 && laterSettings != nullptr && static_cast<u32>(index) < Platform::Graphics::HostMaterialPasses)
+        // The settings and scroll block each shader carries: the GS's registers are the shader's, and so is the scroll
+        // its modes and its animation advance (renderer.h's Shader::scroll), so a later shader that scrolls is not the
+        // first one's
+        if (index > 0 && static_cast<u32>(index) < Platform::Graphics::HostMaterialPasses)
         {
-            std::memcpy(laterSettings[index - 1], shaderSettings, sizeof(shaderSettings));
+            if (laterSettings != nullptr)
+            {
+                std::memcpy(laterSettings[index - 1], shaderSettings, sizeof(shaderSettings));
+            }
+            if (laterScrolls != nullptr)
+            {
+                laterScrolls[index - 1] = shaderScroll;
+            }
         }
         if (index == 0)
         {
@@ -783,6 +770,128 @@ namespace
 // WaitVSync paces the host's loop to it and Platform::Time steps the game's clock by exactly one field, so frameTime is
 // one exact field and does not inherit the host's jitter
 bool g_palDisplay = false;
+
+// The picture's next boundary (WaitVSync) and the rate it was worked out for: a rate change restarts the schedule rather
+// than waiting out an interval that belonged to the rate before it
+std::chrono::steady_clock::time_point g_nextPresent;
+bool g_presentScheduled = false;
+s32 g_presentRate = -1;
+
+// The port's own count of what the last second held, shown in the corner of the picture and logged beside the frame counter:
+// the picture's rate (the frames the display took), the logic's (the steps the game was stepped at, which the disc fixes at
+// 50), and what a frame cost -- bgfx's own timers, the CPU's between two presents and the GPU's for the frame before. The two
+// rates are separate on purpose (main.cpp presents at the player's rate and steps the game at the disc's), so a picture rate
+// above 50 is right and a step rate under 50 is the game missing steps; the CPU time says whether a slow picture is the
+// game's own work and the GPU time whether it is the picture's
+struct FrameStats
+{
+    std::chrono::steady_clock::time_point since;
+    u32 frames;
+    u32 steps;
+    f32 fps;
+    f32 stepsPerSecond;
+    f32 cpuMs;
+    f32 gpuMs;
+    u32 draws;
+    // The frame's packets by path, and the totals they were stepped from (the counters only climb)
+    u32 rigid;
+    u32 skin;
+    // The frame's rigid packets and the draws of an already drawn one: their ratio is the instancing headroom
+    u32 packets;
+    u32 repeats;
+    u32 blended;
+    u32 submits;
+    u32 submitsTotal;
+    u32 packetsTotal;
+    u32 repeatsTotal;
+    u32 blendedTotal;
+    u32 screen;
+    u32 draw2d;
+    u32 rigidTotal;
+    u32 skinTotal;
+    u32 screenTotal;
+    u32 draw2dTotal;
+    bool shown;
+    bool started;
+};
+FrameStats g_frameStats;
+
+// The message the HUD shows. Filled once a second from the counters, and cleared and written in one go (the text stays in
+// bgfx's own buffer between presents, so writing it every frame would cost a format and a blit a frame for the same words)
+void ShowFrameStats(const bgfx::Stats* stats)
+{
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    const u32 step = HostFrame::GetCurrentStep();
+    if (!g_frameStats.started)
+    {
+        g_frameStats.started = true;
+        g_frameStats.since = now;
+        g_frameStats.steps = step;
+    }
+
+    g_frameStats.frames++;
+    // What the frame handed bgfx of its own: the packet draws by path, whose total against bgfx's own count is the rest (the passes,
+    // the 2D batch, the particles and the decals). The counters only climb, so the step between two calls is the last frame's
+    const Platform::Graphics::HostDrawCounters& counts = Platform::Graphics::HostDrawCounts();
+    g_frameStats.rigid = counts.rigidDraws - g_frameStats.rigidTotal;
+    g_frameStats.packets = counts.rigidPackets - g_frameStats.packetsTotal;
+    g_frameStats.repeats = counts.rigidRepeats - g_frameStats.repeatsTotal;
+    g_frameStats.blended = counts.rigidBlended - g_frameStats.blendedTotal;
+    g_frameStats.submits = counts.rigidSubmits - g_frameStats.submitsTotal;
+    g_frameStats.submitsTotal = counts.rigidSubmits;
+    g_frameStats.packetsTotal = counts.rigidPackets;
+    g_frameStats.repeatsTotal = counts.rigidRepeats;
+    g_frameStats.blendedTotal = counts.rigidBlended;
+    g_frameStats.skin = counts.skinDraws - g_frameStats.skinTotal;
+    g_frameStats.screen = counts.screenDraws - g_frameStats.screenTotal;
+    g_frameStats.draw2d = counts.draw2dDraws - g_frameStats.draw2dTotal;
+    g_frameStats.rigidTotal = counts.rigidDraws;
+    g_frameStats.skinTotal = counts.skinDraws;
+    g_frameStats.screenTotal = counts.screenDraws;
+    g_frameStats.draw2dTotal = counts.draw2dDraws;
+    const long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_frameStats.since).count();
+    if (elapsed < 1000)
+    {
+        return;
+    }
+
+    const f32 seconds = static_cast<f32>(elapsed) / 1000.0f;
+    g_frameStats.fps = static_cast<f32>(g_frameStats.frames) / seconds;
+    g_frameStats.stepsPerSecond = static_cast<f32>(step - g_frameStats.steps) / seconds;
+    // bgfx's timers are timestamps at their own frequencies; a backend that keeps no timer answers 0 rather than a rate
+    g_frameStats.cpuMs = stats->cpuTimerFreq > 0
+                             ? static_cast<f32>(stats->cpuTimeFrame) * 1000.0f / static_cast<f32>(stats->cpuTimerFreq)
+                             : 0.0f;
+    g_frameStats.gpuMs = stats->gpuTimerFreq > 0 && stats->gpuTimeEnd > stats->gpuTimeBegin
+                             ? static_cast<f32>(stats->gpuTimeEnd - stats->gpuTimeBegin) * 1000.0f /
+                                   static_cast<f32>(stats->gpuTimerFreq)
+                             : 0.0f;
+    g_frameStats.draws = stats->numDraw;
+
+    // The same numbers once a second in the log, for a run that is read back rather than watched (and for a report)
+    // The packet draws named, and whatever the total has left: the passes and the batched paths, which is where a draw count worth
+    // cutting would show up
+    const u32 packets = g_frameStats.submits + g_frameStats.skin + g_frameStats.screen + g_frameStats.draw2d;
+    const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
+    std::fprintf(stderr,
+                 "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u passes %u) packets %u repeats %u blended %u submits %u "
+                 "views %u tris %d textures %d programs %d\n",
+                 g_frameCounter, g_frameStats.fps, g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs,
+                 g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
+                 g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, stats->numViews,
+                 stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms);
+
+    g_frameStats.frames = 0;
+    g_frameStats.steps = step;
+    g_frameStats.since = now;
+
+    if (g_frameStats.shown)
+    {
+        bgfx::dbgTextClear();
+        bgfx::dbgTextPrintf(1, 0, 0x0f, "%.1f fps  %.0f steps/s  cpu %.2f ms  gpu %.2f ms  %u draws", g_frameStats.fps,
+                            g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs, g_frameStats.draws);
+    }
+}
 }
 
 void Platform::Graphics::WaitVSync()
@@ -802,14 +911,17 @@ void Platform::Graphics::WaitVSync()
     }
 
     const long long step = NanosecondsPerSecond / pictureRate;
-    static std::chrono::steady_clock::time_point next;
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    if (next.time_since_epoch().count() == 0)
+    if (!g_presentScheduled || pictureRate != g_presentRate)
     {
-        next = now;
+        // The first present, or the first at a rate the row just changed to: the schedule starts from now
+        g_presentScheduled = true;
+        g_presentRate = pictureRate;
+        g_nextPresent = now;
     }
 
-    next += std::chrono::nanoseconds(step);
+    g_nextPresent += std::chrono::nanoseconds(step);
+    std::chrono::steady_clock::time_point& next = g_nextPresent;
     if (next > now)
     {
         // SDL's precise wait: at 60 Hz or above a plain sleep wakes late by a millisecond or more, and that lateness is
@@ -969,32 +1081,26 @@ f32 ScrollWaved(f32* phase, f32 speed, f32 seconds, bool cosine)
 }
 }
 
-// A material's first shader's scroll and animation for this frame's seconds, exactly as the retail
-// AnimateMaterials -> UpdateShader path does it (ps2/renderer/shadertypes.cpp's UpdateShader): the two scrolls by
-// their modes, then the shader's animation moved on by the seconds, its UV offset the animated scrolls' offset and
-// its colour the shader's own when the settings ask for it
-void StepMaterialScroll(Platform::Graphics::HostMaterial* material, f32 seconds)
+// One shader's scroll moved on by the frame's seconds, exactly as the retail shadertypes.cpp's UpdateShader does it: the
+// two scrolls by their modes, then the animation's own UV offset for the animated modes. The shader's settings, phases,
+// speeds and offsets are its own -- every shader of a material scrolls independently -- so they are passed in
+void StepShaderScroll(const u8* settings, f32* phases, f32* speeds, f32* scroll, const ShaderAnimation* animation,
+                      f32 seconds)
 {
-    if (material == nullptr || (material->flags & Platform::Graphics::HostMaterialSettings) == 0)
-    {
-        return;
-    }
-
-    const u8* settings = material->shaderSettings;
     const u32 uScroll = settings[Platform::Graphics::HostShaderSettingUScroll];
     const u32 vScroll = settings[Platform::Graphics::HostShaderSettingVScroll];
     switch (uScroll)
     {
     case HostScrollWrapped:
-        material->scroll[0] = ScrollWrapped(&material->scrollPhases[0], material->scrollSpeeds[0], seconds);
+        scroll[0] = ScrollWrapped(&phases[0], speeds[0], seconds);
         break;
     case HostScrollSine:
-        material->scroll[0] = ScrollWaved(&material->scrollPhases[0], material->scrollSpeeds[0], seconds, false);
+        scroll[0] = ScrollWaved(&phases[0], speeds[0], seconds, false);
         break;
     case HostScrollCosine:
         // Retail's own bug, kept: the cosine mode advances the U phase and writes V (shadertypes.cpp's UpdateShader
         // has `shader->scroll[1] = Waved(&shader->scrollPhases[0], ...)`), so a material using it looks the same
-        material->scroll[1] = ScrollWaved(&material->scrollPhases[0], material->scrollSpeeds[0], seconds, true);
+        scroll[1] = ScrollWaved(&phases[0], speeds[0], seconds, true);
         break;
     default:
         break;
@@ -1003,70 +1109,99 @@ void StepMaterialScroll(Platform::Graphics::HostMaterial* material, f32 seconds)
     switch (vScroll)
     {
     case HostScrollWrapped:
-        material->scroll[1] = ScrollWrapped(&material->scrollPhases[1], material->scrollSpeeds[1], seconds);
+        scroll[1] = ScrollWrapped(&phases[1], speeds[1], seconds);
         break;
     case HostScrollSine:
-        material->scroll[1] = ScrollWaved(&material->scrollPhases[1], material->scrollSpeeds[1], seconds, false);
+        scroll[1] = ScrollWaved(&phases[1], speeds[1], seconds, false);
         break;
     case HostScrollCosine:
-        material->scroll[1] = ScrollWaved(&material->scrollPhases[1], material->scrollSpeeds[1], seconds, true);
+        scroll[1] = ScrollWaved(&phases[1], speeds[1], seconds, true);
         break;
     default:
         break;
     }
 
-    HostMaterialAnimation* state = FindMaterialAnimation(material);
-    if (state == nullptr)
+    if (animation == nullptr)
     {
         return;
     }
 
-    // Every shader's animation moves on (the retail AnimateMaterial calls each shader's Update): shader 0's UV offset
-    // and colour are the ones the draws read (the host draws a material with its first shader), the rest are advanced
-    // so their loops and restarts stay in step with retail
-    for (u32 shader = 0; shader < HostMaterialShaderSlots; shader++)
+    if (uScroll == HostScrollAnimated)
     {
-        ShaderAnimation* animation = state->animations[shader];
-        if (animation == nullptr)
+        scroll[0] = animation->uvOffset.x;
+    }
+
+    if (vScroll == HostScrollAnimated)
+    {
+        scroll[1] = animation->uvOffset.y;
+    }
+}
+
+// A material's every shader's scroll and animation for this frame's seconds (the retail AnimateMaterials -> AnimateMaterial
+// -> UpdateShader path): each shader has its own scroll block, its own modes and its own animation, so a material whose
+// second shader scrolls moves its second pass's UVs. Shader 0's colour is the one the draws tint with (renderer.h's
+// Shader::shaderColour), which is the first shader's own
+void StepMaterialScroll(Platform::Graphics::HostMaterial* material, f32 seconds)
+{
+    if (material == nullptr || (material->flags & Platform::Graphics::HostMaterialSettings) == 0)
+    {
+        return;
+    }
+
+    HostMaterialAnimation* state = FindMaterialAnimation(material);
+    HostMaterialLater* later = FindMaterialLater(material);
+    const u32 shaders = material->passCount != 0 ? material->passCount : 1;
+    for (u32 shader = 0; shader < shaders; shader++)
+    {
+        ShaderAnimation* animation =
+            state != nullptr && shader < HostMaterialShaderSlots ? state->animations[shader] : nullptr;
+        // The animation moves on before its UV offset is read, as the retail UpdateShader reads it after advancing
+        if (animation != nullptr)
         {
-            continue;
+            AdvanceShaderAnimation(animation, seconds);
         }
 
-        AdvanceShaderAnimation(animation, seconds);
+        const u8* settings = material->shaderSettings;
+        f32* phases = material->scrollPhases;
+        f32* speeds = material->scrollSpeeds;
+        f32* scroll = material->scroll;
         if (shader != 0)
         {
+            if (later == nullptr || shader - 1 >= Platform::Graphics::HostMaterialPasses - 1)
+            {
+                continue;
+            }
+
+            settings = later->settings[shader - 1];
+            phases = later->scroll[shader - 1].phases;
+            speeds = later->scroll[shader - 1].speeds;
+            scroll = later->scroll[shader - 1].scroll;
+        }
+
+        StepShaderScroll(settings, phases, speeds, scroll, animation, seconds);
+
+        // The animated colour is the first shader's (renderer.h's Shader::shaderColour, which the type-0x1F draw tints with)
+        if (shader != 0 || animation == nullptr || settings[Platform::Graphics::HostShaderSettingAnimatedColour] == 0)
+        {
             continue;
         }
 
-        if (uScroll == HostScrollAnimated)
+        // shadertypes.cpp's UpdateShader's ColourScale and AlphaScale: the colour's channels and its alpha in the scales
+        // the game's colour byte is made from
+        constexpr f32 HostAnimationColourScale = 256.0f;
+        constexpr f32 HostAnimationAlphaScale = 127.0f;
+        state->shaderColour[0] = animation->colour.x * HostAnimationColourScale;
+        state->shaderColour[1] = animation->colour.y * HostAnimationColourScale;
+        state->shaderColour[2] = animation->colour.z * HostAnimationColourScale;
+        state->shaderColour[3] = animation->colour.w * HostAnimationAlphaScale;
+        // The colour the draw tints with (renderer.h's Shader::colour): the animation's own, over the file's static one.
+        // Three materials whose every other byte is equal -- one model drawn in several colours -- differ only here, so
+        // leaving it unused drew them all in the file's default colour
+        for (u32 channel = 0; channel < 3; channel++)
         {
-            material->scroll[0] = animation->uvOffset.x;
-        }
-
-        if (vScroll == HostScrollAnimated)
-        {
-            material->scroll[1] = animation->uvOffset.y;
-        }
-
-        if (settings[Platform::Graphics::HostShaderSettingAnimatedColour] != 0)
-        {
-            // renderer.h's Shader::shaderColour (shadertypes.cpp's UpdateShader's ColourScale and AlphaScale): the
-            // colour's channels and its alpha in the scales the game's colour byte is made from
-            constexpr f32 HostAnimationColourScale = 256.0f;
-            constexpr f32 HostAnimationAlphaScale = 127.0f;
-            state->shaderColour[0] = animation->colour.x * HostAnimationColourScale;
-            state->shaderColour[1] = animation->colour.y * HostAnimationColourScale;
-            state->shaderColour[2] = animation->colour.z * HostAnimationColourScale;
-            state->shaderColour[3] = animation->colour.w * HostAnimationAlphaScale;
-            // The colour the draw tints with (renderer.h's Shader::colour): the animation's own, over the file's static
-            // one. Three materials whose every other byte is equal -- one model drawn in several colours -- differ only
-            // here, so leaving it unused drew them all in the file's default colour
-            for (u32 channel = 0; channel < 3; channel++)
-            {
-                f32 value = state->shaderColour[channel];
-                value = value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value);
-                material->colour[channel] = static_cast<u8>(value + 0.5f);
-            }
+            f32 value = state->shaderColour[channel];
+            value = value < 0.0f ? 0.0f : (value > 255.0f ? 255.0f : value);
+            material->colour[channel] = static_cast<u8>(value + 0.5f);
         }
     }
 }
@@ -1210,21 +1345,29 @@ void Platform::Graphics::FinishFrame()
     // The window's drawable against the swap chain's, once a frame: a window the player resized (or a window manager's mode
     // change) is followed before the frame is composited into it
     DisplaySync();
+    // The overlay's quads held for batching are drawn out now: this is the frame they were queued in, and the next frame's
+    // StartFrame would draw them into its own view (a frame late: a fade's first frame, or the instant black a movie or a
+    // load shows, would leave the scene under it showing for that frame)
+    // The rigid draws still held are the frame's last: submitted before the present, where the next frame's first draw would
+    // otherwise be their neighbour
+    Platform::Graphics::HostFlushRigidInstances();
+    HostFlushDraw2D();
     // Present the frame: every bucket view submitted since StartFrame renders now
-    static u32 frame = 0;
-    g_frameCounter = frame;
+    g_frameCounter++;
 
     // The whole frame drew into the offscreen scene target (the PS2 draws everything into one frame buffer): copy
     // it over the backbuffer now, so the window shows the finished picture
     HostCompositeScene();
 
-    if ((frame++ % 300) == 0)
-    {
-        const bgfx::Stats* stats = bgfx::getStats();
-        std::fprintf(stderr, "host frame %u: views %u draws %d tris %d textures %d programs %d\n", frame - 1,
-                     stats->numViews, stats->numDraw, stats->numPrims[bgfx::Topology::TriList],
-                     stats->numTextures, stats->numPrograms);
-    }
+    // The port's own HUD and its log line, before the present it belongs to: bgfx draws the debug text with the frame it was
+    // written for, over the backbuffer the composite just filled. TWINSANITY_FPS=0 keeps it off the picture (the log line stays)
+    static const bool shown = [] {
+        const char* value = std::getenv("TWINSANITY_FPS");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    g_frameStats.shown = shown;
+    ShowFrameStats(bgfx::getStats());
+
     bgfx::frame();
     // The uploads of packets whose model died: the frame that could still bind them is submitted and run, so their
     // bgfx buffers can be let go now (never immediately: that was why the cache kept every entry for the session)
@@ -1233,7 +1376,8 @@ void Platform::Graphics::FinishFrame()
 
 u32 Platform::Graphics::HostFrameCounter()
 {
-    return g_frameCounter;
+    // The frame last presented, not the one the next present takes
+    return g_frameCounter != 0 ? g_frameCounter - 1 : 0;
 }
 
 void Platform::Graphics::StartFrame(const FrameStart& frame)
@@ -1288,6 +1432,124 @@ void HostSyncViewMatrix()
     {
         Platform::Graphics::HostSetViewMatrix(&g_RenderView->toClip);
     }
+}
+
+// The write mask a sample that FAILS the alpha test gets (the GS's TEST.AFAIL): 0 KEEP writes nothing (the shader
+// has dropped it already), 1 FB_ONLY writes the colour and leaves the depth, 2 ZB_ONLY writes the depth alone and
+// 3 RGB_ONLY writes the colour without its alpha. Returns false for KEEP, which needs no second pass
+static bool FailedSampleState(const Platform::Graphics::HostMaterialState& passed, u64* outState,
+                             f32* outReference)
+{
+    const u64 colour = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
+    u64 write = 0;
+    const u32 action = static_cast<u32>(passed.alphaReference[3] + 0.5f);
+    switch (action)
+    {
+    case 1: write = colour; break;                                       // FB_ONLY: no depth
+    case 2: write = BGFX_STATE_WRITE_Z; break;                           // ZB_ONLY: depth alone
+    case 3: write = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_Z; break;    // RGB_ONLY: no alpha
+    default: return false;
+    }
+    *outState = (passed.state & ~(colour | BGFX_STATE_WRITE_Z)) | write;
+    *outReference = passed.alphaReference[0];
+    return true;
+}
+
+// A material's later shader as the state its pass draws with: the same mapping as the first shader's, over that
+// shader's own 30 setting bytes (its blend enable and preset, its depth test and write, and its alpha test with its
+// AFAIL), which ReadMaterial keeps beside the material (host_graphics.h's passCount)
+static Platform::Graphics::HostMaterialState LaterPassStateOf(const Platform::Graphics::HostMaterial* material,
+                                                              u32 pass, u64 baseState)
+{
+    Platform::Graphics::HostMaterial copy = *material;
+    MaterialLaterSettingsOf(material, pass, copy.shaderSettings);
+    return HostMaterialStateOf(&copy, baseState, true);
+}
+
+// The program a pass submits with: the flat-shaded one when its shader cleared the GS's IIP bit, else nothing, which leaves
+// the draw's own program (the rigid or skin one) in place. The stale handle is built rather than written as
+// BGFX_INVALID_HANDLE, which is a braced initializer and so cannot stand in a conditional expression
+static bgfx::ProgramHandle FlatProgramOr(bool flat, bgfx::ProgramHandle flatProgram)
+{
+    return flat ? flatProgram : bgfx::ProgramHandle{bgfx::kInvalidHandle};
+}
+
+// The scroll a pass's draw takes: that pass's own shader's offset, which is the material's own for the first shader (every
+// later shader's block lives in the HostMaterialLater table, which only this file keeps)
+static void SetPassScroll(const Platform::Graphics::HostMaterial* material, u32 shader)
+{
+    f32 scroll[2] = {0.0f, 0.0f};
+    if (material != nullptr)
+    {
+        scroll[0] = material->scroll[0];
+        scroll[1] = material->scroll[1];
+        Platform::Graphics::HostMaterialShaderScroll(material, shader, scroll);
+    }
+
+    Platform::Graphics::HostSetDrawScroll(material, scroll);
+}
+
+// A submodel's draw as the passes it makes: each of its material's shaders in turn (RenderMaterial's WriteShaders writes
+// every one of them over the same geometry, materials.cpp:94), and after each shader that asks for it the pass over the
+// samples its alpha test rejected. Every model path draws that list in that order, so a rigid model, a skin, a blend skin
+// and the scenery cannot disagree about what a material means
+struct MaterialDrawPasses
+{
+    // Four shaders is the retail reader's most (renderer.h's MaxMaterialShaders), and each of them may add one pass over
+    // its rejected samples
+    Platform::Graphics::HostMaterialState states[2 * Platform::Graphics::HostMaterialPasses];
+    // The shader each entry draws the material's texture of: 0 for the first shader's passes, 1..3 for a later one's,
+    // which samples its own image (LaterPassTexture)
+    u8 shaders[2 * Platform::Graphics::HostMaterialPasses];
+    u32 count;
+};
+
+MaterialDrawPasses MaterialDrawPassesOf(const Platform::Graphics::HostMaterial* material, u64 baseState)
+{
+    MaterialDrawPasses passes = {};
+    const u32 shaders = material != nullptr && material->passCount != 0 ? material->passCount : 1;
+    for (u32 shader = 0; shader < shaders; shader++)
+    {
+        const Platform::Graphics::HostMaterialState state =
+            shader == 0 ? HostMaterialStateOf(material, baseState, true) : LaterPassStateOf(material, shader - 1, baseState);
+        passes.states[passes.count] = state;
+        passes.shaders[passes.count] = static_cast<u8>(shader);
+        passes.count++;
+
+        // The samples the shader's alpha test rejected: the fragment shader drops them, which is the GS's KEEP, but the
+        // other three failure actions (FB_ONLY, ZB_ONLY, RGB_ONLY) write the sample with that mask. AFAIL is a field of
+        // the TEST register the shader itself sends, so every shader can ask for it, not just the first
+        u64 failedState = 0;
+        f32 failedReference = 0.0f;
+        if (state.alphaReference[0] != 1.0f && FailedSampleState(state, &failedState, &failedReference))
+        {
+            Platform::Graphics::HostMaterialState failed = state;
+            failed.state = failedState;
+            failed.alphaReference[2] = 1.0f;
+            failed.alphaReference[0] = failedReference;
+            passes.states[passes.count] = failed;
+            passes.shaders[passes.count] = static_cast<u8>(shader);
+            passes.count++;
+        }
+    }
+
+    return passes;
+}
+
+// A later shader's texture: the console uploads each later shader's own image before its packet (materials.cpp's
+// WriteShaders, TextureOf(shader)), so pass k samples shader k's picture. A material whose later shader has no image
+// samples the first shader's, which is what its packet left bound on the console
+bgfx::TextureHandle LaterPassTexture(const Platform::Graphics::HostMaterial* material, u32 pass,
+                                     bgfx::TextureHandle first)
+{
+    GameTexture* texture = MaterialPassTexture(material, pass);
+    if (texture == nullptr)
+    {
+        return first;
+    }
+
+    const bgfx::TextureHandle handle = Platform::Graphics::HostTextures().Find(texture);
+    return bgfx::isValid(handle) ? handle : first;
 }
 
 // The retail Billboard (src/platform/ps2/renderer/models.cpp): a model whose material makes it a billboard has its own
@@ -1353,6 +1615,50 @@ bool HostBillboardTurn(const Matrix4x4* worldInChunk, const Matrix4x4* chunkDraw
     return true;
 }
 
+}
+
+// The proof's way into the pass list and the later-shader data (host_graphics.h's note): a material built by hand, with the
+// settings and scrolls ReadMaterial would have kept beside it, so what it submits can be checked without a disc. The
+// pass list and the side table are a private namespace's, so these sit at file scope after them
+void Platform::Graphics::HostMaterialSetLaterShader(HostMaterial* material, u32 shader, const u8* settings,
+                                                   const f32* phases, const f32* speeds)
+{
+    if (material == nullptr || shader == 0 || shader >= Platform::Graphics::HostMaterialPasses || settings == nullptr)
+    {
+        return;
+    }
+
+    HostShaderScroll scroll = {};
+    if (phases != nullptr)
+    {
+        scroll.phases[0] = phases[0];
+        scroll.phases[1] = phases[1];
+    }
+    if (speeds != nullptr)
+    {
+        scroll.speeds[0] = speeds[0];
+        scroll.speeds[1] = speeds[1];
+    }
+
+    MaterialLaterStoreShader(material, shader - 1, settings, scroll);
+}
+
+u32 Platform::Graphics::HostMaterialDrawPasses(const HostMaterial* material, u64 baseState, HostMaterialState* states,
+                                               u8* shaders, u32 capacity)
+{
+    const MaterialDrawPasses passes = MaterialDrawPassesOf(material, baseState);
+    if (states == nullptr || shaders == nullptr || passes.count > capacity)
+    {
+        return 0;
+    }
+
+    for (u32 pass = 0; pass < passes.count; pass++)
+    {
+        states[pass] = passes.states[pass];
+        shaders[pass] = passes.shaders[pass];
+    }
+
+    return passes.count;
 }
 
 // The host material a submodel's material resource holds (the draws take their state and texture from it), nullptr
@@ -1423,13 +1729,28 @@ void Platform::Graphics::DrawPlacedModel(RigidModel* model, ChunkView* view, con
     for (u32 index = 0; index < subModels; index++)
     {
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
-        HostSetDrawScroll(subModelMaterial);
-        const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-                const bgfx::ViewId view = ViewOf(subModelMaterial);
+        const bgfx::ViewId view = ViewOf(subModelMaterial);
         HostSceneSetView(view);
-        HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, inChunk,
-                            nullptr, HostSubModelTexture(host->materials, index), view, state.state,
-                            state.alphaReference);
+        const bgfx::TextureHandle subModelTexture = HostSubModelTexture(host->materials, index);
+        // A material's every shader draws over its geometry (RenderMaterial's WriteShaders), and a shader whose alpha test
+        // drops a sample may write it in a second pass: the scenery is most of the frame's geometry, so a material that
+        // means more than its first shader has to draw it here too
+        const MaterialDrawPasses passes = MaterialDrawPassesOf(subModelMaterial, PassState);
+        for (u32 pass = 0; pass < passes.count; pass++)
+        {
+            const HostMaterialState& passState = passes.states[pass];
+            const u32 shader = passes.shaders[pass];
+            const bgfx::TextureHandle texture =
+                shader != 0 ? LaterPassTexture(subModelMaterial, shader, subModelTexture) : subModelTexture;
+            // The pass's own shader's scroll (each shader of a material has its own): a later pass that scrolls moves its
+            // UVs too
+            SetPassScroll(subModelMaterial, shader);
+            // The pass's own shading: a shader with the GS's IIP bit cleared draws flat (HostMaterialState::flat), which is
+            // the flat-qualified program and nothing else about the draw
+            HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, inChunk,
+                                nullptr, texture, view, passState.state, passState.alphaReference, UINT32_MAX,
+                                FlatProgramOr(passState.flat, HostDraw3DFlatProgram()));
+        }
     }
 }
 
@@ -1491,47 +1812,6 @@ void Platform::Graphics::SetFontPage(Material* material, u32 page)
     }
 }
 
-// The write mask a sample that FAILS the alpha test gets (the GS's TEST.AFAIL): 0 KEEP writes nothing (the shader
-// has dropped it already), 1 FB_ONLY writes the colour and leaves the depth, 2 ZB_ONLY writes the depth alone and
-// 3 RGB_ONLY writes the colour without its alpha. Returns false for KEEP, which needs no second pass
-static bool FailedSampleState(const Platform::Graphics::HostMaterialState& passed, u64* outState,
-                             f32* outReference)
-{
-    const u64 colour = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
-    u64 write = 0;
-    const u32 action = static_cast<u32>(passed.alphaReference[3] + 0.5f);
-    switch (action)
-    {
-    case 1: write = colour; break;                                       // FB_ONLY: no depth
-    case 2: write = BGFX_STATE_WRITE_Z; break;                           // ZB_ONLY: depth alone
-    case 3: write = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_Z; break;    // RGB_ONLY: no alpha
-    default: return false;
-    }
-    *outState = (passed.state & ~(colour | BGFX_STATE_WRITE_Z)) | write;
-    *outReference = passed.alphaReference[0];
-    return true;
-}
-
-// A material's later shader as the state its pass draws with: the same mapping as the first shader's, over that
-// pass's own blend enable, preset, depth test and the two flags the mapping reads (host_graphics.h's passCount)
-static Platform::Graphics::HostMaterialState LaterPassStateOf(const Platform::Graphics::HostMaterial* material,
-                                                              u32 pass, u64 baseState)
-{
-    Platform::Graphics::HostMaterial copy = *material;
-    std::memset(copy.shaderSettings, 0, Platform::Graphics::HostShaderSettings);
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingBlends] = material->passBlends[pass];
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingPreset] = material->passPreset[pass];
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingDepthTest] = material->passDepth[pass];
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingNoDepthWrites] = (material->passFlags[pass] & 1) != 0 ? 1 : 0;
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaTest] = (material->passFlags[pass] & 2) != 0 ? 1 : 0;
-    u8 method = 0;
-    u8 reference = 0;
-    MaterialPassAlphaOf(material, pass, &method, &reference);
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaMethod] = method;
-    copy.shaderSettings[Platform::Graphics::HostShaderSettingAlphaReference] = reference;
-    return HostMaterialStateOf(&copy, baseState, true);
-}
-
 void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matrix, const ModelLights& lights, u32 mode)
 {
     // An OGI's rigid models on their joints: every submodel through the
@@ -1559,54 +1839,28 @@ void Platform::Graphics::DrawRigidModel(RigidModel* model, const Matrix4x4* matr
     for (u32 index = 0; index < subModels; index++)
     {
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
-        HostSetDrawScroll(subModelMaterial);
-        const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
+        const MaterialDrawPasses passes = MaterialDrawPassesOf(subModelMaterial, PassState);
         // The shadow-caster mark (draws_host.cpp's MarkedForCaster): an OGI's rigid parts are the character too, so
         // their draws leave the frame's alpha at bit 7 = 0 and the shadow volumes skip them. It keeps an opaque part's
         // RGB factors intact -- forcing only the alpha half left them at enum 0, which bgfx/drivers draw black
         const bgfx::ViewId view = ViewOf(subModelMaterial);
         HostSceneSetView(view);
         const bgfx::TextureHandle subModelTexture = HostSubModelTexture(host->materials, index);
-        HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, matrix,
-                            &lights, subModelTexture, view,
-                            Platform::Graphics::MarkedForCaster(state.state), state.alphaReference);
-        // The material's later shaders: the console draws each of them over the same geometry, each with its OWN
-        // texture (materials.cpp's WriteShaders uploads TextureOf(shader) before that shader's packet, so pass k samples
-        // shader k). A two-shader material's second pass is typically additive and leaves the depth alone, so dropping it
-        // lost its contribution to the surface
-        for (u32 pass = 0; subModelMaterial != nullptr && pass + 1 < subModelMaterial->passCount; pass++)
+        // The material's shaders in turn (each over the same geometry, a later one with its OWN texture: a two-shader
+        // material's second pass is typically additive and leaves the depth alone), each followed by the pass over the
+        // samples its alpha test rejected when its failure action writes them
+        for (u32 pass = 0; pass < passes.count; pass++)
         {
-            const HostMaterialState passState = LaterPassStateOf(subModelMaterial, pass, PassState);
-            GameTexture* passTexture = MaterialPassTexture(subModelMaterial, pass + 1);
-            bgfx::TextureHandle passHandle = BGFX_INVALID_HANDLE;
-            if (passTexture != nullptr)
-            {
-                passHandle = Platform::Graphics::HostTextures().Find(passTexture);
-            }
-
-            if (!bgfx::isValid(passHandle))
-            {
-                passHandle = subModelTexture;
-            }
-
+            const HostMaterialState& passState = passes.states[pass];
+            const u32 shader = passes.shaders[pass];
+            const bgfx::TextureHandle texture =
+                shader != 0 ? LaterPassTexture(subModelMaterial, shader, subModelTexture) : subModelTexture;
+            // The pass's own shader's scroll (each shader of a material has its own)
+            SetPassScroll(subModelMaterial, shader);
             HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, matrix,
-                                &lights, passHandle, view,
-                                Platform::Graphics::MarkedForCaster(passState.state), passState.alphaReference);
-        }
-        // The alpha test's failure action: the shader drops a failing sample, which is the GS's KEEP. The other three
-        // (FB_ONLY, ZB_ONLY, RGB_ONLY) write something, so the samples the test rejected are drawn by a second pass
-        // with the test turned round and that action's write mask
-        u64 failedState = 0;
-        f32 failedReference = 0.0f;
-        if (state.alphaReference[0] != 1.0f && FailedSampleState(state, &failedState, &failedReference))
-        {
-            HostMaterialState failed = state;
-            failed.state = failedState;
-            failed.alphaReference[2] = 1.0f;
-            failed.alphaReference[0] = failedReference;
-            HostDrawRigidPacket(data->packets[index], data->sizes[index], data->vertexCounts[index], &mvp, matrix,
-                                &lights, subModelTexture, view,
-                                Platform::Graphics::MarkedForCaster(failed.state), failed.alphaReference);
+                                &lights, texture, view,
+                                Platform::Graphics::MarkedForCaster(passState.state), passState.alphaReference, UINT32_MAX,
+                                FlatProgramOr(passState.flat, HostDraw3DFlatProgram()));
         }
     }
 }
@@ -1630,35 +1884,24 @@ void Platform::Graphics::DrawSkin(Skin* skin, const Matrix4x4* joints, u32 joint
     for (u32 index = 0; index < host->count; index++)
     {
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, index);
-        HostSetDrawScroll(subModelMaterial);
-        const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
-                const bgfx::ViewId view = ViewOf(subModelMaterial);
+        const bgfx::ViewId view = ViewOf(subModelMaterial);
         HostSceneSetView(view);
         const bgfx::TextureHandle subModelTexture = HostSubModelTexture(host->materials, index);
-        HostDrawSkinPacket(host->packets[index], host->sizes[index], host->vertexCounts[index], 0, &mvp, matrix,
-                           &lights, joints, jointCount, nullptr, 0, subModelTexture,
-                           view, state.state, state.alphaReference);
-        // The material's later shaders too, as the rigid path does: the console draws each of them over the same
-        // geometry with the first shader's texture
-        for (u32 pass = 0; subModelMaterial != nullptr && pass + 1 < subModelMaterial->passCount; pass++)
+        // The material's first shader, its later shaders (each with its own texture, as the rigid path's: a skin's
+        // material goes through RenderMaterial, which uploads every shader's own image before its packet), each followed by
+        // the pass over the samples its alpha test rejected
+        const MaterialDrawPasses passes = MaterialDrawPassesOf(subModelMaterial, PassState);
+        for (u32 pass = 0; pass < passes.count; pass++)
         {
-            const HostMaterialState passState = LaterPassStateOf(subModelMaterial, pass, PassState);
+            const HostMaterialState& passState = passes.states[pass];
+            const u32 shader = passes.shaders[pass];
+            const bgfx::TextureHandle texture =
+                shader != 0 ? LaterPassTexture(subModelMaterial, shader, subModelTexture) : subModelTexture;
+            SetPassScroll(subModelMaterial, shader);
             HostDrawSkinPacket(host->packets[index], host->sizes[index], host->vertexCounts[index], 0, &mvp, matrix,
-                               &lights, joints, jointCount, nullptr, 0, subModelTexture,
-                               view, passState.state, passState.alphaReference);
-        }
-        // The alpha test's failure action, as the rigid path draws it
-        u64 failedState = 0;
-        f32 failedReference = 0.0f;
-        if (state.alphaReference[0] != 1.0f && FailedSampleState(state, &failedState, &failedReference))
-        {
-            HostMaterialState failed = state;
-            failed.state = failedState;
-            failed.alphaReference[2] = 1.0f;
-            failed.alphaReference[0] = failedReference;
-            HostDrawSkinPacket(host->packets[index], host->sizes[index], host->vertexCounts[index], 0, &mvp, matrix,
-                               &lights, joints, jointCount, nullptr, 0, subModelTexture,
-                               view, failed.state, failed.alphaReference);
+                               &lights, joints, jointCount, nullptr, 0, texture, view, passState.state,
+                               passState.alphaReference, nullptr, nullptr,
+                               FlatProgramOr(passState.flat, HostDraw3DSkinFlatProgram()));
         }
     }
 }
@@ -1691,22 +1934,30 @@ void Platform::Graphics::DrawBlendSkin(BlendSkin* skin, const Matrix4x4* joints,
 
         // The submodel's material: its parts all draw with it (the PS2's blend skin shares one material a submodel)
         const HostMaterial* subModelMaterial = SubModelMaterial(host->materials, sub);
-        HostSetDrawScroll(subModelMaterial);
-        const HostMaterialState state = HostMaterialStateOf(subModelMaterial, PassState, true);
+        // A blend skin's material set-up (materials.cpp's RenderBlendSkinMaterial) uploads the FIRST shader's texture for
+        // every shader -- its own special case, which RenderMaterial does not share -- and writes a packet for each of
+        // them, so every pass over a part samples that one image
         const bgfx::TextureHandle texture = HostSubModelTexture(host->materials, sub);
-        for (u32 part = 0; part < subModel->count; part++)
+        const MaterialDrawPasses passes = MaterialDrawPassesOf(subModelMaterial, PassState);
+        const bgfx::ViewId view = ViewOf(subModelMaterial);
+        HostSceneSetView(view);
+        for (u32 pass = 0; pass < passes.count; pass++)
         {
-            HostBlendPart* blendPart = subModel->parts[part];
-            if (blendPart == nullptr)
+            const HostMaterialState& passState = passes.states[pass];
+            SetPassScroll(subModelMaterial, passes.shaders[pass]);
+            for (u32 part = 0; part < subModel->count; part++)
             {
-                continue;
-            }
+                HostBlendPart* blendPart = subModel->parts[part];
+                if (blendPart == nullptr)
+                {
+                    continue;
+                }
 
-                        const bgfx::ViewId view = ViewOf(subModelMaterial);
-            HostSceneSetView(view);
-            HostDrawSkinPacket(blendPart->packet, blendPart->packetSize, 0, host->shapeCount, &mvp, matrix, &lights,
-                               joints, jointCount, weights, blends, texture, view, state.state,
-                               state.alphaReference, blendPart, shapes);
+                HostDrawSkinPacket(blendPart->packet, blendPart->packetSize, 0, host->shapeCount, &mvp, matrix, &lights,
+                                   joints, jointCount, weights, blends, texture, view, passState.state,
+                                   passState.alphaReference, blendPart, shapes,
+                                   FlatProgramOr(passState.flat, HostDraw3DSkinFlatProgram()));
+            }
         }
     }
 }
@@ -1822,7 +2073,8 @@ void Platform::Graphics::DrawScreenModel(ScreenModel* model, const Matrix4x4* to
     // The GlobalOpaque view's own set-up: nothing else draws in it, so it is given the scene's frame buffer and the
     // frame's size here (no clear: the opaque pass cleared the frame the marks land on)
     HostSceneSetView(HostGlobalOpaqueView);
-    HostDrawScreenModel(host, toScreen, HostGlobalOpaqueView, state.state, state.alphaReference);
+    HostDrawScreenModel(host, toScreen, HostGlobalOpaqueView, state.state, state.alphaReference,
+                        FlatProgramOr(state.flat, HostDraw3DFlatProgram()));
 }
 
 Material* Platform::Graphics::MakeSkidMaterial(bool subtracting)
@@ -2045,6 +2297,39 @@ void Platform::Graphics::ReadTexture(GameTexture* texture, Stream* stream)
     HostTextures().GetOrUpload(key, &header, transfer.data(), transferSize);
 }
 
+bool Platform::Graphics::HostMaterialShaderScroll(const HostMaterial* material, u32 shader, f32* uv)
+{
+    // The offset the shader's own scroll modes and animation have moved it to, which its draws add to every UV. Shader
+    // 0's lives in the material itself (the game's fixed 0x70 bytes hold it); a later shader's is kept beside it
+    if (material == nullptr || uv == nullptr)
+    {
+        return false;
+    }
+
+    if (shader == 0)
+    {
+        uv[0] = material->scroll[0];
+        uv[1] = material->scroll[1];
+        return true;
+    }
+
+    // A shader the material does not have: nothing to report (a side entry can outlive the material its address belonged to)
+    if (material->passCount == 0 || shader >= material->passCount)
+    {
+        return false;
+    }
+
+    HostMaterialLater* later = FindMaterialLater(material);
+    if (later == nullptr || shader - 1 >= Platform::Graphics::HostMaterialPasses - 1)
+    {
+        return false;
+    }
+
+    uv[0] = later->scroll[shader - 1].scroll[0];
+    uv[1] = later->scroll[shader - 1].scroll[1];
+    return true;
+}
+
 MaterialResource* Platform::Graphics::NewMaterial(u32 id)
 {
     return static_cast<MaterialResource*>(MakeResource(id, MaterialResourceSize));
@@ -2061,11 +2346,12 @@ void Platform::Graphics::DeleteMaterial(MaterialResource* material)
     GameTexture* texture = nullptr;
     if (host != nullptr)
     {
-        // The shader animation goes with it (its frames and its disk node, DestroyShaderAnimation), and so do the later
-        // shaders' textures
+        // The shader animation goes with it (its frames and its disk node, DestroyShaderAnimation). What its later shaders
+        // keep by side (their settings and their images' references) does not go yet: a draw that took this material before
+        // the chunk wipe still draws through it for a couple of frames, on the console as here, and its later passes need
+        // both. The quarantine's release is where they go (ReleaseOldestFreedMaterial -> RemoveMaterialLater)
         texture = host->gameTexture;
         RemoveMaterialAnimation(host);
-        RemoveMaterialPassTextures(host);
     }
 
     // Kept rather than freed: a draw that took this material before the chunk wipe still draws through it, as it does on
@@ -2112,29 +2398,25 @@ void Platform::Graphics::ReadMaterial(MaterialResource* material, Stream* stream
     s32 shaderType = 0;
     ShaderAnimation* animations[HostMaterialShaderSlots] = {nullptr, nullptr, nullptr, nullptr};
     u8 laterSettings[HostMaterialPasses - 1][HostShaderSettings] = {};
+    HostShaderScroll laterScrolls[HostMaterialPasses - 1] = {};
     u32 textureId = ReadMaterialShaders(stream, &textured, hostMaterial->shaderSettings, &scroll, shaderTextureIds,
                                         &shaderCount, &makesBillboard, &shaderType, animations, HostMaterialShaderSlots,
-                                        &hostMaterial->bucket, laterSettings, hostMaterial->colour);
-    // The console draws a material's every shader, each pass sampling the first one's texture; keep what tells the
-    // later passes apart so the draws can submit them (host_graphics.h's HostMaterial::passCount)
+                                        &hostMaterial->bucket, laterSettings, hostMaterial->colour, laterScrolls);
+    // The console draws a material's every shader: a model's material (RenderMaterial -> WriteShaders) uploads each
+    // shader's own texture before its packet, a blend skin's (RenderBlendSkinMaterial) the first shader's for all of
+    // them. Keep what tells the later passes apart so the draws can submit them (host_graphics.h's
+    // HostMaterial::passCount)
     {
         const u32 passes = shaderCount < HostMaterialPasses ? shaderCount : HostMaterialPasses;
         hostMaterial->passCount = static_cast<u8>(passes > 1 ? passes : 0);
         for (u32 pass = 1; pass < passes; pass++)
         {
-            const u8* passSettings = laterSettings[pass - 1];
-            hostMaterial->passBlends[pass - 1] = passSettings[Platform::Graphics::HostShaderSettingBlends];
-            hostMaterial->passPreset[pass - 1] = passSettings[Platform::Graphics::HostShaderSettingPreset];
-            hostMaterial->passDepth[pass - 1] = passSettings[Platform::Graphics::HostShaderSettingDepthTest];
-            hostMaterial->passFlags[pass - 1] =
-                static_cast<u8>((passSettings[Platform::Graphics::HostShaderSettingNoDepthWrites] != 0 ? 1 : 0) |
-                                (passSettings[Platform::Graphics::HostShaderSettingAlphaTest] != 0 ? 2 : 0));
-            // Each later shader's own alpha test: the GS writes ATST and AREF from the shader being drawn, so a
-            // pass's test uses its own method and reference rather than the cleared block's NEVER at zero. The game's
-            // material storage has no room for them, so they sit beside it (MaterialPassAlphaOf)
-            MaterialPassAlphaStore(hostMaterial, pass - 1,
-                                   passSettings[Platform::Graphics::HostShaderSettingAlphaMethod],
-                                   passSettings[Platform::Graphics::HostShaderSettingAlphaReference]);
+            // Each later shader's own 30 setting bytes and scroll block: the GS's registers are the shader's
+            // (shadersettings.cpp's PixelTest writes TEST's ATST, AREF and AFAIL, and DepthBuffer ZTST and its write, from
+            // the shader being drawn), so pass k's blend, depth test, alpha test and destination test are its own and not
+            // the first shader's, and so is the scroll its modes advance. The game's material storage is a fixed 0x70
+            // bytes with no room for any of it (host_graphics.h's HostMaterial::passCount)
+            MaterialLaterStoreShader(hostMaterial, pass - 1, laterSettings[pass - 1], laterScrolls[pass - 1]);
         }
     }
     std::memcpy(hostMaterial->scrollPhases, scroll.phases, sizeof(scroll.phases));

@@ -467,6 +467,9 @@ HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseStat
         passed.alphaReference[2] = 0.0f;
         passed.alphaReference[3] = 0.0f;
         passed.alphaReference[4] = 0.0f;
+        // A material the host made itself has no IIP bit to read: it draws the way every shader ShaderConstruct makes
+        // does, interpolated
+        passed.flat = false;
         return passed;
     }
 
@@ -539,6 +542,9 @@ HostMaterialState HostMaterialStateOf(const HostMaterial* material, u64 baseStat
     result.alphaReference[3] = static_cast<f32>(settings[5]);
     // A "brighten" material: the shader has to write its alpha as its colour for the state's Cd·As + Cd blend
     result.alphaReference[4] = blends != 0 && preset == HostPresetBrighten ? 1.0f : 0.0f;
+    // The GS's IIP: cleared, every interpolated field takes the provoking vertex's value for the whole triangle
+    // (shadersettings.cpp's mode.iip = settings.gouraud), and the draws take the flat-qualified programs for it
+    result.flat = settings[HostShaderSettingGouraud] == 0;
     return result;
 }
 

@@ -241,7 +241,7 @@ void ScreenFxDrawFilter()
     {
         return;
     }
-    if (!bgfx::getAvailTransientVertexBuffer(3, ScreenFxLayout()))
+    if (bgfx::getAvailTransientVertexBuffer(3, ScreenFxLayout()) != 3)
     {
         return;
     }
@@ -323,7 +323,7 @@ void DrawSceneFog()
     {
         return;
     }
-    if (!bgfx::getAvailTransientVertexBuffer(3, ScreenFxLayout()))
+    if (bgfx::getAvailTransientVertexBuffer(3, ScreenFxLayout()) != 3)
     {
         return;
     }

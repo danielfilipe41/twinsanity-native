@@ -1842,6 +1842,9 @@ u32 GameController::LoadingLevel(TimeClock*)
         {
             ChunkLoadingManager* loading = G_ChunkLoadingManager_;
             UnloadEverything(loading, true, kept);
+            // The level just unloaded leaves its sounds' entries behind in the game's table, and a level's banks are read again on
+            // the way in: what of them nothing references goes now, with the samples it keeps in the processor's memory
+            ReleaseUnreferencedSounds();
             QueueChunk(loading, &progress.startChunk, 0);
         }
 
