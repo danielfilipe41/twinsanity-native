@@ -1453,6 +1453,86 @@ void CheckCompactionUnderVoice()
           room);
 }
 
+// A bank read again while a voice is playing it: a level re-entered while a scene is raced through reads its banks again, and the module
+// lets the old block go. The voice reading that block has to be let go with it -- left keyed on, it reads whatever the memory takes
+// next, which is heard as a burst of noise once the skip's silence lifts
+void CheckReloadUnderVoice()
+{
+    Phase("reload");
+
+    SoundModule& module = Module();
+    constexpr s32 Voice = 21;
+    constexpr s32 BankSound = 0x4200;
+
+    // Long enough that neither run's sound can reach the end of its own data before the release has run its course
+    std::vector<u8> first = MakeBank(0, 0, 0, 0x3, 4000);
+    std::vector<u8> second = MakeBank(0, 0, 0, 0x5, 4000);
+
+    // The frames from the key-off to the voice being free, for a play that is let go of -- the number a reload has to come to as well
+    s32 releasedAfter = 0;
+    s32 reloadedAfter = 0;
+
+    auto run = [&](bool reload, s32& frames)
+    {
+        module.Reset();
+        for (s32 group = 0; group < GroupCount; group++)
+        {
+            module.SetGroupVolume((group + 1) << GroupShift, FullGroupVolume, FullGroupVolume);
+        }
+
+        module.LoadSoundBank(BankSound, first.data(), static_cast<u32>(first.size()));
+        module.PlaySound(BankSound, Voice | (1u << GroupShift), 0x3FFF, 0x3FFF, 0x1000, 0, 0, 1);
+
+        s16 block[2] = {};
+        for (s32 frame = 0; frame < 200; frame++)
+        {
+            module.Mix(block, 1);
+        }
+
+        if (reload)
+        {
+            // The same bank read again, with other samples: the block the voice is reading is let go of here
+            module.LoadSoundBank(BankSound, second.data(), static_cast<u32>(second.size()));
+        }
+        else
+        {
+            module.ReleaseVoice(Voice, 0x0D);
+        }
+
+        frames = 0;
+        while (module.IsVoiceFree(Voice) == 0 && frames < 48000)
+        {
+            module.Mix(block, 1);
+            frames++;
+        }
+    };
+
+    run(false, releasedAfter);
+    run(true, reloadedAfter);
+
+    char detail[128];
+    std::snprintf(detail, sizeof(detail), "(let go after %d frames, a released voice after %d)", reloadedAfter, releasedAfter);
+    Check("a bank read again lets go of the voice still playing it", reloadedAfter != 48000 && reloadedAfter <= releasedAfter + 1,
+          detail);
+
+    // ... and the bank it was read with plays, from wherever its block now is
+    module.PlaySound(BankSound, Voice | (1u << GroupShift), 0x3FFF, 0x3FFF, 0x1000, 0, 0, 1);
+    s16 block[2] = {};
+    s32 loudest = 0;
+    for (s32 frame = 0; frame < 600; frame++)
+    {
+        module.Mix(block, 1);
+        const s32 level = block[0] < 0 ? -block[0] : block[0];
+        if (level > loudest)
+        {
+            loudest = level;
+        }
+    }
+
+    std::snprintf(detail, sizeof(detail), "(loudest %d of 32768)", loudest);
+    Check("and the bank read again still plays", loudest > 100, detail);
+}
+
 // A music region of the disc's own shape: ADPCM blocks, with a loop point marked in the middle of it (as a track's own data
 // carries), which the ring the module builds must not follow
 std::vector<u8> MakeRegion(u32 blocks, u8 nibble)
@@ -2008,6 +2088,7 @@ int main()
     CheckGroupVolume();
     CheckMusicGroupVolume();
     CheckCompactionUnderVoice();
+    CheckReloadUnderVoice();
     CheckStreams();
 
     std::printf("\n%d checks, %d failed\n", g_Checks, g_Failures);

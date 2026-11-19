@@ -35,6 +35,10 @@ enum PortText : u32
     PortTextCard,
     PortTextCutsceneSkip,
     PortTextSkip,
+    PortTextMods,
+    PortTextModsRestart,
+    PortTextModsNone,
+    PortTextScreenShake,
     PortTextCount,
 };
 

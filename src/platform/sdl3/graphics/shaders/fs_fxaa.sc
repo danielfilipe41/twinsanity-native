@@ -10,6 +10,11 @@
 // recognisable (too high a threshold leaves stair steps, too low softens flat areas, a low cap eats single-pixel detail).
 $input v_texcoord0
 
+#if BGFX_SHADER_LANGUAGE_ESSL
+// WebGL (ESSL) requires a fragment shader to state its float precision; desktop GLSL does not
+precision highp float;
+#endif
+
 #include <bgfx_shader.sh>
 
 SAMPLER2D(s_tex, 0);

@@ -48,6 +48,11 @@ CXXFLAGS = (["-march=r5900", "-mabi=n32", "-msingle-float", "-mno-abicalls", "-G
 PLATFORM = os.environ.get("PLATFORM", "ps2")
 TARGET = os.environ.get("TARGET", "windows" if os.name == "nt" else "linux")
 WINDOWS = TARGET == "windows"
+# DATA=runtime: a host build that links none of the retail data and reads it out of the player's own SLES_525.68 at the
+# first start (src/platform/null/retaildata.cpp). Every other build bakes the split's data in, as before
+RUNTIME_DATA = os.environ.get("DATA") == "runtime"
+RUNTIME_DATA_FLAGS = ["-DTWINSANITY_RUNTIME_DATA", f"-I{(HERE / 'tools').as_posix()}",
+                      f"-I{(HERE / 'build' / 'host' / 'runtime').as_posix()}"] if RUNTIME_DATA else []
 
 # Host builds (PLATFORM=null/sdl3): 32-bit x86 keeps the retail 32-bit-pointer layouts, so CHECK_SIZE/OFFSET hold.
 # -malign-double matches the MIPS ABI's 8-byte doubles; SSE2 avoids x87 extended precision. No -mno-check-zero-division:
@@ -63,7 +68,7 @@ HOST_CXXFLAGS = (["-m32", "-malign-double", "-msse2", "-mfpmath=sse", "-O2", "-g
                   "-ffp-contract=off", "-fno-delete-null-pointer-checks", "-Wall", "-Wno-invalid-offsetof",
                   # A crash under gdb wants a real stack: the host build keeps frame pointers and unwind info
                   "-fasynchronous-unwind-tables", "-fno-omit-frame-pointer",
-                  "-Iinclude", "-Iinclude/host"])
+                  "-Iinclude", "-Iinclude/host", "-Ithird_party/miniz"])
 
 
 def quote(argument):
@@ -187,6 +192,7 @@ def bgfx_flags():
 WEB_CXXFLAGS = ["-O2", "-std=gnu++26", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-common",
                 "-fno-strict-aliasing", "-ffunction-sections", "-ffp-contract=off", "-fno-delete-null-pointer-checks",
                 "-Wall", "-Wno-invalid-offsetof", "-fno-omit-frame-pointer", "-Iinclude", "-Iinclude/host",
+                "-Ithird_party/miniz",
                 "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include",
                 "-sUSE_SDL=3"]
 
@@ -194,8 +200,9 @@ WEB_CXXFLAGS = ["-O2", "-std=gnu++26", "-fno-exceptions", "-fno-rtti", "-fno-thr
 def web_bgfx_flags():
     """bgfx+bx+bimg for wasm32: bgfx's gmake-web project (genie --gcc=... then make in .build/projects/gmake-web) lands
     its libraries in .build/wasm32-emscripten/bin, or wherever $BGFX_WEB_PREFIX says"""
-    prefix = Path(os.environ.get("BGFX_WEB_PREFIX", "third_party/bgfx/.build/wasm32-emscripten"))
-    return [f"-L{prefix.as_posix()}/bin", "-lbgfxRelease", "-lbimgRelease", "-lbimg_decodeRelease", "-lbxRelease"]
+    prefix = Path(os.environ.get("BGFX_WEB_PREFIX", "third_party/bgfx/.build/wasm"))
+    # The wasm libraries keep bgfx's own names (bgfxRelease.a, no lib prefix), so they are named by path rather than -l
+    return [(prefix / "bin" / f"{name}Release.a").as_posix() for name in ("bgfx", "bimg", "bimg_decode", "bx")]
 
 
 def main_windows():
@@ -229,8 +236,12 @@ def main_windows():
               "-fno-strict-aliasing", "-ffunction-sections", "-ffp-contract=off", "-fno-delete-null-pointer-checks",
               "-fno-omit-frame-pointer", "-Wall", "-Wno-invalid-offsetof", "-Wno-attributes", "-msse2", "-mfpmath=sse",
               "-malign-double",
-              "-DSDL_MAIN_HANDLED", "-Iinclude", "-Iinclude/host", f"-I{sdl_prefix}/include/SDL3",
+              "-DSDL_MAIN_HANDLED", "-Iinclude", "-Iinclude/host", "-Ithird_party/miniz",
+              f"-I{sdl_prefix}/include/SDL3",
               "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include"] + cflags_extra
+    # DATA=runtime: the image the loader fills at the first start, and the tables that name it (tools/retail_map.py)
+    if RUNTIME_DATA:
+        cflags += RUNTIME_DATA_FLAGS
     # SDL3 statically (the MinGW package ships both libSDL3.a and the DLL import library), so the build is one .exe. bgfx
     # dlopens vulkan-1.dll itself, so the Vulkan renderer needs no import library to link against.
     libs = [f"-L{sdl_prefix}/lib", "-Wl,-Bstatic", "-lSDL3", "-Wl,-Bdynamic",
@@ -261,8 +272,11 @@ def main_windows():
         "rule hostdata",
         "  command = python3 tools/host_data.py --coff --file $in $out.host.s && $cxx -c $out.host.s -o $out",
         "  description = HOSTDATA $in",
+        "rule asmhost",
+        "  command = $cxx -c -o $out $in",
+        "  description = ASM $in",
         "rule configure",
-        "  command = PLATFORM=sdl3 TARGET=windows python3 configure.py",
+        f"  command = PLATFORM=sdl3 TARGET=windows{' DATA=runtime' if RUNTIME_DATA else ''} python3 configure.py",
         "  generator = 1",
         "",
     ]
@@ -274,6 +288,8 @@ def main_windows():
                                        "particles_test.cpp"))
     src += sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "null").rglob("*.cpp")
                   if path.name not in sdl3_names)
+    # The mods' zips (the community ships crates as one): miniz, compiled with the rest
+    src.append("third_party/miniz/miniz.c")
     src_objects = []
     compile_commands = []
     for path in src:
@@ -283,7 +299,19 @@ def main_windows():
         compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
                                  "arguments": [cxx_name] + cflags + ["-c", "-o", obj, path]})
     data_objects = []
-    if (HERE / "asm" / "data").is_dir():
+    if RUNTIME_DATA:
+        # No baked data: the image's symbols and the host table are written from the checked-in symbol map, and the
+        # loader fills the image out of the player's executable at the first start (src/platform/null/retaildata.cpp)
+        subprocess.run([sys.executable, "tools/retail_map.py", "--emit", "build/host/runtime"], check=True)
+        data_objects = ["build/win32/runtime/retail_code_table.cpp.o", "build/win32/runtime/retail_data_symbols.o"]
+        lines += [
+            "build build/win32/runtime/retail_code_table.cpp.o: cxx build/host/runtime/retail_code_table.cpp",
+            "build build/win32/runtime/retail_data_symbols.o: asmhost build/host/runtime/retail_data_symbols.s | "
+            "tools/retail_map.py",
+            f"build build/win32/game-with-data.exe: link {' '.join(src_objects + data_objects)} | tools/pe_link.py",
+            "build game: phony build/win32/game-with-data.exe",
+        ]
+    elif (HERE / "asm" / "data").is_dir():
         for path in sorted((HERE / "asm" / "data").rglob("*.s")):
             obj = f"build/win32/data/{path.stem}.o"
             data_objects.append(obj)
@@ -311,16 +339,28 @@ def main_windows():
 def main_web():
     """Web build (PLATFORM=web): the sdl3 layer and the game's C++ compiled to wasm32 with em++, in the same source split
     the sdl3 host build uses. Shaders are the web's own: WebGL takes the GLSL ES 300 blobs and WebGPU the WGSL ones, both
-    checked in (tools/build_shaders.py --platform web). The link needs the retail data as wasm, which tools/host_data.py
-    does not emit yet (it writes x86 assembly), so this build's target is compile: every TU as wasm32."""
+    checked in (tools/build_shaders.py --platform web). DATA=runtime's image symbols are emitted in the wasm assembler's
+    dialect (retail_data_symbols_wasm.s): .data with the sizes it wants, and the same aliases the x86 build uses. The link
+    still needs bgfx built for wasm, so this build's target is compile: every TU and the data objects as wasm32."""
     cxx = command([os.environ.get("EMXX", "em++")])
     lines = [
         "# host platform: web (wasm32, Emscripten)",
         "ninja_required_version = 1.10",
         f"cxx = {cxx}",
-        f"cxxflags = {command(WEB_CXXFLAGS)}",
-        f"ldflags = {command(WEB_CXXFLAGS + ['-sALLOW_MEMORY_GROWTH=1', '-sSTACK_SIZE=1048576',
-                                          '-sMIN_WEBGL_VERSION=2', '-sMAX_WEBGL_VERSION=2', '-sUSE_WEBGPU=1'] +
+        f"cxxflags = {command(WEB_CXXFLAGS + (RUNTIME_DATA_FLAGS if RUNTIME_DATA else []))}",
+        # The browser's WebGPU comes from the emsdk's Dawn port (Emscripten 4.0 and later: -sUSE_WEBGPU is gone and
+        # --use-port=emdawnwebgpu replaces it), which is the header set bgfx's webgpu renderer compiles against
+        # The page (web/shell.html) takes the disc image and passes --disc to the game, so the run starts when it says: the
+        # module does not run main on load, and the file system it writes the image into is there for it
+        f"ldflags = {command(WEB_CXXFLAGS + ['-sALLOW_MEMORY_GROWTH=1', '-sMAXIMUM_MEMORY=4GB', '-sSTACK_SIZE=1048576',
+                                          '-sMIN_WEBGL_VERSION=2', '-sMAX_WEBGL_VERSION=2', '-sOFFSCREEN_FRAMEBUFFER=1',
+                                          '--use-port=emdawnwebgpu', '-sGL_ENABLE_GET_PROC_ADDRESS',
+                                          # Retail code calls some routines through pointers whose declared
+                                          # prototypes differ between files, and wasm's typed indirect calls reject
+                                          # the mismatch where the x86 builds silently tolerate it
+                                          '-sEMULATE_FUNCTION_POINTER_CASTS=1',
+                                          '-sINVOKE_RUN=0', '-sFORCE_FILESYSTEM=1', '-lidbfs.js',
+                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS', '--shell-file', 'web/shell.html'] +
                                 web_bgfx_flags())}",
         "",
         "rule cxx",
@@ -328,11 +368,14 @@ def main_web():
         "  depfile = $out.d",
         "  deps = gcc",
         "  description = CXX $in",
+        "rule asmhost",
+        "  command = $cxx -c -o $out $in",
+        "  description = ASM $in",
         "rule link",
         "  command = $cxx -o $out $in $ldflags",
         "  description = LINK $out",
         "rule configure",
-        "  command = PLATFORM=web python3 configure.py",
+        f"  command = PLATFORM=web{' DATA=runtime' if RUNTIME_DATA else ''} python3 configure.py",
         "  generator = 1",
         "",
     ]
@@ -344,6 +387,15 @@ def main_web():
                                        "particles_test.cpp"))
     src += sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "null").rglob("*.cpp")
                   if path.name not in sdl3_names)
+    # The mods' zips (the community ships crates as one): miniz, compiled with the rest
+    src.append("third_party/miniz/miniz.c")
+    # DATA=runtime: the game carries none of the retail data and the loader fills it at the first start, so what the
+    # build needs is the symbol map's headers and tables (tools/retail_map.py --emit), not host data objects
+    data_objects = []
+    if RUNTIME_DATA:
+        subprocess.run([sys.executable, "tools/retail_map.py", "--emit", "build/host/runtime"], check=True)
+        # The image's symbols in the wasm dialect (retail_data_symbols_wasm.s): .data, sized, the same aliases
+        data_objects = ["build/web/runtime/retail_code_table.cpp.o", "build/web/runtime/retail_data_symbols.o"]
     src_objects = []
     compile_commands = []
     for path in src:
@@ -351,9 +403,20 @@ def main_web():
         src_objects.append(obj)
         lines.append(f"build {obj}: cxx {path}")
         compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
-                                 "arguments": [os.environ.get("EMXX", "em++")] + WEB_CXXFLAGS + ["-c", "-o", obj, path]})
+                                 "arguments": [os.environ.get("EMXX", "em++")] + WEB_CXXFLAGS +
+                                 (RUNTIME_DATA_FLAGS if RUNTIME_DATA else []) + ["-c", "-o", obj, path]})
+    if RUNTIME_DATA:
+        lines += [
+            "build build/web/runtime/retail_code_table.cpp.o: cxx build/host/runtime/retail_code_table.cpp",
+            "build build/web/runtime/retail_data_symbols.o: asmhost build/host/runtime/retail_data_symbols_wasm.s |"
+            " tools/retail_map.py",
+            f"build data: phony {' '.join(data_objects)}",
+            # The page's build: every TU, the data's symbols and the code table, bgfx for wasm and SDL3's port
+            f"build build/web/game.html: link {' '.join(src_objects + data_objects)}",
+            "build game: phony build/web/game.html",
+        ]
     lines += [
-        f"build compile: phony {' '.join(src_objects)}",
+        f"build compile: phony {' '.join(src_objects + data_objects)}",
         f"build build.ninja: configure | configure.py",
         "default compile",
         "",
@@ -380,7 +443,7 @@ def main_host():
         f"# host platform: {PLATFORM}",
         "ninja_required_version = 1.10",
         f"cxx = {cxx}",
-        f"cxxflags = {command(HOST_CXXFLAGS + sdl_cflags + bgfx_cflags)}",
+        f"cxxflags = {command(HOST_CXXFLAGS + RUNTIME_DATA_FLAGS + sdl_cflags + bgfx_cflags)}",
         # -static-libstdc++/-static-libgcc: the C++ runtime and libgcc linked in as well, so the only shared libraries the
         # binary needs are the desktop's own (libc, libm, X11 and GL or Vulkan)
         f"ldflags = {command(['-m32', '-no-pie', '-rdynamic', '-static-libstdc++', '-static-libgcc'] + sdl_libs + bgfx_libs)}",
@@ -396,10 +459,13 @@ def main_host():
         "rule cxxlink",
         "  command = $cxx $cxxflags $ldflags -o $out $in",
         "  description = CXXLINK $in",
+        "rule asmhost",
+        "  command = $cxx -m32 -c -o $out $in",
+        "  description = ASM $in",
         "rule configure",
         # The platform and target this build was configured with: ninja re-runs this when configure.py changes, and a bare
         # `python3 configure.py` would fall back to the PS2 build
-        f"  command = PLATFORM={PLATFORM} TARGET={TARGET} python3 configure.py",
+        f"  command = PLATFORM={PLATFORM} TARGET={TARGET}{' DATA=runtime' if RUNTIME_DATA else ''} python3 configure.py",
         "  generator = 1",
         "",
     ]
@@ -417,6 +483,8 @@ def main_host():
         sdl3_names = {path.name for path in (HERE / "src" / "platform" / "sdl3").rglob("*.cpp")} | {"sound.cpp"}
         src += sorted(path.relative_to(HERE).as_posix() for path in (HERE / "src" / "platform" / "null").rglob("*.cpp")
                       if path.name not in sdl3_names)
+    # The mods' zips (the community ships crates as one): miniz, compiled with the rest
+    src.append("third_party/miniz/miniz.c")
     src_objects = []
     compile_commands = []
     for path in src:
@@ -426,7 +494,21 @@ def main_host():
         compile_commands.append({"directory": HERE.as_posix(), "file": path, "output": obj,
                                  "arguments": ["g++"] + HOST_CXXFLAGS + sdl_cflags + bgfx_cflags + ["-c", "-o", obj, path]})
     data_objects = []
-    if (HERE / "asm" / "data").is_dir():
+    if RUNTIME_DATA:
+        # No baked data: the data objects are not built. The image's symbols (one per data symbol, at its retail offset)
+        # and the code-pointer table are written from the checked-in symbol map instead, and the loader fills the image
+        # out of the player's executable at the first start
+        subprocess.run([sys.executable, "tools/retail_map.py", "--emit", "build/host/runtime"], check=True)
+        lines += [
+            "build build/host/runtime/retail_code_table.cpp.o: cxx build/host/runtime/retail_code_table.cpp",
+            "build build/host/runtime/retail_data_symbols.o: asmhost build/host/runtime/retail_data_symbols.s",
+        ]
+        data_objects = ["build/host/runtime/retail_code_table.cpp.o", "build/host/runtime/retail_data_symbols.o"]
+        lines += [
+            f"build build/host/{PLATFORM}/game-with-data: link {' '.join(src_objects + data_objects)}",
+            "build game: phony " + f"build/host/{PLATFORM}/game-with-data",
+        ]
+    elif (HERE / "asm" / "data").is_dir():
         lines += [
             "rule hostdata",
             "  command = python3 tools/host_data.py --file $in $out.host.s && "

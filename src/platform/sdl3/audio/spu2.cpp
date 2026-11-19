@@ -543,6 +543,7 @@ s32 SdlAudio::Spu2::Device::MixVoice(s32 coreIndex, s32 index, s32& dryLeft, s32
 
         outLeft = ApplyVolume(value, voice.volumeLeft.level);
         outRight = ApplyVolume(value, voice.volumeRight.level);
+
     }
 
     // The pitch counter, the voice before this one able to bend it by its own output

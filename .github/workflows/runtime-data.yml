@@ -1,0 +1,52 @@
+name: runtime data
+
+# The check needs the retail disc: its executable's bytes are what the runtime build loads, and the split's objects are
+# what those bytes are compared against. The disc is not in the repository, so the job runs on a runner that has one and
+# reads its path from the repository variable TWINSANITY_DISC (default: disc, the working directory's copy).
+on:
+  workflow_dispatch:
+    inputs:
+      disc:
+        description: "Path to the disc folder or image on the runner"
+        required: false
+        default: disc
+  push:
+    paths:
+      - "tools/retail_map.py"
+      - "tools/retail_symbols.h"
+      - "tools/retail_parity.py"
+      - "tools/host_data.py"
+      - "tools/check_runtime_data.py"
+      - "tools/pe_link.py"
+      - "configure.py"
+      - "src/platform/null/retaildata.cpp"
+      - "include/platform/retaildata.h"
+      - ".github/workflows/runtime-data.yml"
+  pull_request:
+    paths:
+      - "tools/retail_map.py"
+      - "tools/retail_symbols.h"
+      - "tools/retail_parity.py"
+      - "tools/host_data.py"
+      - "tools/check_runtime_data.py"
+      - "tools/pe_link.py"
+      - "configure.py"
+      - "src/platform/null/retaildata.cpp"
+      - "include/platform/retaildata.h"
+      - ".github/workflows/runtime-data.yml"
+
+jobs:
+  parity:
+    # A runner that has the retail disc (or its image) and the split's asm: the split is generated from the disc, so a
+    # hosted runner has neither half of the comparison
+    runs-on: [self-hosted, twinsanity-data]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build both ways and compare the loaded data
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tools/check_runtime_data.py "${{ inputs.disc || vars.TWINSANITY_DISC || 'disc' }}"

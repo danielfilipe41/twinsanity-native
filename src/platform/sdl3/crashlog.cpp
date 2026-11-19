@@ -8,10 +8,15 @@
 #include <ctime>
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__EMSCRIPTEN__)
+// The page has no host fault handling to hook: nothing of the signal side is included
 #else
 #include <csignal>
 #include <execinfo.h>
 #include <fcntl.h>
+#include <malloc.h>
+#include <sys/ioctl.h>
+#include <thread>
 #include <ucontext.h>
 #include <unistd.h>
 #endif
@@ -130,6 +135,14 @@ void InstallCrashLog()
     SetUnhandledExceptionFilter(CrashHandler);
 }
 
+#elif defined(__EMSCRIPTEN__)
+
+// The page has no signal handlers to hang a log on: the browser reports the fault itself, with the wasm frame in its own
+// console
+void InstallCrashLog()
+{
+}
+
 #else
 
 namespace
@@ -195,8 +208,31 @@ struct Line
     }
 };
 
-// The file the log goes to: crash.log beside the game (the working directory), plus stderr
+// The file the log goes to: crash.log beside the game (the working directory), plus the terminal's own stderr, which is saved
+// before stderr is sent down the pipe that copies it into the log
 int g_CrashFd = -1;
+int g_TerminalFd = -1;
+int g_StderrPipe = -1;
+
+// Everything written to stderr is copied into the log as it is written (what glibc prints before it aborts is the reason the
+// run died) and still reaches the terminal
+void DrainStderr(int source, int terminal)
+{
+    char buffer[4096];
+    for (;;)
+    {
+        ssize_t read = ::read(source, buffer, sizeof(buffer));
+        if (read <= 0)
+        {
+            return;
+        }
+
+        ssize_t written = ::write(g_CrashFd, buffer, static_cast<size_t>(read));
+        (void)written;
+        written = ::write(terminal, buffer, static_cast<size_t>(read));
+        (void)written;
+    }
+}
 
 void WriteText(int fd, const char* text)
 {
@@ -275,7 +311,33 @@ void CrashHandler(int number, siginfo_t* info, void* context)
 {
     if (g_CrashFd < 0)
     {
-        g_CrashFd = open("crash.log", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        // Appended to: the reason glibc gave (a bad free, a smashed stack) is already in the file
+        g_CrashFd = open("crash.log", O_CREAT | O_WRONLY | O_APPEND, 0644);
+    }
+
+    // What was written to stderr just before the crash (glibc's message, a stub's "not implemented") is still in the pipe: the
+    // thread that copies it out runs on its own and may not have been given the time, so it is taken here first
+    if (g_StderrPipe >= 0)
+    {
+        int pending = 0;
+        if (ioctl(g_StderrPipe, FIONREAD, &pending) == 0)
+        {
+            char buffer[512];
+            while (pending > 0)
+            {
+                ssize_t read = ::read(g_StderrPipe, buffer, sizeof(buffer));
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                ssize_t written = ::write(g_CrashFd, buffer, static_cast<size_t>(read));
+                (void)written;
+                written = ::write(g_TerminalFd >= 0 ? g_TerminalFd : 2, buffer, static_cast<size_t>(read));
+                (void)written;
+                pending -= static_cast<int>(read);
+            }
+        }
     }
 
     const char* name = "signal";
@@ -300,7 +362,7 @@ void CrashHandler(int number, siginfo_t* info, void* context)
         break;
     }
 
-    const int sinks[2] = {g_CrashFd, 2};
+    const int sinks[2] = {g_CrashFd, g_TerminalFd >= 0 ? g_TerminalFd : 2};
     for (u32 sink = 0; sink < 2; sink++)
     {
         int fd = sinks[sink];
@@ -357,6 +419,28 @@ void CrashHandler(int number, siginfo_t* info, void* context)
 
 void InstallCrashLog()
 {
+    // The heap's own checks: a bad free or a corrupted block is reported with the stack that did it, and glibc's message goes to
+    // stderr, which is copied into the log below
+    mallopt(M_CHECK_ACTION, 3);
+
+    // A fresh log for the run, and then every stderr write copied into it (the terminal keeps getting them too)
+    int fresh = open("crash.log", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fresh >= 0)
+    {
+        close(fresh);
+    }
+
+    g_CrashFd = open("crash.log", O_CREAT | O_WRONLY | O_APPEND, 0644);
+    g_TerminalFd = dup(2);
+    int pipeFds[2];
+    if (g_CrashFd >= 0 && g_TerminalFd >= 0 && pipe(pipeFds) == 0)
+    {
+        dup2(pipeFds[1], 2);
+        close(pipeFds[1]);
+        g_StderrPipe = pipeFds[0];
+        std::thread(DrainStderr, pipeFds[0], g_TerminalFd).detach();
+    }
+
     struct sigaction action;
     std::memset(&action, 0, sizeof(action));
     action.sa_sigaction = CrashHandler;

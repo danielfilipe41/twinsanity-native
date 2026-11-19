@@ -7,12 +7,16 @@
 
 #include "platform/discverify.h"
 #include "platform/gamedata.h"
+#include "platform/mods.h"
+#include "platform/retaildata.h"
 #include "settings.h"
 
 #include <SDL3/SDL.h>
 
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 extern "C" int Main(u32 argc, char** argv);
 
@@ -32,6 +36,13 @@ int main(int argc, char** argv)
     // words as its own arguments and would make `--disc` one of them
     const char* disc = nullptr;
     bool verifyDisc = false;
+    bool verifyData = false;
+    const char* dumpData = nullptr;
+    const char* modsFolder = nullptr;
+    std::vector<std::string> mods;
+    bool noMods = false;
+    bool verifyMods = false;
+    bool skipIntro = false;
     int count = 1;
     for (int index = 1; index < argc; index++)
     {
@@ -51,9 +62,63 @@ int main(int argc, char** argv)
             verifyDisc = true;
             continue;
         }
+        if (std::strcmp(argv[index], "--verify-data") == 0)
+        {
+            verifyData = true;
+            continue;
+        }
+        if (std::strcmp(argv[index], "--dump-data") == 0 && index + 1 < argc)
+        {
+            dumpData = argv[++index];
+            continue;
+        }
+        if (std::strcmp(argv[index], "--mods-dir") == 0 && index + 1 < argc)
+        {
+            modsFolder = argv[index + 1];
+            index++;
+            continue;
+        }
+        if (std::strncmp(argv[index], "--mods-dir=", 11) == 0)
+        {
+            modsFolder = argv[index] + 11;
+            continue;
+        }
+        if (std::strcmp(argv[index], "--mod") == 0 && index + 1 < argc)
+        {
+            mods.push_back(argv[index + 1]);
+            index++;
+            continue;
+        }
+        if (std::strncmp(argv[index], "--mod=", 6) == 0)
+        {
+            mods.push_back(argv[index] + 6);
+            continue;
+        }
+        if (std::strcmp(argv[index], "--no-mods") == 0)
+        {
+            noMods = true;
+            continue;
+        }
+        if (std::strcmp(argv[index], "--verify-mods") == 0)
+        {
+            verifyMods = true;
+            continue;
+        }
+        if (std::strcmp(argv[index], "--skip-intro") == 0)
+        {
+            skipIntro = true;
+            continue;
+        }
         argv[count++] = argv[index];
     }
     argc = count;
+
+    // The boot logos, for this run only (the settings file's `skip_intro` keeps it): the movies after them, a new game's intro
+    // included, still play
+    if (skipIntro)
+    {
+        Platform::System::SetSkipIntro(true);
+    }
 
     // The window comes first: the picker that finds the disc's files is a dialog a window belongs to, and until the files are
     // found there is nothing to draw in it. Its size and mode are the settings file's (the options menu's display rows write
@@ -74,6 +139,58 @@ int main(int argc, char** argv)
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
+    }
+
+    // The retail data: a DATA=runtime build carries none of it, and reads it out of the disc's own executable here, before
+    // anything touches a table. A build from the split already has it and this does nothing
+    if (!Platform::RetailData::Load(verifyData))
+    {
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    if (dumpData != nullptr)
+    {
+        const bool dumped = Platform::RetailData::Dump(dumpData);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return dumped ? 0 : 1;
+    }
+    if (verifyData)
+    {
+        std::fprintf(stderr, "verify-data: %s\n", Platform::RetailData::Baked() ? "this build carries the data baked in"
+                                                                                : "the disc's data is loaded");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 0;
+    }
+
+    // The mods: the disc's files are located now. The folder is --mods-dir, else TWINSANITY_MODS, else the settings file's
+    // `mods_dir`, else mods/ beside the disc's files, else the host's own writable one (a phone's app storage, a page's file
+    // system, where the disc itself cannot be written). Every file the game opens from here on is the mods' first
+    char* preferences = SDL_GetPrefPath("twinsanity", "twinsanity");
+    std::string writableMods;
+    if (preferences != nullptr)
+    {
+        writableMods = std::string(preferences) + "mods";
+        SDL_free(preferences);
+    }
+    const std::string preferredMods = HostSettingsModsFolder();
+    Platform::Mods::Initialise(modsFolder, mods, noMods, preferredMods.c_str(), writableMods.c_str());
+    {
+        const std::string line = Platform::Mods::Describe();
+        if (!line.empty())
+        {
+            std::fprintf(stderr, "%s\n", line.c_str());
+        }
+    }
+    if (verifyMods)
+    {
+        // What the game will read from the mods, byte for byte, then out before anything is drawn
+        const bool modsOk = Platform::Mods::Verify();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return modsOk ? 0 : 1;
     }
 
     // The display's window is the host's from here: the mode the settings asked for is applied to it, and the picture's

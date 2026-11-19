@@ -13,7 +13,10 @@
 #include "platform/files.h"
 
 #include "iso9660.h"
+#include "platform/mods.h"
 
+#include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -35,6 +38,115 @@ namespace
 #define HOST_TELL(file) ftello(file)
 #endif
 
+// A host file a composed disc file reads from (a mod's entry of the archive, the disc's own data file), kept open for it
+struct ComposedSource
+{
+    std::FILE* stream = nullptr;
+    std::mutex mutex;
+
+    ~ComposedSource()
+    {
+        if (stream != nullptr)
+        {
+            std::fclose(stream);
+        }
+    }
+};
+
+// A piece of a composed disc file: bytes of the disc image, of a host file, or of memory
+struct ComposedPiece
+{
+    u64 start = 0;
+    u64 length = 0;
+    bool image = false;
+    u64 imageOffset = 0;
+    std::shared_ptr<ComposedSource> source;
+    u64 sourceOffset = 0;
+
+    u64 End() const
+    {
+        return start + length;
+    }
+};
+
+// A disc file as the mods make it: the disc's own bytes with the mods' entries appended after them (CRASH6/CRASH.BD)
+struct Composed
+{
+    std::vector<ComposedPiece> pieces;
+    u64 size = 0;
+};
+
+// The piece holding an offset (the pieces are in order and do not overlap, so this is a binary search)
+const ComposedPiece* ComposedPieceAt(const Composed& composed, u64 offset)
+{
+    size_t low = 0;
+    size_t high = composed.pieces.size();
+    while (low < high)
+    {
+        const size_t middle = (low + high) / 2;
+        if (offset < composed.pieces[middle].start)
+        {
+            high = middle;
+        }
+        else if (offset >= composed.pieces[middle].End())
+        {
+            low = middle + 1;
+        }
+        else
+        {
+            return &composed.pieces[middle];
+        }
+    }
+    return nullptr;
+}
+
+// A read of a composed file: the pieces' bytes, in order, up to its end
+s32 ReadComposed(const std::shared_ptr<const Composed>& composed, u64 offset, void* buffer, s32 size)
+{
+    if (composed == nullptr || offset >= composed->size)
+    {
+        return 0;
+    }
+
+    const u64 left = composed->size - offset;
+    const s32 wanted = left < static_cast<u64>(size) ? static_cast<s32>(left) : size;
+    u8* destination = static_cast<u8*>(buffer);
+    s32 done = 0;
+    while (done < wanted)
+    {
+        const u64 at = offset + static_cast<u64>(done);
+        const ComposedPiece* piece = ComposedPieceAt(*composed, at);
+        if (piece == nullptr)
+        {
+            break;
+        }
+
+        const u64 within = at - piece->start;
+        const u64 available = piece->length - within;
+        const s32 chunk = available < static_cast<u64>(wanted - done) ? static_cast<s32>(available) : wanted - done;
+        s32 read = -1;
+        if (piece->image)
+        {
+            read = Platform::Iso9660::ReadAt(piece->imageOffset + within, destination + done, chunk);
+        }
+        else if (piece->source != nullptr)
+        {
+            // The channels read in the background: a handle's read position is its own, never shared
+            std::lock_guard<std::mutex> lock(piece->source->mutex);
+            if (HOST_SEEK(piece->source->stream, piece->sourceOffset + within, SEEK_SET) == 0)
+            {
+                read = static_cast<s32>(std::fread(destination + done, 1, static_cast<size_t>(chunk), piece->source->stream));
+            }
+        }
+        if (read <= 0)
+        {
+            break;
+        }
+        done += read;
+    }
+    return done;
+}
+
 // A handle's slot: its stream and the lock its operations take (the stream's read position is shared state; the stream
 // channels read through ReadAt, which doesn't move it)
 struct HostFile
@@ -52,6 +164,11 @@ struct HostFile
     std::shared_ptr<const std::vector<u8>> memory;
     u64 memoryPosition = 0;
 
+    // A handle served from the pieces of a composed disc file: the archive's data with the mods' entries appended (see Open)
+    bool composed = false;
+    std::shared_ptr<const Composed> composition;
+    u64 composedPosition = 0;
+
     std::mutex mutex;
 };
 
@@ -65,6 +182,13 @@ std::string g_Root;
 // Whether the root is a disc image rather than a folder: every path is then looked up in the volume (iso9660.h) and nothing
 // is written to it
 bool g_ImageRoot = false;
+
+// The archive as the mods make it (platform/mods.h): the rebuilt CRASH6/CRASH.BH and the composed CRASH6/CRASH.BD, made
+// once when the game opens the archive, and null when no mod touches it
+std::mutex g_ArchiveMutex;
+bool g_ArchiveKnown = false;
+std::shared_ptr<const std::vector<u8>> g_ArchiveIndex;
+std::shared_ptr<const Composed> g_ArchiveData;
 
 // What a disc's build files differently from the game's own names. The game's C++ and its data table ask for the European
 // release's names; the North American one calls its single language "American" where the game says "English", and set its font
@@ -543,6 +667,19 @@ bool IsArchiveIndex(const char* path)
     return MatchesLower(name, "CRASH.BH");
 }
 
+// Whether a name is the disc's archive data, whatever its case and separators
+bool IsArchiveData(const char* path)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    std::string name(path);
+    const size_t slash = name.find_last_of("\\/");
+    name = slash == std::string::npos ? name : name.substr(slash + 1);
+    return MatchesLower(name, "CRASH.BD");
+}
+
 const char* HostMode(s32 flags)
 {
     const bool read = (flags & Platform::Files::OpenRead) != 0;
@@ -604,6 +741,12 @@ void Platform::Files::SetRoot(const char* path)
         g_DirectoryNames.clear();
     }
     Platform::Iso9660::Close();
+    {
+        std::lock_guard<std::mutex> lock(g_ArchiveMutex);
+        g_ArchiveKnown = false;
+        g_ArchiveIndex = nullptr;
+        g_ArchiveData = nullptr;
+    }
     if (path == nullptr)
     {
         return;
@@ -630,6 +773,11 @@ void Platform::Files::SetRoot(const char* path)
     {
         g_Root.pop_back();
     }
+}
+
+const char* Platform::Files::Root()
+{
+    return g_Root.c_str();
 }
 
 bool Platform::Files::DiscIsPal()
@@ -729,6 +877,378 @@ s32 OpenExact(const char* path, s32 flags)
     file->stream = stream;
     return Install(std::move(file));
 }
+
+// A whole host file into memory (a mod's rebuilt CRASH6/CRASH.BH)
+bool ReadWholeBytes(const std::string& path, std::vector<u8>* bytes)
+{
+    std::FILE* stream = std::fopen(path.c_str(), "rb");
+    if (stream == nullptr)
+    {
+        return false;
+    }
+    if (HOST_SEEK(stream, 0, SEEK_END) != 0)
+    {
+        std::fclose(stream);
+        return false;
+    }
+    const s64 size = HOST_TELL(stream);
+    if (size < 0 || static_cast<u64>(size) > (64u << 20) || HOST_SEEK(stream, 0, SEEK_SET) != 0)
+    {
+        std::fclose(stream);
+        return false;
+    }
+    bytes->resize(static_cast<size_t>(size));
+    const bool read = size == 0 || std::fread(bytes->data(), 1, static_cast<size_t>(size), stream) == static_cast<size_t>(size);
+    std::fclose(stream);
+    return read;
+}
+
+u32 Get32(const u8* bytes)
+{
+    return static_cast<u32>(bytes[0]) | (static_cast<u32>(bytes[1]) << 8) | (static_cast<u32>(bytes[2]) << 16) |
+           (static_cast<u32>(bytes[3]) << 24);
+}
+
+// A host file opened to be read from by a composed file, with its size
+std::shared_ptr<ComposedSource> OpenSource(const std::string& path, u64* size)
+{
+    std::FILE* stream = std::fopen(path.c_str(), "rb");
+    if (stream == nullptr)
+    {
+        return nullptr;
+    }
+    if (HOST_SEEK(stream, 0, SEEK_END) != 0)
+    {
+        std::fclose(stream);
+        return nullptr;
+    }
+    const s64 end = HOST_TELL(stream);
+    if (end < 0)
+    {
+        std::fclose(stream);
+        return nullptr;
+    }
+    *size = static_cast<u64>(end);
+    auto source = std::make_shared<ComposedSource>();
+    source->stream = stream;
+    return source;
+}
+
+// A handle on a host file by its own path (a mod's), not by a path of the disc's
+s32 OpenHostFile(const std::string& host, s32 flags)
+{
+    std::FILE* stream = std::fopen(host.c_str(), HostMode(flags));
+    if (stream == nullptr)
+    {
+        return -1;
+    }
+    auto file = std::make_unique<HostFile>();
+    file->stream = stream;
+    return Install(std::move(file));
+}
+
+// The game's name for an archive entry: upper case, '\\' separators, no leading one
+std::string ArchiveKey(const std::string& name)
+{
+    std::string key;
+    key.reserve(name.size());
+    for (const char letter : name)
+    {
+        const char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
+        key += upper == '/' ? '\\' : upper;
+    }
+    size_t begin = 0;
+    while (begin < key.size() && key[begin] == '\\')
+    {
+        begin++;
+    }
+    return key.substr(begin);
+}
+
+// The archive as the mods make it: the base index (a mod's whole CRASH6/CRASH.BH, or the disc's), the entries the mods'
+// archive files replace or add, and the data file those are appended to after the disc's own bytes. False when no mod touches
+// the archive (its own files are read then, whole and untouched)
+bool ComposeModsArchive()
+{
+    std::lock_guard<std::mutex> lock(g_ArchiveMutex);
+    if (g_ArchiveKnown)
+    {
+        return g_ArchiveIndex != nullptr;
+    }
+    g_ArchiveKnown = true;
+
+    const std::vector<Platform::Mods::ArchiveFile>& files = Platform::Mods::ArchiveFiles();
+    if (files.empty())
+    {
+        return false;
+    }
+
+    const std::string* modIndex = Platform::Mods::ArchiveIndex();
+    const std::string* modData = Platform::Mods::ArchiveData();
+
+    std::vector<u8> index;
+    if (modIndex != nullptr)
+    {
+        if (!ReadWholeBytes(*modIndex, &index))
+        {
+            std::fprintf(stderr, "mods: %s does not read: the disc's own archive is used\n", modIndex->c_str());
+            return false;
+        }
+    }
+    else
+    {
+        const s32 file = OpenExact("Crash6\\Crash.BH", Platform::Files::OpenRead);
+        if (file < 0)
+        {
+            std::fprintf(stderr, "mods: the disc has no CRASH6/CRASH.BH for its archive entries\n");
+            return false;
+        }
+        u8 chunk[0x10000];
+        while (index.size() <= (64u << 20))
+        {
+            const s32 read = Platform::Files::Read(file, chunk, sizeof(chunk));
+            if (read <= 0)
+            {
+                break;
+            }
+            index.insert(index.end(), chunk, chunk + read);
+        }
+        Platform::Files::Close(file);
+    }
+    if (index.size() < 4)
+    {
+        std::fprintf(stderr, "mods: the archive index does not read: its entries are not applied\n");
+        return false;
+    }
+
+    // The data below the mods' entries: a mod's whole CRASH.BD, or the disc's
+    auto composed = std::make_shared<Composed>();
+    if (modData != nullptr)
+    {
+        u64 size = 0;
+        std::shared_ptr<ComposedSource> source = OpenSource(*modData, &size);
+        if (source == nullptr)
+        {
+            std::fprintf(stderr, "mods: %s does not read: the disc's own archive is used\n", modData->c_str());
+            return false;
+        }
+        ComposedPiece piece;
+        piece.length = size;
+        piece.source = source;
+        composed->pieces.push_back(std::move(piece));
+        composed->size = size;
+    }
+    else if (g_ImageRoot)
+    {
+        u64 offset = 0;
+        u32 size = 0;
+        if (!Platform::Iso9660::Find("Crash6\\Crash.BD", &offset, &size))
+        {
+            std::fprintf(stderr, "mods: the disc image has no CRASH6/CRASH.BD for its archive entries\n");
+            return false;
+        }
+        ComposedPiece piece;
+        piece.length = size;
+        piece.image = true;
+        piece.imageOffset = offset;
+        composed->pieces.push_back(std::move(piece));
+        composed->size = size;
+    }
+    else
+    {
+        const std::string host = ResolveInsensitive(HostPath("Crash6\\Crash.BD"));
+        u64 size = 0;
+        std::shared_ptr<ComposedSource> source = host.empty() ? nullptr : OpenSource(host, &size);
+        if (source == nullptr)
+        {
+            std::fprintf(stderr, "mods: the disc has no CRASH6/CRASH.BD for its archive entries\n");
+            return false;
+        }
+        ComposedPiece piece;
+        piece.length = size;
+        piece.source = source;
+        composed->pieces.push_back(std::move(piece));
+        composed->size = size;
+    }
+    const u64 baseSize = composed->size;
+
+    // The index's rows
+    struct Row
+    {
+        std::string name;
+        u64 offset = 0;
+        u64 size = 0;
+    };
+    const u32 header = Get32(index.data());
+    std::vector<Row> rows;
+    size_t at = 4;
+    while (at + 4 <= index.size())
+    {
+        const u32 length = Get32(index.data() + at);
+        if (length == 0 || length > 0x3FF || at + 4 + length + 8 > index.size())
+        {
+            std::fprintf(stderr, "mods: the archive index does not read as this game's: its entries are not applied\n");
+            return false;
+        }
+        Row row;
+        row.name.assign(reinterpret_cast<const char*>(index.data() + at + 4), length);
+        row.offset = Get32(index.data() + at + 4 + length);
+        row.size = Get32(index.data() + at + 4 + length + 4);
+        rows.push_back(std::move(row));
+        at += 4 + length + 8;
+    }
+    if (rows.empty())
+    {
+        std::fprintf(stderr, "mods: the archive index has no entries: its entries are not applied\n");
+        return false;
+    }
+
+    std::map<std::string, size_t> byName;
+    for (size_t row = 0; row < rows.size(); row++)
+    {
+        byName.emplace(ArchiveKey(rows[row].name), row);
+    }
+
+    u64 cursor = composed->size;
+    u32 replaced = 0;
+    u32 added = 0;
+    for (const Platform::Mods::ArchiveFile& file : files)
+    {
+        u64 size = 0;
+        std::shared_ptr<ComposedSource> source = OpenSource(file.host, &size);
+        if (source == nullptr)
+        {
+            std::fprintf(stderr, "mods: %s does not read: left out\n", file.host.c_str());
+            continue;
+        }
+        if (size > 0xFFFFFFFFull || cursor + size > 0xFFFFFFFFull)
+        {
+            std::fprintf(stderr, "mods: %s is larger than the archive can hold: left out\n", file.host.c_str());
+            continue;
+        }
+
+        const std::string key = ArchiveKey(file.path);
+        size_t row = SIZE_MAX;
+        if (const auto found = byName.find(key); found != byName.end())
+        {
+            row = found->second;
+        }
+        else
+        {
+            // The build's own name for the entry (a crate made for another region's disc names its texts American.txt where
+            // this disc says English.txt): the row it replaces keeps the game's name
+            const std::string other = ArchiveKey(RenamedPath(key, false));
+            if (!other.empty())
+            {
+                if (const auto found = byName.find(other); found != byName.end())
+                {
+                    row = found->second;
+                }
+            }
+        }
+
+        if (row == SIZE_MAX)
+        {
+            // A file passed by its bare name (a level chunk, a picture, a text bank): the archive's one entry of that name. A
+            // name several entries share needs the folders that tell them apart
+            const size_t slash = key.rfind('\\');
+            const std::string bare = slash == std::string::npos ? key : key.substr(slash + 1);
+            size_t matches = 0;
+            for (size_t index = 0; index < rows.size(); index++)
+            {
+                const std::string name = ArchiveKey(rows[index].name);
+                const size_t at = name.rfind('\\');
+                if ((at == std::string::npos ? name : name.substr(at + 1)) != bare)
+                {
+                    continue;
+                }
+                matches++;
+                row = index;
+            }
+            if (matches > 1)
+            {
+                std::fprintf(stderr,
+                             "mods: %s: %zu entries of the archive are named %s: put it in folders named like the one it replaces\n",
+                             file.host.c_str(), matches, bare.c_str());
+                row = SIZE_MAX;
+            }
+        }
+
+        if (row != SIZE_MAX)
+        {
+            rows[row].offset = cursor;
+            rows[row].size = size;
+            replaced++;
+        }
+        else
+        {
+            Row fresh;
+            fresh.name = key;
+            fresh.offset = cursor;
+            fresh.size = size;
+            rows.push_back(std::move(fresh));
+            byName.emplace(key, rows.size() - 1);
+            added++;
+        }
+
+        ComposedPiece piece;
+        piece.start = cursor;
+        piece.length = size;
+        piece.source = source;
+        composed->pieces.push_back(std::move(piece));
+        cursor += size;
+        composed->size = cursor;
+    }
+
+    if (composed->size > 0xFFFFFFFFull)
+    {
+        std::fprintf(stderr, "mods: the archive with the mods' entries would be larger than 4 GB: its entries are not applied\n");
+        return false;
+    }
+
+    // The rebuilt index (the game upper-cases the names and keeps them sorted itself, so the order stays the disc's)
+    auto rebuilt = std::make_shared<std::vector<u8>>();
+    rebuilt->reserve(index.size() + 4096);
+    for (u32 byte = 0; byte < 4; byte++)
+    {
+        rebuilt->push_back(static_cast<u8>(header >> (byte * 8)));
+    }
+    for (const Row& row : rows)
+    {
+        const u32 length = static_cast<u32>(row.name.size());
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            rebuilt->push_back(static_cast<u8>(length >> (byte * 8)));
+        }
+        rebuilt->insert(rebuilt->end(), row.name.begin(), row.name.end());
+        const u32 offset = static_cast<u32>(row.offset);
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            rebuilt->push_back(static_cast<u8>(offset >> (byte * 8)));
+        }
+        const u32 size = static_cast<u32>(row.size);
+        for (u32 byte = 0; byte < 4; byte++)
+        {
+            rebuilt->push_back(static_cast<u8>(size >> (byte * 8)));
+        }
+    }
+
+    // The build's names put back to the game's, as the disc's own index gets them
+    if (std::shared_ptr<const std::vector<u8>> renamed = RenamedArchiveIndex(*rebuilt))
+    {
+        g_ArchiveIndex = renamed;
+    }
+    else
+    {
+        g_ArchiveIndex = rebuilt;
+    }
+    g_ArchiveData = composed;
+
+    std::fprintf(stderr, "mods: the archive rebuilt: %u entries replaced, %u added; index %zu bytes, data %llu bytes (the disc's %llu)\n",
+                 replaced, added, g_ArchiveIndex->size(), static_cast<unsigned long long>(composed->size),
+                 static_cast<unsigned long long>(baseSize));
+    return true;
+}
 }
 
 s32 Platform::Files::Open(const char* path, s32 flags)
@@ -739,6 +1259,36 @@ s32 Platform::Files::Open(const char* path, s32 flags)
     }
 
     const bool writing = (flags & (OpenWrite | OpenCreate | OpenTruncate | OpenAppend)) != 0;
+
+    // The archive, as the mods make it: a rebuilt CRASH6/CRASH.BH, and a CRASH6/CRASH.BD of the disc's bytes with the mods'
+    // entries appended after them
+    if (!writing && IsArchiveIndex(path) && ComposeModsArchive())
+    {
+        auto file = std::make_unique<HostFile>();
+        file->memory = g_ArchiveIndex;
+        return Install(std::move(file));
+    }
+    if (!writing && IsArchiveData(path) && ComposeModsArchive())
+    {
+        auto file = std::make_unique<HostFile>();
+        file->composed = true;
+        file->composition = g_ArchiveData;
+        return Install(std::move(file));
+    }
+
+    // A disc file a mod replaces or adds, whole (the disc is never written)
+    if (!writing)
+    {
+        if (const std::string* host = Platform::Mods::File(path))
+        {
+            const s32 modded = OpenHostFile(*host, flags);
+            if (modded >= 0)
+            {
+                return modded;
+            }
+            std::fprintf(stderr, "mods: %s does not open: the disc's own %s is read\n", host->c_str(), path);
+        }
+    }
 
     // The disc's archive index, when its build names things differently: the game is given the index with its own names, so its
     // C++ and its data find the font and the texts of the language they ask for
@@ -756,7 +1306,8 @@ s32 Platform::Files::Open(const char* path, s32 flags)
             }
 
             // Read it once through the layer that serves it, and keep the renamed copy
-            const s32 plain = OpenExact(path, OpenRead);
+            const std::string* moddedIndex = Platform::Mods::File(path);
+            const s32 plain = moddedIndex != nullptr ? OpenHostFile(*moddedIndex, OpenRead) : OpenExact(path, OpenRead);
             if (plain < 0)
             {
                 return -1;
@@ -821,7 +1372,7 @@ s32 Platform::Files::Close(s32 file)
     }
 
     std::lock_guard<std::mutex> lock(handle->mutex);
-    if (handle->image || handle->memory != nullptr)
+    if (handle->image || handle->memory != nullptr || handle->composed)
     {
         return 0;
     }
@@ -836,6 +1387,15 @@ s32 Platform::Files::Read(s32 file, void* buffer, s32 size)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
+    if (handle->composed)
+    {
+        const s32 read = ReadComposed(handle->composition, handle->composedPosition, buffer, size);
+        if (read > 0)
+        {
+            handle->composedPosition += static_cast<u64>(read);
+        }
+        return read;
+    }
     if (handle->memory != nullptr)
     {
         const std::vector<u8>& bytes = *handle->memory;
@@ -876,7 +1436,7 @@ s32 Platform::Files::Write(s32 file, const void* buffer, s32 size)
         return -1;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
-    if (handle->image || handle->memory != nullptr)
+    if (handle->image || handle->memory != nullptr || handle->composed)
     {
         return -1;
     }
@@ -902,6 +1462,19 @@ s32 Platform::Files::Seek(s32 file, s32 offset, Whence whence)
         }
         handle->memoryPosition = static_cast<u64>(position);
         return static_cast<s32>(handle->memoryPosition);
+    }
+    if (handle->composed)
+    {
+        // Past the end is allowed, as the console's is; before the start is not
+        const s64 start = whence == SeekSet ? 0 : whence == SeekCurrent ? static_cast<s64>(handle->composedPosition)
+                                                                       : static_cast<s64>(handle->composition->size);
+        const s64 position = start + offset;
+        if (position < 0)
+        {
+            return -1;
+        }
+        handle->composedPosition = static_cast<u64>(position);
+        return static_cast<s32>(handle->composedPosition);
     }
     if (handle->image)
     {
@@ -943,6 +1516,11 @@ s32 Platform::Files::ReadAt(s32 file, u32 offset, void* buffer, s32 size)
         const s32 wanted = left < static_cast<u64>(size) ? static_cast<s32>(left) : size;
         std::memcpy(buffer, bytes.data() + offset, static_cast<size_t>(wanted));
         return wanted;
+    }
+    if (handle->composed)
+    {
+        // The read position stays where the game left it: the stream channels read in the background
+        return ReadComposed(handle->composition, offset, buffer, size);
     }
     if (handle->image)
     {

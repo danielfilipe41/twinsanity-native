@@ -10,6 +10,11 @@
 // channel and the facing agrees with the mask, since the cull that drew the shell is what decided the facing
 $input v_texcoord0, v_color0
 
+#if BGFX_SHADER_LANGUAGE_ESSL
+// WebGL (ESSL) requires a fragment shader to state its float precision; desktop GLSL does not
+precision highp float;
+#endif
+
 #include <bgfx_shader.sh>
 
 void main()

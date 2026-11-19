@@ -5,6 +5,8 @@
 // runs it.
 #include "platform/saves.h"
 
+#include "platform/mods.h"
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -137,11 +139,18 @@ std::string BasePath()
 #endif
 }
 
+// The cards' base: a modded game's saves go to the cards beside the vanilla ones (platform/mods.h), so a modded save never
+// touches them
+std::string CardBasePath()
+{
+    return Platform::Mods::Enabled() ? BasePath() + "-mods" : BasePath();
+}
+
 std::string CardPath(s32 port, s32 slot)
 {
     char suffix[32];
     ::snprintf(suffix, sizeof(suffix), "/card%d_%d", port, slot);
-    return BasePath() + suffix;
+    return CardBasePath() + suffix;
 }
 
 // A save's directory, as on the card
@@ -206,7 +215,7 @@ s32 FreeKilobytes()
     // The card's directory, or the current one when it isn't there yet (the other side's statvfs falls back to / the
     // same way): a directory that doesn't exist has no free space to report, and a save can't be made with none
     ULARGE_INTEGER freeBytes;
-    if (!GetDiskFreeSpaceExA(BasePath().c_str(), &freeBytes, nullptr, nullptr) &&
+    if (!GetDiskFreeSpaceExA(CardBasePath().c_str(), &freeBytes, nullptr, nullptr) &&
         !GetDiskFreeSpaceExA(nullptr, &freeBytes, nullptr, nullptr))
     {
         return 0;
@@ -214,7 +223,7 @@ s32 FreeKilobytes()
     const u64 freeKilobytes = static_cast<u64>(freeBytes.QuadPart) >> ClusterShift;
 #else
     struct statvfs status;
-    if (::statvfs(BasePath().c_str(), &status) != 0 && ::statvfs("/", &status) != 0)
+    if (::statvfs(CardBasePath().c_str(), &status) != 0 && ::statvfs("/", &status) != 0)
     {
         return 0;
     }
@@ -285,7 +294,7 @@ void CreateSaveStep()
     }
     // The card root only exists after a format, and fresh hosts never run one (the storage reports formatted): make the
     // parents here so the save directory's mkdir has somewhere to land
-    std::string base = BasePath();
+    std::string base = CardBasePath();
     std::string card = CardPath(g_Context.port, g_Context.slot);
     std::string path = SavePath(g_Context.port, g_Context.slot, g_Context.save);
     bool made = MakeDirectories(base) && MakeDirectory(base.c_str()) && MakeDirectory(card.c_str()) &&

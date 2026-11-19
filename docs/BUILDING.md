@@ -24,6 +24,58 @@ git submodule update --init
 The game's files are [Getting the game](../README.md#getting-the-game): the extracted `disc/` folder for the PC builds,
 `SLES_525.68` for the PS2 build.
 
+## A build without the retail data (`DATA=runtime`)
+
+The `game-with-data` builds carry the retail program's tables, strings and vtables in the executable: `tools/host_data.py`
+turns the split's data asm into host objects and the link resolves every pointer in them. `DATA=runtime` is a second way to
+build the same game, with none of that data in it: at the first start it reads `SLES_525.68` out of the disc it is playing
+(the folder, or the image named with `--disc`), copies its data sections into an image whose symbols are the game's, and
+points every pointer the data holds at this port's own function or at the image itself (`src/platform/null/retaildata.cpp`).
+
+```sh
+DATA=runtime PLATFORM=sdl3 python3 configure.py            # Linux host
+DATA=runtime PLATFORM=sdl3 TARGET=windows python3 configure.py   # Windows (cross-build too)
+ninja game
+```
+
+The disc's executable is checked against the European release's SHA-1 before any of it is used: another release's program
+has its data at other addresses and is refused rather than half read. The addresses it needs are `tools/retail_symbols.h`,
+generated from `symbol_addrs.txt` by `tools/retail_map.py` and checked in; `python3 tools/retail_map.py --check` compares
+that map with the pointer words the split itself made. Nothing of the game's data is in such an executable, so it can be
+handed to anyone who owns the disc, and it plays from their copy (the disc's files are needed at every start either way).
+
+The disc has to be there at each start, so the mode suits letting someone play from their own copy, not a build that runs
+without it. Every other build is unchanged.
+
+`--verify-data` does the load and says what it read and relocated, without starting the game:
+
+```sh
+build/host/sdl3/game-with-data --disc "Crash Twinsanity (Europe).iso" --verify-data
+```
+
+`--dump-data` writes the loaded image out word by word, and `tools/retail_parity.py` compares it with the split's data
+objects (which a normal build leaves in `build/host/data`): every word the same, and every pointer the same symbol plus the
+same offset.
+
+```sh
+build/host/sdl3/game-with-data --disc disc --dump-data build/host/retail-image.txt
+python3 tools/retail_parity.py build/host/sdl3/game-with-data build/host/retail-image.txt
+```
+
+`tools/check_runtime_data.py` runs the whole check: the split's objects against the disc's bytes, then a runtime build's
+load against those objects. It builds both ways, leaves the tree on the ordinary build, and exits nonzero on any
+difference.
+
+```sh
+python3 tools/check_runtime_data.py            # disc/
+python3 tools/check_runtime_data.py "my.iso"   # a disc image
+```
+
+The same check runs in CI: `.github/workflows/runtime-data.yml` on the changes that touch the loader or the split, on a
+self-hosted runner that has the disc (the retail files are not in the repository, so a hosted runner has neither half of
+the comparison). It reads the disc's path from the repository variable `TWINSANITY_DISC`, or from the `disc` input when the
+workflow is started by hand, and any difference fails the job.
+
 ## Renderers
 
 A build carries only the renderers its platform uses. `TWINSANITY_RENDERER` names one of them, or `auto` (the first the

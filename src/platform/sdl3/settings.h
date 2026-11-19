@@ -10,6 +10,8 @@
 #include "platform/pads.h"
 #include "platform/system.h"
 
+#include <string>
+
 // The sound processor's first reset: put the file's options into the game, if there is a file
 void HostSettingsApplyOnce();
 // Write the file when the options have changed
@@ -23,6 +25,10 @@ void HostSettingsTick();
 AntiAlias HostSettingsAntiAlias();
 // The antialiasing kept, as the options screen changes it: written at the next tick
 void HostSettingsSetAntiAlias(AntiAlias mode);
+
+// The mods folder the file's `mods_dir` line names ("" when it names none): where the game reads its mods from when they are not
+// mods/ beside the disc's files. A launcher writes it, or the player by hand; the mods are read once, as the game starts
+std::string HostSettingsModsFolder();
 
 // The language the game's voices, movies, title cards and credits are in, from the file's `language` line: english, french,
 // german, spanish or italian, the five the disc carries. English when the file has none, and for a word this build has no
@@ -86,3 +92,13 @@ void HostSettingsSetCutsceneSkip(bool skip);
 // has none): what a scene's own scripts reach their own end in, unseen and unheard. A step holds that many seconds of the scene, so
 // past a few tens a scene passes its own triggers, its physics and its camera between two steps
 u32 HostSettingsCutsceneSpeed();
+
+// Whether the camera's shake is drawn into the picture, from the file's `screen_shake` line: on when the file has none. The
+// game options' row keeps it, and a run answers it as the shake is stepped (the pad's vibration is the game's own option)
+bool HostSettingsScreenShake();
+void HostSettingsSetScreenShake(bool shake);
+
+// Whether a run skips the two logos the game boots with, from the file's `skip_intro` line: off when the file has none. The
+// host's `--skip-intro` is the run's own, on top of this
+bool HostSettingsSkipIntro();
+void HostSettingsSetSkipIntro(bool skip);

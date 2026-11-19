@@ -25,8 +25,7 @@ Known issues:
 - ON LINUX IT ONLY RUNS IF YOU HAVE LIBGL for 32 bit okay so if you dont have it if you have integrated graphics and amd/intel gpus download lib32-mesa if you use nvidia download the package for that google it idk
 
 Future features:
-- Mod support
-- WebGPU support (blocked: bgfx needs Dawn, and Dawn has no 32-bit build)
+- Android build
 - Other consoles button glyphs
 
 QOL Changes:
@@ -132,6 +131,81 @@ the program itself — `SLES_525.68` from the European disc, as above; the compu
 whichever disc they are pointed at.
 What a build on another region's program would take is in [DEVELOPMENT.md](docs/DEVELOPMENT.md#another-regions-disc).
 
+## Building without the retail data (DATA=runtime)
+
+The `game-with-data` build carries the retail program's tables, strings and vtables in the executable: they come out of
+`SLES_525.68` through the split (`tools/split.py`, `tools/host_data.py`). A build can carry none of them instead:
+
+```sh
+DATA=runtime PLATFORM=sdl3 python3 configure.py
+ninja game
+```
+
+It links the game's code alone. At the first start it reads `SLES_525.68` out of the disc it is playing (the folder, or the
+image named with `--disc`) and fills the image the code reads its tables from, pointing every pointer the data holds at this
+port's own function for it, or at the same place in the image for a pointer to data. The disc's executable is checked against
+the European release's SHA-1 before any of it is used: another release's program has its data at other addresses, and is
+refused rather than half read. Nothing of the game's data is in such an executable, so it can be handed to anyone who owns
+the disc, and it plays from their copy. The disc itself is needed at every start, as it is for the data files either way.
+
+`--verify-data` does the load and says what it read and relocated, without starting the game:
+
+```sh
+build/host/sdl3/game-with-data --disc "Crash Twinsanity (Europe).iso" --verify-data
+```
+
+The addresses and names it needs are `tools/retail_symbols.h`, generated from `symbol_addrs.txt`; `tools/retail_map.py
+--check` compares that map with the pointer words the split itself made, and `tools/retail_map.py` writes it again after a
+split that changes the symbols. The build and its checks are the Linux host's (`TARGET=linux`, `PLATFORM=sdl3`); every other
+build, the PS2 one and the data-bearing host one, is unchanged.
+
+## Mods
+
+The game plays the community's mods without a launcher: one folder holds a folder per mod, and `mods.txt` in it lists the ones
+that are on, one per line, in the order they apply (`#` and `;` start a comment; a line of `*` or `all` turns on every mod the
+folder has). Nothing is written to the disc.
+
+The folder is chosen in this order: `--mods-dir`, `TWINSANITY_MODS`, the `mods_dir` line of `settings.txt` (one line, the whole
+path, set by hand or by a launcher), `mods/` beside the disc's files, `./mods`, then the host's own writable folder — `mods/`
+under the platform's preferences directory, made when it is not there. That last one is what a phone or a page uses, where the
+disc's own folder cannot be written; `mods.txt` and unpacked zips live in whichever folder was chosen, so the mods page can save
+whenever that folder is writable. A folder that exists but cannot be written still has its mods read: the log says its
+`mods.txt` cannot change and zips cannot unpack there.
+
+Three shapes are read, decided by what a folder holds, never by its name:
+
+- **A Mod Crate** (Crate Mod Loader's, what the community ships): `ModCrateInfo.txt`, `layer0/` (the disc's files) and
+  `layer1/` (entries of `CRASH6/CRASH.BD` by their index path).
+- **A TwinsanityEvolved mod folder**: `mod.json` with a `disc/` tree laid out like the disc.
+- **A folder of the game's own built files** (TT Lab's output, or loose files): `CRASH6/` and `FMV/` are the disc's files, and
+  `Startup/`, `Levels/`, `Language/` and `Extras/` are the archive's entries. A bare file the tools write (`Default.rm2`,
+  `bossarea.sm2`, a text bank) is placed by its name when the archive has exactly one entry of that name.
+
+A mod's disc files replace the disc's whole. Its archive entries go into a rebuilt `CRASH6/CRASH.BH` and are appended to a
+composed `CRASH6/CRASH.BD`, so an entry may grow or shrink without the disc being touched. Mods are read at start-up, so a
+change takes effect the next time the game starts. While any mod is on, saves go to the `-mods` memory cards beside the vanilla
+ones: a modded save never touches them.
+
+```sh
+build/host/sdl3/game-with-data --mods-dir "path/to/mods" --mod DarkLair   # add one to what mods.txt lists, for this run
+build/host/sdl3/game-with-data --no-mods                                  # the disc as it is
+build/host/sdl3/game-with-data --mods-dir "path/to/mods" --verify-mods   # every file the mods change, byte for byte
+build/host/sdl3/game-with-data --skip-intro                             # the title, with the two boot logos unplayed
+```
+
+In the game, **options → mods** shows a row per mod in the folder, on or off, in the order they apply: toggling a row writes
+`mods.txt` at once, and since the mods are read as the game starts, the page says a restart applies the change.
+
+A crate shipped as a `.zip` needs no unpacking by hand: the game unpacks it once into `mods/<zip name>/` and lists it like any
+other mod (a marker says which zip was unpacked; a newer zip unpacks again). **Not applied**, and said in the log: a crate's
+`ModCrateSettings.txt` and scripts (code changes of Crate Mod Loader's own), a modified executable's code (the port runs its
+own), and TwinsanityEvolved language packs (this port plays its disc's own languages).
+
+The same chain runs on every host. On Android the preferences folder is the app's own writable storage and `mods_dir` can name
+a folder the app can reach (its own files folder, or one a launcher prepared); on the web the folder lives in the page's file
+system, which needs a persistent mount (IDBFS) over the preferences folder for mods and `mods.txt` to survive a reload — this
+checkout's web target compiles but does not link yet.
+
 ## Building
 
 | Platform | Document | State |
@@ -233,6 +307,9 @@ The path the game's files were found at is kept in `gamedata.txt` next to the sa
 the four volume groups (0 effects, 1 second effects, 2 music, 3 movie sound), `stereo <n>` and `widescreen <n>`. The game's
 own save wins where they overlap. `keybinds.txt` sits beside them too (the [controls](#controls)).
 
+`mods_dir <path>` is the mods folder the game reads when it is not `mods/` beside the disc's files (see [Mods](#mods)): one
+line, the whole path, written by hand or by a launcher. The mods are read once, as the game starts.
+
 `render <n>` is the picture's rate, the frames the port presents a second: 50 when the file has none, raised to the logic's
 rate if set lower, and `0` for unlimited (the picture presents as fast as it can be drawn, so with vsync on the display is what
 paces it). The game's logic always steps at the disc's field rate, whatever this says; the frames between two steps draw
@@ -267,6 +344,8 @@ GRAPHIC OPTIONS screen has a row for each, applied as the row is stepped and wri
 | `deadzone` | `0`, `5`, `10`, `15`, `20`: the sticks' dead zone, a percentage of an axis' half range. Inside it a stick reads as the middle, and outside it is moved out to the zone's edge and scaled over the rest of the range, so the centre holds still without the outer travel shrinking. GAME OPTIONS has the row | `0` |
 | `save_card` | `0` to `3`: the card the save screens open on (their pages are the cards), written as the pages are stepped | `0` |
 | `cutscene_skip` | `on`, `off`: whether cutscenes can be skipped (the game options' row). `on` skips a cutscene file on its first viewing and lets a scripted scene with a skip of its own end; `off` is retail's, a file only once it has been played | `on` |
+| `screen_shake` | `on`, `off`: whether the camera's shake is drawn (the game options' row). `off` keeps the picture still; the pad's vibration is the game's own option | `on` |
+| `skip_intro` | `on`, `off`: whether the two logos the game boots with are skipped (the host's `--skip-intro` does the same for one run). Every movie after them still plays: a new game's intro, a level's, a mod's | `off` |
 | `cutscene_speed` | `1` to `1000`: how many seconds of a scripted cutscene a skip runs at a time while the scene runs out unseen. A step holds that much of the scene, so a low rate plays it near normal and a high one passes its triggers and physics between steps; the camera and the characters come out where the scene's own end leaves them at any rate | `10` |
 
 The file is merged when it is written: your own comments and lines this build does not know are kept as they are.

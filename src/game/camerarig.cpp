@@ -12,6 +12,7 @@
 #include "game/player.h"
 #include "game/reference.h"
 #include "platform/graphics.h"
+#include "platform/system.h"
 
 EABI_EXPORT(FUN_0026fe40, PushCameraShake);
 EABI_EXPORT(FUN_00270040, PushCameraShakeAxes);
@@ -162,6 +163,19 @@ void PushCameraShakeAxes(CameraShake* shake, const Vector4* from, f32 xStrength,
 
 void StepCameraShake(CameraShake* shake)
 {
+    // The game options' "screenshake" row: the picture keeps still. The pushes still come (and vibrate the pad), they are just
+    // not added to the camera's offset
+    if (!Platform::System::ScreenShake())
+    {
+        shake->push = g_DefaultBox.min;
+        shake->push.w = 1.0f;
+        shake->offset = g_DefaultBox.min;
+        shake->offset.w = 1.0f;
+        shake->previous = g_DefaultBox.min;
+        shake->previous.w = 1.0f;
+        return;
+    }
+
     // A shake already running is let go when a skip starts, rather than carried on into the picture that comes back
     if (SceneSkipHoldingEffects() != 0)
     {

@@ -61,6 +61,16 @@ void SetCutsceneSkip(bool skip);
 // `cutscene_speed`, 10 by default): the scene's own scripts still reach its own end, only sooner
 u32 CutsceneSkipSpeed();
 
+// Whether the camera's shake is drawn into the picture (the game options' row, on by default): off keeps the camera still
+// while the shake still pushes (the pad's vibration is its own option)
+bool ScreenShake();
+void SetScreenShake(bool shake);
+
+// Whether this run skips the two logos the game boots with (the settings file's `skip_intro`, or the host's `--skip-intro`).
+// Every movie after them plays: a new game's intro, a level's, a cutscene file's, a mod's
+bool SkipIntro();
+void SetSkipIntro(bool skip);
+
 
 struct DateTime
 {

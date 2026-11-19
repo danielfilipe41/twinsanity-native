@@ -274,6 +274,50 @@ public:
     void RefreshLabels();
 };
 
+// The options' mods page (the port's own, "mods"): a row per mod the mods folder has, the ones mods.txt lists first (that is the
+// order they apply in), each a toggle. A row toggled writes mods.txt at once; the game reads the folder as it starts, so the
+// page says a restart applies the change. A run with no mods folder offers no link to it
+class ModsPage : public OlegPage
+{
+public:
+    enum : u32
+    {
+        // The page's own rows, past the retail sub-pages' 0x1C
+        NoModsRowItem = 0x3D,
+        RestartRowItem = 0x3E,
+        BackRowItem = 0x3F,
+        // The most mods it shows, and a mod's row's ID (its index past this one). The menus draw at most 64 rows (menus.cpp's
+        // MaxLines), and the page has the row saying a restart applies and its back row besides: 62 keeps every row drawn
+        MaxMods = 62,
+        FirstModItem = 0x80,
+    };
+
+    // The mods' rows, their ids (the folder names mods.txt takes) and whether each is on as the rows are drawn, the row saying
+    // a restart applies a change, and how many rows
+    MenuItem* rows[MaxMods];
+    const char* ids[MaxMods];
+    u8 state[MaxMods];
+    MenuItem* hint;
+    u32 count;
+    u8 dirty;
+    // Whether the compact sizes are on the options' drawer, which the pages share, and the sizes it had before
+    u8 compact;
+    f32 keptScaleX;
+    f32 keptScaleY;
+    f32 keptSpacing;
+    u32 keptWindow;
+
+    static ModsPage* Construct(ModsPage* page, MenuPage* parent);
+    void Destroy(u32 flags);
+    void Entered(u32 player, u32 mode);
+    // The drawer's own sizes given back when the page is left
+    void Left(u32 player, u32 mode);
+    // A row's toggle changed: mods.txt written as the rows are now
+    void Frame(u32 player, MenuInput* input, MenuSounds* sounds);
+    // The rows that are on written to mods.txt, in the order of the rows
+    void Write();
+};
+
 // The options (D_002F3D00, "options"): the graphic, sound and game options and back; going back shows the main menu (in the
 // main menu) or the pause menu again. The port's controller page is one of its links, made at the options' construction and
 // freed with them (it is not a member, so the retail page's layout stays as it is)

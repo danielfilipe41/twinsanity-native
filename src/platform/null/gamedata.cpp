@@ -218,7 +218,21 @@ bool AskWhichImage(const std::string& folder, std::string* found, void* window)
 bool Platform::GameData::Locate(const char* named, void* window)
 {
 #if defined(__EMSCRIPTEN__)
-    // The page hands the game its data, so a browser has no folder to find
+    // The page hands the game its data: the disc image it wrote into the page's file system (--disc, which its own script
+    // passes) or the files it preloaded. A browser has no folder to find, no picker to ask with and nowhere to keep one
+    if (named != nullptr && named[0] != '\0')
+    {
+        std::string found;
+        std::string several;
+        if (!FindGameFiles(named, &found, &several))
+        {
+            std::fprintf(stderr, "gamedata: --disc %s has no %s and is not a disc image of the game\n", named, DataMarker);
+            return false;
+        }
+        Announce(found);
+        g_LocatedPath = found;
+        Platform::Files::SetRoot(found.c_str());
+    }
     return true;
 #else
     std::string found;

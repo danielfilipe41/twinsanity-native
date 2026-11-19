@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crash Twinsanity</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101014; color: #e8e8ea; font: 16px/1.45 system-ui, sans-serif; }
+  #menu { max-width: 42rem; margin: 0 auto; padding: 3rem 1.5rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 1rem; }
+  p { color: #a8a8b0; }
+  input, button { font: inherit; }
+  button { margin-top: 1rem; padding: .6rem 1.4rem; border: 0; border-radius: .3rem; background: #e8b23a; color: #1a1a1a; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  body.playing #menu { display: none; }
+  /* The run's log: the page has no terminal to write it to, so it is kept here and shown when the run stops on something
+     the player needs to read, or when the player asks for it (F3) */
+  #log { display: none; position: fixed; left: 0; bottom: 0; margin: 0; padding: .4rem .6rem; max-height: 40vh; overflow: hidden;
+         background: rgba(8, 8, 12, .82); color: #b8e0a0; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap;
+         pointer-events: none; }
+  body.show-log #log { display: block; }
+  #hint { position: fixed; right: .5rem; bottom: .4rem; color: rgba(232, 232, 234, .5); font: 11px ui-monospace, monospace;
+          pointer-events: none; }
+  body.show-log #hint { display: none; }
+</style>
+</head>
+<body>
+<div id="menu">
+  <h1>Crash Twinsanity</h1>
+  <p>This build carries none of the game's data: it reads it out of your own disc at every start. Choose the disc image
+     (an ISO, or a raw dump of the disc); it is read here in the page and never uploaded. Saves and settings are kept in this
+     browser's own storage, so they are there next time.</p>
+  <input id="iso" type="file" accept=".iso,.bin,application/octet-stream">
+  <button id="play" disabled>Play</button>
+  <p id="status">Loading the game…</p>
+</div>
+<canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<pre id="log"></pre>
+<div id="hint">F3: log</div>
+<script>
+  var lines = [];
+  // The page's own timers, so a run can stop them when the page goes away
+  var timers = [];
+
+  // The game's own log, on the page: its stderr is where a run says what it read and what it failed at, and a browser has
+  // no terminal to show it in
+  function report(text) {
+    lines.push(String(text));
+    while (lines.length > 200) {
+      lines.shift();
+    }
+    document.getElementById('log').textContent = lines.join('\n');
+  }
+
+  function showLog() {
+    document.body.classList.add('show-log');
+  }
+
+  // F3 asks for the log, and asks again to put it away
+  window.addEventListener('keydown', function (event) {
+    if (event.key === 'F3') {
+      event.preventDefault();
+      document.body.classList.toggle('show-log');
+    }
+  });
+
+  var reportedError = false;
+  window.addEventListener('error', function (event) {
+    if (reportedError) {
+      return;
+    }
+    reportedError = true;
+    report('error: ' + event.message + (event.error && event.error.stack ? '\n' + event.error.stack : ''));
+    showLog();
+  });
+  // A wasm that stops says where in its own stack trace, which the browser writes to the console
+  var consoleError = console.error;
+  console.error = function () {
+    report('console: ' + Array.prototype.join.call(arguments, ' '));
+    consoleError.apply(console, arguments);
+  };
+  window.addEventListener('unhandledrejection', function (event) {
+    report('rejected: ' + event.reason);
+    showLog();
+  });
+
+  // A browser starts a page's audio suspended unless a click or a key press started it, and this page starts the game on its
+  // own when the site hosts an image (no picker to click): the context is resumed at the player's first input, and looked at
+  // now and then as well, so a run that was started by a gesture and went on to a second context is picked up too
+  function resumeAudio() {
+    var context = Module.SDL3 && Module.SDL3.audioContext;
+    if (context && context.state === 'suspended') {
+      context.resume();
+    }
+  }
+
+  ['pointerdown', 'keydown', 'touchstart'].forEach(function (type) {
+    window.addEventListener(type, resumeAudio, { capture: true, passive: true });
+  });
+  timers.push(setInterval(resumeAudio, 1000));
+
+  // The game's saves and its settings file live under $HOME/.local/share/twinsanity (platform/saves.cpp). That directory is
+  // an IndexedDB-backed file system here, so a save survives a reload and the settings (the picture's options, the keybinds,
+  // the disc kept last time) are the player's next visit too
+  var SavesDirectory = '/home/web_user/.local/share/twinsanity';
+  var savesMounted = false;
+
+  // One sync at a time: two in flight overwrite each other's store (a reload used to start one while the run it replaced
+  // was still in the middle of another, and the next load then waited on the browser's own timeout), and a flush that just
+  // happened is not repeated
+  var syncing = false;
+  var syncedAt = 0;
+
+  function syncSaves(load, done) {
+    function finish() {
+      if (done) { done(); }
+    }
+    if (!savesMounted || (syncing && !load)) {
+      finish();
+      return;
+    }
+    if (!load && Date.now() - syncedAt < 2000) {
+      finish();
+      return;
+    }
+    syncing = true;
+    try {
+      FS.syncfs(load, function (error) {
+        syncing = false;
+        syncedAt = Date.now();
+        if (error) {
+          report('saves: ' + error);
+        }
+        finish();
+      });
+    } catch (error) {
+      syncing = false;
+      report('saves: ' + error);
+      finish();
+    }
+  }
+
+  function mountSaves() {
+    return new Promise(function (resolve) {
+      try {
+        FS.mkdirTree(SavesDirectory);
+        FS.mount(IDBFS, {}, SavesDirectory);
+        savesMounted = true;
+        report('saves: kept in this browser');
+        syncSaves(true, resolve);
+      } catch (error) {
+        report('saves: ' + error);
+        resolve();
+      }
+    });
+  }
+
+  // Whatever the run writes is flushed now and then, and when the page is hidden: a tab switch, a close or a reload hides
+  // the page first, while it is still running, so the flush lands there. pagehide only stops the run (below): a sync
+  // started as the page goes would outlive it
+  timers.push(setInterval(function () { syncSaves(false); }, 15000));
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') {
+      syncSaves(false);
+    }
+  });
+
+  // The page is going away: stop the game's loop and the timers with it, so a reload starts the next run without the one
+  // it replaced still drawing behind it (and holding its memory)
+  function stopRunning() {
+    for (var timer = 0; timer < timers.length; timer++) {
+      clearInterval(timers[timer]);
+    }
+    timers.length = 0;
+    if (Module && Module.pauseMainLoop) {
+      try { Module.pauseMainLoop(); } catch (error) {}
+    }
+  }
+
+  window.addEventListener('pagehide', stopRunning);
+
+  var Module = {
+    arguments: [],
+    canvas: document.getElementById('canvas'),
+    print: report,
+    printErr: report,
+    onAbort: function (what) {
+      report('stopped: ' + what);
+      showLog();
+    },
+    onRuntimeInitialized: function () {
+      report('the game is ready');
+      mountSaves().then(firstFrame);
+    }
+  };
+
+  // The disc the page is served beside (?disc=<url>, or disc.iso/disc.bin next to the page) plays without a picker: the
+  // site hosts the player's own image and the page reads it into the game
+  function probe(url) {
+    return fetch(url, { method: 'HEAD' }).then(function (response) {
+      return response.ok ? url : null;
+    }, function () {
+      return null;
+    });
+  }
+
+  function firstFrame() {
+    var hosted = new URLSearchParams(location.search).get('disc');
+    if (hosted) {
+      startUrl(hosted);
+      return;
+    }
+    Promise.all([probe('disc.iso'), probe('disc.bin')]).then(function (found) {
+      var image = found[0] || found[1];
+      if (image) {
+        startUrl(image);
+        return;
+      }
+      document.getElementById('status').textContent = 'Choose the disc image to play.';
+      document.getElementById('play').disabled = document.getElementById('iso').files.length === 0;
+    });
+  }
+
+  (function () {
+    var chooser = document.getElementById('iso');
+    var play = document.getElementById('play');
+    var status = document.getElementById('status');
+
+    chooser.addEventListener('change', function () {
+      play.disabled = chooser.files.length === 0;
+      if (chooser.files.length !== 0) {
+        var file = chooser.files[0];
+        status.textContent = file.name + ' (' + Math.round(file.size / 1048576) + ' MB)';
+      }
+    });
+
+    // The disc's bytes go into the page's file system whole, in chunks so the read does not double the image in memory,
+    // and the game is then run exactly as a desktop run is: --disc names the image and the loader reads SLES_525.68 out
+    // of it at the first start
+    function writeDisc(file) {
+      return new Promise(function (resolve, reject) {
+        try { FS.unlink('/disc.iso'); } catch (error) {}
+        var stream = FS.open('/disc.iso', 'w+');
+        var chunk = 16 * 1024 * 1024;
+        var offset = 0;
+
+        function next() {
+          if (offset >= file.size) {
+            FS.close(stream);
+            resolve();
+            return;
+          }
+          var end = Math.min(offset + chunk, file.size);
+          file.slice(offset, end).arrayBuffer().then(function (buffer) {
+            FS.write(stream, new Uint8Array(buffer), 0, buffer.byteLength, offset);
+            offset = end;
+            status.textContent = 'Reading the disc… ' + Math.round(offset * 100 / file.size) + '%';
+            next();
+          }, reject);
+        }
+
+        next();
+      });
+    }
+
+    // The image a URL names: fetched as a stream, so its bytes go into the page's file system as they arrive and the
+    // browser never holds two copies of a multi-gigabyte disc
+    function writeUrl(url) {
+      return fetch(url).then(function (response) {
+        if (!response.ok) {
+          throw new Error(response.status + ' ' + response.statusText);
+        }
+        var total = Number(response.headers.get('content-length') || 0);
+        var reader = response.body.getReader();
+        try { FS.unlink('/disc.iso'); } catch (error) {}
+        var stream = FS.open('/disc.iso', 'w+');
+        var offset = 0;
+
+        function pump() {
+          return reader.read().then(function (result) {
+            if (result.done) {
+              FS.close(stream);
+              return;
+            }
+            FS.write(stream, result.value, 0, result.value.length, offset);
+            offset += result.value.length;
+            status.textContent = total
+              ? 'Reading the disc… ' + Math.round(offset * 100 / total) + '%'
+              : 'Reading the disc… ' + Math.round(offset / 1048576) + ' MB';
+            return pump();
+          });
+        }
+
+        return pump();
+      });
+    }
+
+    function begin(image) {
+      report('starting the game with --disc ' + image);
+      document.body.className = 'playing';
+      Module.callMain(['--disc', image]);
+    }
+
+    // A disc the site hosts is not copied into memory: the page asks the server for the bytes the game reads, a chunk at a
+    // time, so a 2.5 GB image costs only the chunks the run touches. A blocking read through XHR's binary response types is
+    // refused on the page thread, but one through the old user-defined charset is not, and that is what keeps the reads
+    // synchronous (the game's file I/O is) without a worker or a SharedArrayBuffer
+    function readRange(url, offset, length) {
+      var request = new XMLHttpRequest();
+      request.open('GET', url, false);
+      request.overrideMimeType('text/plain; charset=x-user-defined');
+      request.setRequestHeader('Range', 'bytes=' + offset + '-' + (offset + length - 1));
+      request.send();
+      if (request.status !== 206 && request.status !== 200) {
+        throw new Error('range ' + request.status + ' ' + request.statusText);
+      }
+      // A server that ignored the Range header answers 200 with the whole image, whose bytes start at 0
+      var text = request.responseText;
+      var start = request.status === 206 ? 0 : offset;
+      var bytes = new Uint8Array(length);
+      for (var index = 0; index < length; index++) {
+        bytes[index] = text.charCodeAt(start + index) & 0xFF;
+      }
+      return bytes;
+    }
+
+    // The image mounted as a file system: a read is answered out of the chunks already fetched and fetches any other chunk
+    // then, and only the most recently used are kept, so the page's memory does not grow with the disc
+    function discFilesystem(url, size) {
+      var chunkSize = 1 << 20;
+      var chunks = new Map();
+      var order = [];
+      var kept = 64;
+
+      function chunk(index) {
+        var held = chunks.get(index);
+        if (held) {
+          return held;
+        }
+        var start = index * chunkSize;
+        var bytes = readRange(url, start, Math.min(chunkSize, size - start));
+        chunks.set(index, bytes);
+        order.push(index);
+        if (order.length > kept) {
+          chunks.delete(order.shift());
+        }
+        return bytes;
+      }
+
+      // The stat every node answers with: the image's size for the file, and no timestamps to speak of
+      function statOf(node, fileSize) {
+        return {
+          dev: 1, ino: 2, mode: node.mode, nlink: 1, uid: 0, gid: 0, rdev: 0,
+          size: fileSize, blksize: 4096, blocks: Math.ceil(fileSize / 4096),
+          atime: new Date(0), mtime: new Date(0), ctime: new Date(0)
+        };
+      }
+
+      var streamOps = {
+        read: function (stream, buffer, offset, length, position) {
+          var end = Math.min(position + length, size);
+          var done = 0;
+          while (position < end) {
+            var index = Math.floor(position / chunkSize);
+            var within = position - index * chunkSize;
+            var bytes = chunk(index);
+            var take = Math.min(end - position, bytes.length - within);
+            buffer.set(bytes.subarray(within, within + take), offset + done);
+            position += take;
+            done += take;
+          }
+          return done;
+        },
+        llseek: function (stream, offset, whence) {
+          var position = offset;
+          if (whence === 1) {
+            position += stream.position;
+          } else if (whence === 2) {
+            position += size;
+          }
+          if (position < 0) {
+            throw new FS.ErrnoError(28);
+          }
+          return position;
+        },
+        close: function (stream) {
+          stream.stream_ops = null;
+        }
+      };
+
+      return {
+        mount: function () {
+          var root = FS.createNode(null, '/', 0o040000 | 0o777, 0);
+          root.stream_ops = {};
+          root.node_ops = {
+            getattr: function (self) {
+              return statOf(self, size);
+            },
+            lookup: function (parent, name) {
+              if (name !== 'disc.iso') {
+                throw new FS.ErrnoError(44);
+              }
+              var node = FS.createNode(parent, name, 0o100000 | 0o444, 0);
+              node.stream_ops = streamOps;
+              node.node_ops = {
+                getattr: function (self) {
+                  return statOf(self, 0);
+                }
+              };
+              return node;
+            }
+          };
+          return root;
+        }
+      };
+    }
+
+    function mountDisc(url, size) {
+      try { FS.unmount('/disc'); } catch (error) {}
+      try { FS.mkdir('/disc'); } catch (error) {}
+      FS.mount(discFilesystem(url, size), {}, '/disc');
+    }
+
+    function startUrl(url) {
+      status.textContent = 'Reading the disc…';
+      report('reading ' + url);
+      try { FS.unlink('/disc.iso'); } catch (error) {}
+
+      // A server that answers Range requests is read as the game goes; anything else (a plain static host, a file server
+      // with ranges off) is streamed into the page's file system whole, as a local file is
+      fetch(url, { method: 'HEAD' }).then(function (response) {
+        if (!response.ok) {
+          throw new Error(response.status + ' ' + response.statusText);
+        }
+        var size = Number(response.headers.get('content-length') || 0);
+        var ranges = (response.headers.get('accept-ranges') || '').indexOf('bytes') >= 0;
+        if (ranges && size > 0) {
+          status.textContent = 'Playing…';
+          report('streaming the disc: ' + Math.round(size / 1048576) + ' MB, read a chunk at a time as the game asks');
+          mountDisc(url, size);
+          begin('/disc/disc.iso');
+          return undefined;
+        }
+        return writeUrl(url).then(function () {
+          begin('/disc.iso');
+        });
+      }).catch(function (error) {
+        status.textContent = 'The disc does not read: ' + error;
+        report('the disc does not read: ' + error);
+      });
+    }
+
+    window.startUrl = startUrl;
+
+    play.addEventListener('click', function () {
+      var file = chooser.files[0];
+      if (!file) {
+        return;
+      }
+
+      play.disabled = true;
+      status.textContent = 'Reading the disc…';
+      writeDisc(file).then(function () {
+        begin('/disc.iso');
+      }, function (error) {
+        status.textContent = 'The disc does not read: ' + error;
+        report('the disc does not read: ' + error);
+        play.disabled = false;
+      });
+    });
+  })();
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

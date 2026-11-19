@@ -3,6 +3,11 @@
 // same program covers both paths with no branches.
 $input v_texcoord0, v_color0
 
+#if BGFX_SHADER_LANGUAGE_ESSL
+// WebGL (ESSL) requires a fragment shader to state its float precision; desktop GLSL does not
+precision highp float;
+#endif
+
 #include <bgfx_shader.sh>
 
 SAMPLER2D(s_tex, 0);

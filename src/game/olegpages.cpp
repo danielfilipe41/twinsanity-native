@@ -19,7 +19,12 @@
 #include "game/sound.h"
 #include "game/widgets.h"
 
+#include "platform/mods.h"
+
+#include <cctype>
 #include <cstdio>
+#include <string>
+#include <vector>
 // The options the front end sets are also the ones a save carries: SaveController::TakeOptions copies the live ones when a save
 // is written, and the game applies a save's options when it loads one. Without this, entering a game would apply the last
 // save's options over what the player has just chosen in the menus
@@ -106,6 +111,8 @@ constexpr u32 SoundOptionsItem = 7;
 constexpr u32 GameOptionsItem = 8;
 // The port's own controller page (its link, and its rows are the actions' indexes past the retail items')
 constexpr u32 ControllerOptionsItem = 0x2A;
+// The port's mods page (its link, past the retail options' items and the controller page's)
+constexpr u32 ModsItem = 0x2D;
 constexpr u32 BackText = 4;
 constexpr u32 SubPageBackItem = 0x1C;
 // Their items: vibration (no and yes), centring the screen, widescreen (off and on), the volumes (0 to 10), the output type and
@@ -206,7 +213,11 @@ MenuItem* g_DeadZoneItem = nullptr;
 constexpr u32 CutsceneSkipItemId = 0x2C;
 constexpr u32 CutsceneSkipChoices = 2;
 const char* const CutsceneSkipNames[CutsceneSkipChoices] = {"off", "on"};
+constexpr u32 ScreenShakeItemId = 0x2E;
+constexpr u32 ScreenShakeChoices = 2;
+const char* const ScreenShakeNames[ScreenShakeChoices] = {"off", "on"};
 MenuItem* g_CutsceneSkipItem = nullptr;
+MenuItem* g_ScreenShakeItem = nullptr;
 
 // The two applied as they are stepped. The texts follow the voices while they were the same language, and only a player who
 // picks a different one for them splits the two (which is what a disc with translated-in-another-slot texts wants)
@@ -779,6 +790,10 @@ void GameOptionsPage::Entered(u32 player, u32)
     {
         g_CutsceneSkipItem->SetIntValue(player, Platform::System::CutsceneSkip() ? 1 : 0);
     }
+    if (g_ScreenShakeItem != nullptr)
+    {
+        g_ScreenShakeItem->SetIntValue(player, Platform::System::ScreenShake() ? 1 : 0);
+    }
     if (g_VoicesItem != nullptr)
     {
         g_VoicesItem->SetIntValue(player, static_cast<s32>(Platform::System::LanguageChoice()));
@@ -817,6 +832,16 @@ void GameOptionsPage::Frame(u32 player, MenuInput*, MenuSounds*)
         if (g_CutsceneSkipItem->GetIntValue(player, &cutsceneSkip) != 0)
         {
             Platform::System::SetCutsceneSkip(cutsceneSkip != 0);
+        }
+    }
+
+    if (g_ScreenShakeItem != nullptr)
+    {
+        // Applied as the row is stepped, like the cutscene skip: the shake after it is the picture's, the pad's vibration is not
+        s32 screenShake = 0;
+        if (g_ScreenShakeItem->GetIntValue(player, &screenShake) != 0)
+        {
+            Platform::System::SetScreenShake(screenShake != 0);
         }
     }
 
@@ -1211,6 +1236,261 @@ void ControllerOptionsPage::RefreshLabels()
     }
 }
 
+// The port's mods page: a row per mod the mods folder has, the ones mods.txt lists first (the order they apply in), each a
+// toggle written back to mods.txt as it changes. The game reads the folder once, as it starts, so the page says a restart
+// applies the change
+namespace
+{
+bool SameModId(const std::string& left, const std::string& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < left.size(); index++)
+    {
+        if (std::tolower(static_cast<unsigned char>(left[index])) != std::tolower(static_cast<unsigned char>(right[index])))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void AddOrdered(const Platform::Mods::Mod& mod, const Platform::Mods::Mod** ordered, u32* count)
+{
+    for (u32 at = 0; at < *count; at++)
+    {
+        if (ordered[at] == &mod)
+        {
+            return;
+        }
+    }
+
+    if (*count < ModsPage::MaxMods)
+    {
+        ordered[(*count)++] = &mod;
+    }
+}
+
+ModsPage* ModsPageOf(void* page)
+{
+    return static_cast<ModsPage*>(page);
+}
+
+void ModsPageEntered(void* page, u32 player, u32 mode)
+{
+    ModsPageOf(page)->Entered(player, mode);
+}
+
+void ModsPageFrame(void* page, u32 player, MenuInput* input, MenuSounds* sounds)
+{
+    ModsPageOf(page)->Frame(player, input, sounds);
+}
+
+void ModsPageLeft(void* page, u32 player, u32 mode)
+{
+    ModsPageOf(page)->Left(player, mode);
+}
+
+void ModsPageDestroy(void* page, u32 flags)
+{
+    ModsPageOf(page)->Destroy(flags);
+}
+
+u32 ModsPageBack(void* page, u32 player)
+{
+    (void)page;
+    (void)player;
+    return 0;
+}
+
+void ModsPageUnused(void* page, u32 player)
+{
+    (void)page;
+    (void)player;
+}
+}
+
+// The port's page vtable: entries 0 and 7 are empty, as every retail vtable's are
+const GccVTableEntry g_ModsPageVTable[] = {
+    {0, 0, nullptr},
+    {0, 0, reinterpret_cast<void*>(&ModsPageEntered)},
+    {0, 0, reinterpret_cast<void*>(&ModsPageFrame)},
+    {0, 0, reinterpret_cast<void*>(&ModsPageLeft)},
+    {0, 0, reinterpret_cast<void*>(&ModsPageDestroy)},
+    {0, 0, reinterpret_cast<void*>(&ModsPageBack)},
+    {0, 0, reinterpret_cast<void*>(&ModsPageUnused)},
+    {0, 0, nullptr},
+    {0, 0, reinterpret_cast<void*>(&ModsPageUnused)},
+};
+
+// The page the options made, freed with them (the options page's own layout is retail's, so the page is beside it)
+ModsPage* g_ModsPage = nullptr;
+
+// The page's own sizes for the options' list, which it puts on while it's shown: its rows are smaller and its list a window of
+// fifteen (the retail pages keep the drawer's own sizes, a tenth taller and with every row drawn)
+constexpr f32 ModsItemScaleX = 0.45f;
+constexpr f32 ModsItemScaleY = 0.55f;
+constexpr f32 ModsItemSpacing = Rounded(0.035);
+constexpr u32 ModsWindow = 15;
+
+ModsPage* ModsPage::Construct(ModsPage* page, MenuPage* parent)
+{
+    MenuPage::ConstructTitled(page, PortTextMods, MenuPlayers);
+    page->parent = parent;
+    page->vtable = g_ModsPageVTable;
+    page->count = 0;
+    page->dirty = 0;
+    page->compact = 0;
+    page->keptScaleX = 0.0f;
+    page->keptScaleY = 0.0f;
+    page->keptSpacing = 0.0f;
+    page->keptWindow = 0;
+
+    // The row saying a change waits for the next run, there once one is made. A link with no page, as every retail row with no
+    // value is: the base item's value text is the runtime's pure virtual (a silent abort when a row is drawn)
+    LinkItem* hint =
+        LinkItem::Construct(Allocate<LinkItem>(), PortTextModsRestart, ModsPage::RestartRowItem, nullptr, MenuPlayers);
+    hint->enabled = 0;
+    hint->shown = 0;
+    page->hint = hint;
+    page->Add(hint);
+
+    // The mods mods.txt lists, in its order, then the folder's others
+    const std::vector<Platform::Mods::Mod>& mods = Platform::Mods::Mods();
+    const std::vector<std::string>& listed = Platform::Mods::Listed();
+    const Platform::Mods::Mod* ordered[ModsPage::MaxMods];
+    u32 orderedCount = 0;
+    for (const std::string& id : listed)
+    {
+        for (const Platform::Mods::Mod& mod : mods)
+        {
+            if (SameModId(mod.id, id))
+            {
+                AddOrdered(mod, ordered, &orderedCount);
+            }
+        }
+    }
+    for (const Platform::Mods::Mod& mod : mods)
+    {
+        AddOrdered(mod, ordered, &orderedCount);
+    }
+
+    if (orderedCount == 0)
+    {
+        LinkItem* none = LinkItem::Construct(Allocate<LinkItem>(), PortTextModsNone, ModsPage::NoModsRowItem, nullptr,
+                                             MenuPlayers);
+        none->enabled = 0;
+        page->Add(none);
+    }
+
+    for (u32 index = 0; index < orderedCount; index++)
+    {
+        const Platform::Mods::Mod& mod = *ordered[index];
+        ToggleItem* row = ToggleItem::Construct(Allocate<ToggleItem>(), NoText, ModsPage::FirstModItem + index, OffText, OnText,
+                                               1, mod.listed ? 1 : 0, MenuPlayers);
+        row->text = mod.name.c_str();
+        page->Add(row);
+        page->rows[index] = row;
+        page->ids[index] = mod.id.c_str();
+        page->state[index] = mod.listed ? 1 : 0;
+        page->count++;
+    }
+
+    BackItem* back = BackItem::Construct(Allocate<BackItem>(), BackText, ModsPage::BackRowItem, parent, MenuPlayers);
+    page->Add(back);
+    if (orderedCount != 0)
+    {
+        page->SetFirstItem(ModsPage::FirstModItem);
+    }
+    else
+    {
+        // The "no mods" row is not selectable: the back row is the page's only one
+        page->SetFirstItem(ModsPage::BackRowItem);
+    }
+    return page;
+}
+
+void ModsPage::Destroy(u32 flags)
+{
+    // The drawer's sizes back, if the page goes while it has them on
+    Left(0, 0);
+    vtable = g_OlegPageVTable;
+    MenuPage::Destroy(flags);
+}
+
+void ModsPage::Entered(u32, u32)
+{
+    // The list is the page's own size while it's shown: the options' pages share the drawer, so its sizes are put back when the
+    // page is left
+    MenuDrawer* drawer = OptionsDrawer();
+    if (drawer != nullptr && compact == 0)
+    {
+        keptScaleX = drawer->manyItemsScale.x;
+        keptScaleY = drawer->manyItemsScale.y;
+        keptSpacing = drawer->manyItemsSpacing;
+        keptWindow = drawer->windowSize;
+        drawer->manyItemsScale = {ModsItemScaleX, ModsItemScaleY};
+        drawer->manyItemsSpacing = ModsItemSpacing;
+        drawer->windowSize = ModsWindow;
+        compact = 1;
+    }
+}
+
+void ModsPage::Left(u32, u32)
+{
+    MenuDrawer* drawer = OptionsDrawer();
+    if (drawer != nullptr && compact != 0)
+    {
+        drawer->manyItemsScale = {keptScaleX, keptScaleY};
+        drawer->manyItemsSpacing = keptSpacing;
+        drawer->windowSize = keptWindow;
+        compact = 0;
+    }
+}
+
+void ModsPage::Frame(u32, MenuInput*, MenuSounds*)
+{
+    // A row toggled: mods.txt written as the rows are now
+    bool changed = false;
+    for (u32 index = 0; index < count; index++)
+    {
+        const u8 on = static_cast<ValueItem*>(rows[index])->values[0] != 0 ? 1 : 0;
+        if (on != state[index])
+        {
+            state[index] = on;
+            changed = true;
+        }
+    }
+
+    if (changed)
+    {
+        Write();
+    }
+}
+
+void ModsPage::Write()
+{
+    std::vector<std::string> enabled;
+    for (u32 index = 0; index < count; index++)
+    {
+        if (state[index] != 0)
+        {
+            enabled.push_back(ids[index]);
+        }
+    }
+
+    if (!Platform::Mods::WriteList(enabled))
+    {
+        return;
+    }
+
+    dirty = 1;
+    hint->shown = EveryPlayer;
+}
+
 OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
 {
     MenuPage::ConstructTitled(page, OptionsText, MenuPlayers);
@@ -1261,6 +1541,13 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
                              CutsceneSkipChoices, Platform::System::CutsceneSkip() ? 1 : 0);
     game.Add(cutsceneSkip);
     g_CutsceneSkipItem = cutsceneSkip;
+
+    // Whether the camera's shake is drawn: the pads' vibration is its own row, so this one is the picture's
+    ChoiceItem* screenShake =
+        ConstructNamedChoice(Allocate<ChoiceItem>(), PortTextScreenShake, ScreenShakeItemId, ScreenShakeNames,
+                             ScreenShakeChoices, Platform::System::ScreenShake() ? 1 : 0);
+    game.Add(screenShake);
+    g_ScreenShakeItem = screenShake;
 
     game.Add(gameBack);
 
@@ -1330,12 +1617,29 @@ OptionsPage* OptionsPage::Construct(OptionsPage* page, MenuPage* parent)
         page->Add(controllerLink);
     }
 
+    // The port's mods page, when the game found a mods folder: a row per mod, written back to mods.txt, applied at the next run
+    g_ModsPage = nullptr;
+    if (Platform::Mods::Folder()[0] != '\0')
+    {
+        ModsPage* modsPage = ModsPage::Construct(Allocate<ModsPage>(), page);
+        g_ModsPage = modsPage;
+        LinkItem* modsLink = LinkItem::Construct(Allocate<LinkItem>(), PortTextMods, ModsItem, modsPage, MenuPlayers);
+        page->Add(modsLink);
+    }
+
     page->Add(back);
     return page;
 }
 
 void OptionsPage::Destroy(u32 flags)
 {
+    if (g_ModsPage != nullptr)
+    {
+        // Its rows are the page's, freed with it
+        g_ModsPage->Destroy(DestroyAndFree);
+        g_ModsPage = nullptr;
+    }
+
     if (g_ControllerOptionsPage != nullptr)
     {
         // Its items and rows are the page's, freed with it

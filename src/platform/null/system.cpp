@@ -75,6 +75,25 @@ u32 Platform::System::CutsceneSkipSpeed()
     return 10;
 }
 
+// The shake is the picture's and nothing here turns it off; a run without a host is never told to skip the opening movies
+bool Platform::System::ScreenShake()
+{
+    return true;
+}
+
+void Platform::System::SetScreenShake(bool)
+{
+}
+
+bool Platform::System::SkipIntro()
+{
+    return false;
+}
+
+void Platform::System::SetSkipIntro(bool)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

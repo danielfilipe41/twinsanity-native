@@ -27,7 +27,7 @@ extern "C"
     // The character given another as its vehicle, of a kind (CharacterAgent::SetVehicle: the hoverboard armed or not)
     void SetPlayerVehicle(PlayerCharacter* character, u32 kind, PlayerCharacter* other, u32 armed) RETAIL(SetPlayerVehicle);
     // Two characters tied together, each given the other, and untied (by the first)
-    void LinkCharacters(PlayerCharacter* character, PlayerCharacter* other) RETAIL(FUN_00132ca8);
+    u32 LinkCharacters(PlayerCharacter* character, PlayerCharacter* other) RETAIL(FUN_00132ca8);
     void UnlinkCharacters(PlayerCharacter* character) RETAIL(FUN_00132dc0);
     // The leader, from the second's link (CharacterLink::Leader)
     PlayerCharacter* LinkedCharacter(CharacterLink* link) RETAIL(FUN_0015fdc0);

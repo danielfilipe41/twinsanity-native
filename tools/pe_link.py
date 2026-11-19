@@ -27,7 +27,9 @@ def nm_names(nm, objects, undefined):
         if not separator:
             continue
         parts = rest.split()
-        if not parts or (undefined and parts[0] != "U"):
+        # Undefined, and the weak forms of it: the runtime data's host table takes every function by a weak reference,
+        # and a PE leaves an undefined weak one at 0 unless it is given the definition's spelling
+        if not parts or (undefined and parts[0] not in ("U", "w", "v")):
             continue
         name = parts[-1]
         # Section and COFF pseudo symbols (".text$foo", ".data") have no counterpart on the other side

@@ -16,6 +16,7 @@
 #include <bgfx/bgfx.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -122,11 +123,12 @@ const HostPlayer* AsHost(const Platform::Movie::Player* player)
 }
 
 // Whether bgfx runs (a display's GL context exists): every GPU call goes through this, so the headless proof
-// (no BgfxInit) still decodes, converts and checksums without touching bgfx
+// (no BgfxInit) still decodes, converts and checksums without touching bgfx. The caps are what bgfx itself publishes for
+// that question (null until it is initialised); the internal data's context pointer is not: the web build's bgfx keeps it
+// null even while it renders, so a movie there made no texture and drew nothing at all
 bool GpuReady()
 {
-    const bgfx::InternalData* data = bgfx::getInternalData();
-    return data != nullptr && data->context != nullptr;
+    return bgfx::getCaps() != nullptr;
 }
 
 u32 Fnv1a(const u8* bytes, u32 length)
@@ -428,6 +430,8 @@ bool Platform::Movie::Open(Player* player, const char* file, u32 audioChannel, s
     QueueDecoded(host);
     DecodeNext(host);
     host->opened = true;
+    std::fprintf(stderr, "movie: %s, %u bytes, %u frames a second\n", path.c_str(), static_cast<u32>(host->fileBytes.size()),
+                 host->decoder.FrameRateCode());
     return true;
 }
 
@@ -469,9 +473,24 @@ void Platform::Movie::WaitFrame(Player* player)
                                        30.0,         50.0,            60000.0 / 1001.0, 60.0};
     u32 code = host->decoder.FrameRateCode();
     double rate = code < sizeof(Rates) / sizeof(Rates[0]) && Rates[code] > 0.0 ? Rates[code] : 25.0;
-    host->nextPresent += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(1.0 / rate));
+    const std::chrono::steady_clock::duration interval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / rate));
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+#if defined(__EMSCRIPTEN__)
+    // A page's thread is the browser's: blocking it for a frame's length stops everything - the run's own display frames
+    // (which are only drawn when a callback returns), the game's sound (its callback runs between those frames) and the page
+    // itself. So a picture is presented when the movie's next one falls due and the one on screen stays up in between (the game
+    // draws it every step), which keeps the movie to its own rate, wall clock by wall clock, without stopping anything: the
+    // presents are what take a picture out of the queue, so the frames between them are not lost, they are simply not shown
+    if (now < host->nextPresent)
+    {
+        return;
+    }
+
+    host->nextPresent = now + interval;
+    host->present();
+#else
+    host->nextPresent += interval;
     if (host->nextPresent > now)
     {
         std::this_thread::sleep_for(host->nextPresent - now);
@@ -482,6 +501,7 @@ void Platform::Movie::WaitFrame(Player* player)
         host->nextPresent = now;
     }
     host->present();
+#endif
 }
 
 void Platform::Movie::QueuePicture(Player* player)

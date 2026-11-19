@@ -293,6 +293,25 @@ u32 Platform::System::CutsceneSkipSpeed()
     return 1;
 }
 
+// The console's options are the game's own, and its run has no host to ask: the shake is drawn and the opening movies play
+bool Platform::System::ScreenShake()
+{
+    return true;
+}
+
+void Platform::System::SetScreenShake(bool)
+{
+}
+
+bool Platform::System::SkipIntro()
+{
+    return false;
+}
+
+void Platform::System::SetSkipIntro(bool)
+{
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     sceCdCLOCK clock;

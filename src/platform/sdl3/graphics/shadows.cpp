@@ -69,6 +69,9 @@ bool g_frameHasDepth = false;
 f32 g_amountValue[4] = {ShadowAmount, ShadowCountFull, 0.0f, 0.0f};
 // The near and far planes the ramp turns the frame's perspective depth into a distance with (the same object's x and y)
 bgfx::UniformHandle g_shadowLinearU = BGFX_INVALID_HANDLE;
+// The resolve's ramp override (x: 1 forces the ramp to y, fs_shadowresolve.sc): the web sets it, since the frame's depth it
+// would index the palette with is not dependable there
+bgfx::UniformHandle g_shadowRampU = BGFX_INVALID_HANDLE;
 // w: the resolve's destination-alpha gate (shader u_shadowLinear.w): 1 samples the frame's own alpha per pixel and only
 // opaque pixels take a shadow, retail's TEST{DEST=1}. Was 0 (gate off, everything takes the shadow, casters included)
 f32 g_shadowLinearValue[4] = {0.1f, 1000.0f, 0.0f, 1.0f};
@@ -133,6 +136,7 @@ void MakeShared()
     g_frameSampler = bgfx::createUniform("s_frame", bgfx::UniformType::Sampler);
     g_amount = bgfx::createUniform("u_shadowAmount", bgfx::UniformType::Vec4);
     g_shadowLinearU = bgfx::createUniform("u_shadowLinear", bgfx::UniformType::Vec4);
+    g_shadowRampU = bgfx::createUniform("u_shadowRamp", bgfx::UniformType::Vec4);
 }
 
 // The frame's colour, copied for the resolve's destination-alpha gate. Retail shrinks the frame's colour into its half-size
@@ -167,6 +171,74 @@ bgfx::TextureHandle g_halfColour = BGFX_INVALID_HANDLE;
 bgfx::TextureHandle g_halfDepth = BGFX_INVALID_HANDLE;
 // Whether the volumes are testing against that copied scene depth (true) or against their own footprint depth (false)
 bool g_volumesOverSceneDepth = false;
+
+#if defined(__EMSCRIPTEN__)
+// TEMPORARY probe: the coverage target read back, so a run says whether the volumes leave anything in it. The target is
+// cleared GREEN for it (BeginShadows), so green proves the read reaches the target at all and any red is a shell a volume drew
+bgfx::TextureHandle g_probeRead = BGFX_INVALID_HANDLE;
+u32 g_probeSize = 0;
+u32 g_probePending = 0;
+u32 g_probeWaited = 0;
+u32 g_probeTick = 0;
+u8* g_probePixels = nullptr;
+u32 g_probeBytes = 0;
+
+void ProbeTick(u32 width, u32 height)
+{
+    if (g_probePending != 0)
+    {
+        if (++g_probeWaited < 4)
+        {
+            return;
+        }
+        g_probePending = 0;
+        g_probeWaited = 0;
+        u32 peakR = 0;
+        u32 peakG = 0;
+        u32 red = 0;
+        for (u32 pixel = 0; pixel + 3 < g_probeBytes; pixel += 4)
+        {
+            peakR = g_probePixels[pixel] > peakR ? g_probePixels[pixel] : peakR;
+            peakG = g_probePixels[pixel + 1] > peakG ? g_probePixels[pixel + 1] : peakG;
+            red += g_probePixels[pixel] != 0 ? 1 : 0;
+        }
+        std::fprintf(stderr, "probe coverage: peak R %u G %u, %u pixels with red\n", peakR, peakG, red);
+        return;
+    }
+    if (++g_probeTick % 120 != 0 || !bgfx::isValid(g_halfColour) || width == 0 || height == 0)
+    {
+        return;
+    }
+    const u32 size = width * height * 4;
+    if (g_probeBytes < size)
+    {
+        delete[] g_probePixels;
+        g_probePixels = new u8[size];
+        g_probeBytes = size;
+    }
+    if (!bgfx::isValid(g_probeRead) || g_probeSize != width * 65536u + height)
+    {
+        if (bgfx::isValid(g_probeRead))
+        {
+            bgfx::destroy(g_probeRead);
+        }
+        g_probeRead = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1,
+                                            bgfx::TextureFormat::RGBA8,
+                                            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK | BGFX_SAMPLER_MIN_POINT |
+                                                BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        g_probeSize = width * 65536u + height;
+    }
+    if (!bgfx::isValid(g_probeRead))
+    {
+        return;
+    }
+    bgfx::setViewRect(HostShadowVolumeDepthView, 0, 0, static_cast<u16>(width), static_cast<u16>(height));
+    bgfx::blit(HostShadowVolumeDepthView, {.handle = g_probeRead}, {.handle = g_halfColour});
+    bgfx::touch(HostShadowVolumeDepthView);
+    g_probePending = bgfx::read({.handle = g_probeRead}, g_probePixels);
+    g_probeWaited = 0;
+}
+#endif
 
 // The coverage target: the frame's size, an RGBA8 colour the volumes write their coverage's alpha into and a D24S8 depth
 // (their own test, which they write as they draw). Remade when the frame's size changes
@@ -290,9 +362,15 @@ void BeginShadows()
     // Only the coverage target is bound. With the frame's depth copied in, the volumes test against THAT and the depth must not
     // be cleared; without one they test against their own depth, which is cleared to the near end for them to write
     bgfx::setViewFrameBuffer(HostShadowVolumeView, g_half);
+#if defined(__EMSCRIPTEN__)
+    // TEMPORARY probe: green instead of no coverage, so a read-back of the target says whether the read reaches it
+    constexpr u32 clearColour = 0x0000FF00u;
+#else
+    constexpr u32 clearColour = ShadowClearColour;
+#endif
     bgfx::setViewClear(HostShadowVolumeView,
                        g_volumesOverSceneDepth ? BGFX_CLEAR_COLOR : (BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH),
-                       ShadowClearColour, ShadowClearDepth, 0);
+                       clearColour, ShadowClearDepth, 0);
 
     bgfx::touch(HostShadowVolumeView);
 
@@ -327,6 +405,9 @@ void EndShadows()
     // The resolve covers the frame (the target it darkens), which is the size it was given with the target
     const u32 width = g_frameWidth != 0 ? g_frameWidth : BgfxWindowWidth;
     const u32 height = g_frameHeight != 0 ? g_frameHeight : BgfxWindowHeight;
+#if defined(__EMSCRIPTEN__)
+    ProbeTick(width, height);
+#endif
 
     // One fullscreen triangle over the frame (the overhang samples clamp to the edge)
     bgfx::TransientVertexBuffer buffer;
@@ -394,6 +475,24 @@ void EndShadows()
     // distance in metres the ramp falls from full to none over, which is NOT retail (retail has no such number): it exists only
     // because the host's perspective depth cannot be used as that index directly, packing the whole visible world into its last
     // few percent.
+    // The web grades the shadow with neither of the two textures it would need: the frame's colour copy (the destination-alpha
+    // gate) comes from a target-to-target blit and the frame's depth from a depth sample, and on WebGL neither gives a value a
+    // shadow can be graded by - the gate reads black and zeroes every pixel, the depth reads 0 and the palette ramp lands on its
+    // transparent end, so a shadow would be lost whole. One strength over everything is what retail's single factor amounts to
+    // anyway (the ramp only spread it), so the web draws that instead
+#if defined(__EMSCRIPTEN__)
+    g_shadowLinearValue[3] = 0.0f;
+    {
+        static bool loggedRamp = false;
+        if (!loggedRamp)
+        {
+            loggedRamp = true;
+            std::fprintf(stderr, "shadows: web draws one strength (no frame-colour gate, no depth ramp)\n");
+        }
+    }
+    const f32 forcedRamp[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+    bgfx::setUniform(g_shadowRampU, forcedRamp);
+#endif
     bgfx::setUniform(g_shadowLinearU, g_shadowLinearValue);
     bgfx::setVertexBuffer(0, &buffer);
     bgfx::submit(HostShadowView, g_resolve);

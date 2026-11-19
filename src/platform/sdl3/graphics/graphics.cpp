@@ -910,6 +910,11 @@ void Platform::Graphics::WaitVSync()
     // this waits the picture's turn out, and nothing else: the game's clock moves on its own step (main.cpp takes it when
     // Platform::Time::LogicStepDue, the wall clock's 50 a second, says it is owed). A frame that overruns starts the next
     // one from now instead of being paid back in a burst (retail drops the time too: its timer keeps running)
+#if defined(__EMSCRIPTEN__)
+    // The page's frames are the browser's: it calls the game back once a display frame, so there is nothing to wait out
+    // (and a sleep here would stall the tab instead of yielding to it)
+    return;
+#endif
     constexpr long long NanosecondsPerSecond = 1000000000ll;
     // The picture's rate, which the options menu changes while the game runs: Platform::Time owns it, and 0 there is unlimited
     // (nothing to wait for: the loop presents as fast as it draws)

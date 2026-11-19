@@ -61,6 +61,20 @@ TWINSANITY_RENDERER=vulkan ../build/host/sdl3/game-with-data
 
 Renderers and shader blobs are [here](BUILDING.md#renderers).
 
+## A build that carries none of the disc's data
+
+`DATA=runtime` builds the same game with none of the retail data baked in: the disc's executable is read at the first start,
+its data put where the code reads it, and every pointer in it pointed at this port's own function or at the image itself.
+
+```sh
+DATA=runtime PLATFORM=sdl3 .venv/bin/python configure.py
+ninja game
+build/host/sdl3/game-with-data --disc "../Crash Twinsanity (Europe).iso" --verify-data   # the load, then exit
+```
+
+`SLES_525.68` has to be the European release's (its SHA-1 is checked): the addresses in `tools/retail_symbols.h` are that
+program's. More in [the README](../README.md#building-without-the-retail-data-dataruntime).
+
 ## Compiling without a platform layer
 
 `PLATFORM=null .venv/bin/python configure.py` builds the same game C++ against the null platform with the system

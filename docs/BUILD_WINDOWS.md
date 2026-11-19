@@ -128,3 +128,19 @@ things the Linux and MinGW builds use on purpose:
 Making MSVC work means replacing those behind `_MSC_VER` -- a portability pass, not a compiler switch. `clang-cl` is the
 smaller step if native Windows tooling is ever needed: it accepts the GNU inline asm and most of the builtins, though the
 `__attribute__((optimize(...)))` sites still need to become pragmas or `__declspec` alternatives.
+
+## A build without the retail data
+
+`DATA=runtime` builds the same `.exe` with none of the disc's data baked in: it reads `SLES_525.68` out of the disc it is
+playing (the folder, or the `--disc` image) at the first start and fills the image the game's symbols name.
+
+```sh
+DATA=runtime PLATFORM=sdl3 TARGET=windows python3 configure.py
+ninja game
+wine build/win32/game-with-data.exe --disc disc --verify-data
+```
+
+The host table takes every function by a weak reference, whose retail name PE leaves at 0 unless it is given the
+definition's underscored spelling; `tools/pe_link.py` bridges that, as it does the data symbols. The rest -- the disc's
+SHA-1 check, `--verify-data`, `--dump-data` and the parity check -- is the same on both platforms, and described in
+[BUILDING.md](BUILDING.md#a-build-without-the-retail-data-dataruntime).

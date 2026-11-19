@@ -1,30 +1,23 @@
-
-=== Crash Twinsanity host crash ===
-SIGSEGV (bad memory access)
-at 2026-11-06 22:07:00
-si_addr 0x00000000
-si_code 0x00000001
-gs 0x00000063
-fs 0x00000000
-es 0x0000002b
-ds 0x0000002b
-edi 0xeba9e670
-esi 0xf473d9f0
-ebp 0xf473d938
-esp 0xf473d8d8
-ebx 0xf473d9e4
-edx 0xc4e18ed0
-ecx 0x000000c0
-eax 0x00000000
-trapno 0x0000000e
-err 0x00000004
-eip 0xf7473670
-cs 0x00000023
-eflags 0x00210206
-uesp 0xf473d8d8
-ss 0x0000002b
-
-backtrace (innermost first; the addresses can be read with
-  addr2line -f -C -e <the built binary> <address>
-):
-/usr/lib32/libc.so.6(+0x1fb670) [0xf7473670]
+gamedata: reading the game's files from the disc image /home/venomousatatab/Documents/Crash Twinsanity (Europe) (En,Fr,De,Es,It).iso (volume "CRASH")
+mods: /home/venomousatatab/Documents/mods: no mods in it (one folder per mod, mods.txt lists the ones that are on)
+sdl3: window 1920x1006 windowed, vsync off, picture stretch, scale 4x (scene 3840x2160, antialias smaa)
+sdl3: pop-in distance 4x (6000 units, load walls 8, chunks 5 links deep)
+bgfx: renderer OpenGL 4.3 (NDC depth [0, 1], origin top left)
+bgfx: anti-aliasing smaa
+sdl3: sound device 48000 Hz, 2 channels
+sdl3: 50 Hz logic, unlimited display (PAL picture)
+keybinds: /home/venomousatatab/.local/share/twinsanity/keybinds.txt read
+settings: language english, texts english
+movie: FMV\VIVENDI.PSS, 8929284 bytes, 3 frames a second
+movie: FMV\TTIDENT.PSS, 15941636 bytes, 3 frames a second
+probe turned: material 0x9e86700 texture 0 0 1 1 matrix -0.000470377 -0.000557344 0.200418 -0.169145 0.1625 0.15 corners 0.0781627 0.0495123 0.247308 0.0500696 0.0776923 0.24993 0.246837 0.250488 flip 0
+probe turned: material 0x99bf7e0 texture 0 0 1 1 matrix 0.0675 0.12 0 0 -0.4975 0.22 corners -0.53125 0.28 -0.53125 0.16 -0.46375 0.28 -0.46375 0.16 flip 1
+probe turned: material 0xd4e43ca0 texture 0 0 1 1 matrix 0.05625 0.075 0 0 -0.2875 0.21 corners -0.315625 0.2475 -0.315625 0.1725 -0.259375 0.2475 -0.259375 0.1725 flip 1
+probe turned: material 0x99cf9f0 texture 0 0 1 1 matrix 0.03 0.075 0 0 -0.30625 0.31 corners -0.32125 0.3475 -0.32125 0.2725 -0.29125 0.3475 -0.29125 0.2725 flip 1
+probe turned: material 0x99bf930 texture 0 0 1 1 matrix 0.0675 0.12 0 0 1.3025 0.31 corners 1.26875 0.37 1.26875 0.25 1.33625 0.37 1.33625 0.25 flip 1
+probe turned: material 0x99dc080 texture 0 0 1 1 matrix 0.0675 0.12 0 0 -0.4975 0.4 corners -0.53125 0.46 -0.53125 0.34 -0.46375 0.46 -0.46375 0.34 flip 1
+probe turned: material 0x99bfa80 texture 0 0 1 1 matrix 0.0675 0.12 0 0 1.3025 0.49 corners 1.26875 0.55 1.26875 0.43 1.33625 0.55 1.33625 0.43 flip 1
+movie: FMV\H01_A.PSS, 77201412 bytes, 3 frames a second
+probe turned: material 0x99a5f60 texture 0 0 1 1 matrix 0.0618905 0.15 0 0 -0.2875 0.12 corners -0.318445 0.195 -0.318445 0.045 -0.256555 0.195 -0.256555 0.045 flip 1
+probe turned: material 0x999f180 texture 0 0 1 1 matrix 0 0 0 0 0.5 0.5 corners 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 flip 0
+probe turned: material 0xd3d0fa08 texture 0.25 0 0.25 0.25 matrix 0.0444444 0.025 0 0 0.332066 0.701392 corners 0.309844 0.713892 0.309844 0.688892 0.354288 0.713892 0.354288 0.688892 flip 1

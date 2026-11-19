@@ -1684,6 +1684,12 @@ u32 case_0x12 = 0;
 u32 case_0x15 = 0;
 u32 case_0x16 = 0;
 u32 case_0x17 = 0;
-u32 func_001412EC = 0;
-u32 func_00141304 = 0;
+// The agents' switch labels are code: the retail data's table holds their address as a code pointer, so the host gives
+// them a function to point at (nothing calls through it)
+void func_001412EC()
+{
+}
+void func_00141304()
+{
+}
 }

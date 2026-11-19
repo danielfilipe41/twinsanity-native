@@ -166,6 +166,7 @@ bool StartAudio()
         return false;
     }
 
+    std::fprintf(stderr, "sdl3: sound device %d Hz, %d channels\n", MixRate, MixChannels);
     return true;
 }
 }
@@ -215,12 +216,14 @@ s32 Platform::Sound::InitialiseRemote()
 
 void Platform::Audio::Reset()
 {
-    // The sound processor starting fresh is where the game puts its defaults: the host's settings file, if there is one, is put
-    // in first (it calls SetGroupVolume)
-    HostSettingsApplyOnce();
+    // The processor starts fresh first: that is what puts every group at full and every core where its start-up leaves it. The
+    // host's settings file, if there is one, is put over that afterwards (it calls SetGroupVolume). The other way round the file
+    // went in and the reset took it straight back out, and the game's own ApplyGroupVolumes - which writes the values it keeps -
+    // then wrote the file's zeros to the module: a run that read a file written before the game set its options was silent
     LockAudio();
     Module().Reset();
     UnlockAudio();
+    HostSettingsApplyOnce();
 }
 
 void Platform::Audio::PauseAll()

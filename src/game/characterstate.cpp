@@ -32,7 +32,7 @@ extern "C"
         RETAIL(AddInstanceDecal);
     // An object node's slot animation played (the blend's seconds first; commandsfocus.cpp)
     void PlaySlotAnimation(f32 blendSeconds, ObjectNode* node, u32 slot, u32 loops) RETAIL_N32(FUN_002124c0);
-    void CopyShort(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
+    u16* CopyShort(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
 }
 
 EABI_EXPORT(FUN_00137010, &CharacterAgent::PushBack);

@@ -395,6 +395,7 @@ void SdlAudio::Spu2::SoundModule::Mix(s16* stereo, u32 frames)
     // is far more often than either needs
     FillStreams();
     TrackStreams();
+
 }
 
 // ---- the processor's whole state ----
@@ -931,6 +932,9 @@ u32 SdlAudio::Spu2::SoundModule::LoadSoundBank(u32 sound, const u8* data, u32 si
     // Retail loads each sound once, but a level loaded again would otherwise leave its block behind
     if (m_sounds[sound].used)
     {
+        // The block is let go of here, so a voice still reading it goes with it: a level re-entered as a scene is raced through reads
+        // its banks again while the sounds it started are still sounding
+        KeyOffVoicesReading(sound);
         m_memory.Release(sound);
         m_sounds[sound] = Sound();
     }
@@ -1057,6 +1061,25 @@ void SdlAudio::Spu2::SoundModule::ReserveSounds(u16 count)
     (void)count;
 }
 
+// The game has let a sound's samples go, so a voice still reading the block is let go with them: left keyed on, it would read whatever
+// the memory is handed out for next, which is heard as noise
+void SdlAudio::Spu2::SoundModule::KeyOffVoicesReading(u32 sound)
+{
+    Device& device = SoundProcessor();
+    for (s32 voice = 0; voice < VoiceCount; voice++)
+    {
+        Channel& channel = m_channels[voice];
+        if (channel.state == ChannelState::Off || channel.sound != sound)
+        {
+            continue;
+        }
+
+        device.SetVoiceRelease(voice, 0x0D);
+        device.KeyOff(voice);
+        channel.sound = NoSound;
+    }
+}
+
 void SdlAudio::Spu2::SoundModule::ReleaseSound(u32 sound)
 {
     if (sound >= SoundSlots)
@@ -1066,22 +1089,7 @@ void SdlAudio::Spu2::SoundModule::ReleaseSound(u32 sound)
 
     if (m_sounds[sound].used)
     {
-        // A voice still reading this block would be left reading whatever the memory is handed out for next, which is heard as
-        // noise: the game has let the samples go, so the voice is let go with them
-        Device& device = SoundProcessor();
-        for (s32 voice = 0; voice < VoiceCount; voice++)
-        {
-            Channel& channel = m_channels[voice];
-            if (channel.state == ChannelState::Off || channel.sound != sound)
-            {
-                continue;
-            }
-
-            device.SetVoiceRelease(voice, 0x0D);
-            device.KeyOff(voice);
-            channel.sound = NoSound;
-        }
-
+        KeyOffVoicesReading(sound);
         m_memory.Release(sound);
         m_sounds[sound] = Sound();
     }

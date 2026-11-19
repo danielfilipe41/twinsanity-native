@@ -40,6 +40,78 @@ extern "C"
     extern char* g_DefaultArguments RETAIL(D_00309884);
 }
 
+namespace
+{
+// One display frame: the picture's boundary, then either a step of the game or (on the hosts, between two steps) a redraw of
+// the last step eased towards the next. The console's frame is its field, so there it is one step a call. Returns whether the
+// run is still going
+bool GameFrame(GameContext* context, bool& drawn)
+{
+    Platform::Graphics::WaitVSync();
+    const bool playingMovie = IsPlayingMovie(G_GameMovieController);
+
+#ifndef __mips__
+    if (!Platform::Time::LogicStepDue())
+    {
+        if (drawn && !playingMovie)
+        {
+            HostRedrawFrame(Platform::Time::LogicAlpha());
+        }
+        return g_GameState != GameStateQuitting;
+    }
+
+    Platform::Time::AdvanceFrame();
+    HostFrame::SetAlpha(0.0f);
+    HostFrame::SetRedraw(false);
+    HostFrame::BeginLogicStep();
+    Platform::Graphics::BeginLogicFrame();
+    drawn = true;
+
+    const s32 logicRate = Platform::Time::FrameRate();
+    if (logicRate > 0)
+    {
+        g_ParticleFrameDelta = 1.0f / static_cast<f32>(logicRate);
+    }
+#else
+    (void)drawn;
+#endif
+
+    context->BeginFrame(playingMovie);
+    context->Update(playingMovie);
+    context->EndFrame(playingMovie);
+    context->Render(playingMovie);
+    return g_GameState != GameStateQuitting;
+}
+}
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#include <cstdio>
+namespace
+{
+GameContext* g_WebContext = nullptr;
+bool g_WebDrawn = false;
+
+// The page's frame: the browser calls back once a display frame, because the run cannot be left blocking in a loop there
+void WebFrame()
+{
+    // A page's frame is one the browser calls back: saying so now and then is how a run's log shows it is drawing rather
+    // than stopped in its start-up
+    static u32 frames = 0;
+    if (frames % 120 == 0)
+    {
+        std::fprintf(stderr, "web: frame %u\n", frames);
+    }
+    frames++;
+
+    if (!GameFrame(g_WebContext, g_WebDrawn))
+    {
+        emscripten_cancel_main_loop();
+    }
+}
+}
+#endif
+
 extern "C" int Main(u32 argc, char** argv)
 {
     RunStaticConstructors();
@@ -81,10 +153,15 @@ extern "C" int Main(u32 argc, char** argv)
     }
 
     context->StartUp();
-#ifndef __mips__
     // Whether a step has drawn its own frame: the display frames before the first step have nothing to show yet
     bool drawn = false;
-#endif
+#if defined(__EMSCRIPTEN__)
+    std::fprintf(stderr, "web: start-up done, the browser drives the frames\n");
+    g_WebContext = context;
+    g_WebDrawn = false;
+    emscripten_set_main_loop(WebFrame, 0, true);
+    return 0;
+#else
     while (g_GameState != GameStateQuitting)
     {
         // The frame's own boundary: retail's frame IS the vblank (the PS2 build waits for one, sceGsSyncV) and the whole
@@ -141,6 +218,7 @@ extern "C" int Main(u32 argc, char** argv)
     }
 
     return 0;
+#endif
 }
 
 // The launch arguments, made into the game's context once

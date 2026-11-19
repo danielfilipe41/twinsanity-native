@@ -594,6 +594,12 @@ inline void HostMapToClip(f32 fractionX, f32 fractionY, f32* clipX, f32* clipY)
 // depth and skips the frame-depth copy, which is the path a frame without a scene depth already used
 inline bool HostDepthBlitSupported()
 {
+#if defined(__EMSCRIPTEN__)
+    // WebGL2 copies depth only between targets of the same format, and the frame's depth texture and the coverage target's do
+    // not share one: the copy lands nothing and a volume tests against a depth that was never written, so no shadow appears.
+    // The web's volumes keep their own cleared depth instead, the path a frame without a scene depth already took
+    return false;
+#endif
     return bgfx::getRendererType() != bgfx::RendererType::Vulkan;
 }
 

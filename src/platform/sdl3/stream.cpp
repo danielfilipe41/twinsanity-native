@@ -187,6 +187,23 @@ void Submit(s32 channel, ReadJob job)
         return;
     }
 
+#if defined(__EMSCRIPTEN__)
+    // The web build has no pthreads (a page's wasm cannot start one without the page being cross-origin isolated), and the
+    // page's file system reads are already on this thread: the read runs now, where a channel's worker would run it
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->job = std::move(job);
+        state->busy = true;
+        state->activeFile = state->job.file;
+    }
+    Work(&state->job);
+    state->job.samples.clear();
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->busy = false;
+        state->activeFile = -1;
+    }
+#else
     std::unique_lock<std::mutex> lock(state->mutex);
     state->ready.wait(lock, [state] { return !state->busy; });
     state->job = std::move(job);
@@ -195,6 +212,7 @@ void Submit(s32 channel, ReadJob job)
     state->activeFile = state->job.file;
     lock.unlock();
     state->ready.notify_all();
+#endif
 }
 
 s32 GetFreeSlot()
@@ -223,10 +241,12 @@ s32 Initialise(s32 channels, void* workMemory)
 
     g_ChannelCount = channels > 0 ? channels : 1;
     g_Channels = new Channel[static_cast<size_t>(g_ChannelCount)];
+#if !defined(__EMSCRIPTEN__)
     for (s32 channel = 0; channel < g_ChannelCount; channel++)
     {
         std::thread(Worker, &g_Channels[channel]).detach();
     }
+#endif
     return 0;
 }
 

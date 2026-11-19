@@ -13,12 +13,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace
 {
 constexpr u32 PathLength = 512;
 constexpr u32 Groups = VolumeGroupCount;
-constexpr u32 LineLength = 128;
+// A line's length: a folder's path (the file's `mods_dir`) is one of the settings, and a phone's paths run long
+constexpr u32 LineLength = 512;
 bool g_Applied = false;
 // The values last kept (what a write put in the file), so only a real change is written
 bool g_Kept = false;
@@ -155,6 +158,14 @@ u32 g_DeadZone = 0;
 bool g_CutsceneSkipLoaded = false;
 bool g_CutsceneSkip = true;
 
+// Whether the camera's shake is drawn (the game options' row, which the file keeps): on unless the file says off
+bool g_ScreenShakeLoaded = false;
+bool g_ScreenShake = true;
+
+// Whether the run skips the opening movies (the file's `skip_intro`, or a launcher's --skip-intro): off unless one says on
+bool g_SkipIntroLoaded = false;
+bool g_SkipIntro = false;
+
 // How fast a skipped scripted cutscene runs out (the file's `cutscene_speed`): a thousand seconds of it a second by default, which a
 // scene's own scripts reach their own end in a step or two
 bool g_CutsceneSpeedLoaded = false;
@@ -196,6 +207,42 @@ void LoadCutsceneSpeed()
         if (std::sscanf(line.c_str(), "cutscene_speed %u", &speed) == 1)
         {
             g_CutsceneSpeed = speed < MinCutsceneSpeed ? MinCutsceneSpeed : (speed > MaxCutsceneSpeed ? MaxCutsceneSpeed : speed);
+        }
+    }
+}
+
+void LoadScreenShake()
+{
+    if (g_ScreenShakeLoaded)
+    {
+        return;
+    }
+
+    g_ScreenShakeLoaded = true;
+    for (const std::string& line : SettingsLines())
+    {
+        char word[8] = {};
+        if (std::sscanf(line.c_str(), "screen_shake %7s", word) == 1)
+        {
+            g_ScreenShake = std::strcmp(word, "off") != 0;
+        }
+    }
+}
+
+void LoadSkipIntro()
+{
+    if (g_SkipIntroLoaded)
+    {
+        return;
+    }
+
+    g_SkipIntroLoaded = true;
+    for (const std::string& line : SettingsLines())
+    {
+        char word[8] = {};
+        if (std::sscanf(line.c_str(), "skip_intro %7s", word) == 1)
+        {
+            g_SkipIntro = std::strcmp(word, "off") != 0;
         }
     }
 }
@@ -474,6 +521,42 @@ void HostSettingsSetCutsceneSkip(bool skip)
     g_SettingsDirty = true;
 }
 
+bool HostSettingsScreenShake()
+{
+    LoadScreenShake();
+    return g_ScreenShake;
+}
+
+void HostSettingsSetScreenShake(bool shake)
+{
+    LoadScreenShake();
+    if (shake == g_ScreenShake)
+    {
+        return;
+    }
+
+    g_ScreenShake = shake;
+    g_SettingsDirty = true;
+}
+
+bool HostSettingsSkipIntro()
+{
+    LoadSkipIntro();
+    return g_SkipIntro;
+}
+
+void HostSettingsSetSkipIntro(bool skip)
+{
+    LoadSkipIntro();
+    if (skip == g_SkipIntro)
+    {
+        return;
+    }
+
+    g_SkipIntro = skip;
+    g_SettingsDirty = true;
+}
+
 void HostSettingsSetAntiAlias(AntiAlias mode)
 {
     LoadAntiAlias();
@@ -558,6 +641,31 @@ Platform::System::ConsoleLanguage HostSettingsLanguage()
 {
     LoadLanguage();
     return g_Language;
+}
+
+std::string HostSettingsModsFolder()
+{
+    std::string folder;
+    for (const std::string& line : SettingsLines())
+    {
+        if (line.rfind("mods_dir ", 0) != 0)
+        {
+            continue;
+        }
+
+        size_t begin = 9;
+        while (begin < line.size() && (line[begin] == ' ' || line[begin] == '\t'))
+        {
+            begin++;
+        }
+        size_t end = line.size();
+        while (end > begin && (line[end - 1] == '\n' || line[end - 1] == '\r' || line[end - 1] == ' ' || line[end - 1] == '\t'))
+        {
+            end--;
+        }
+        folder = line.substr(begin, end - begin);
+    }
+    return folder;
 }
 
 Platform::System::ConsoleLanguage HostSettingsTextLanguage()
@@ -662,20 +770,27 @@ void HostSettingsApplyOnce()
     }
     // A file with everything zero holds the data's initials (the group volumes are bss, and the stereo's own is StereoOff): it was
     // written before the game set its own options, and applying it silences the game. The game's options (its save's) win over it
-    bool silent = true;
-    for (u32 group = 0; group < Groups && silent; group++)
+    bool groupsUnwritten = true;
+    for (u32 group = 0; group < Groups && groupsUnwritten; group++)
     {
-        silent = left[group] == 0 && right[group] == 0;
+        groupsUnwritten = left[group] == 0 && right[group] == 0;
     }
 
-    if (silent && stereo == 0 && widescreen == 0)
+    if (groupsUnwritten && stereo == 0 && widescreen == 0)
     {
         return;
     }
 
-    for (u32 group = 0; group < Groups; group++)
+    // A file whose groups are all zero is only ever applied for them when it wrote some: those lines were written before the game
+    // set its options, and taking them as the game's own state silences every voice (each is scaled by its group's volume). The
+    // others (a stereo mode, a widescreen flag) are still worth having. A player who wants no sound has the game's own volume
+    // options, which are kept with the game's state
+    if (!groupsUnwritten)
     {
-        UseGroupVolume(group, left[group], right[group]);
+        for (u32 group = 0; group < Groups; group++)
+        {
+            UseGroupVolume(group, left[group], right[group]);
+        }
     }
 
     // The global alone: the music players read it as they play, and SetMusicStereo walks them (there are none this early)
@@ -731,6 +846,8 @@ enum class Setting
     SaveCard,
     CutsceneSkip,
     CutsceneSpeed,
+    ScreenShake,
+    SkipIntro,
 };
 
 // Whether the line begins with the word (the leading whitespace aside, and the word complete)
@@ -789,6 +906,10 @@ bool LineIsSetting(Setting setting, const char* line, u32 group)
         return LineStarts(line, "cutscene_skip");
     case Setting::CutsceneSpeed:
         return LineStarts(line, "cutscene_speed");
+    case Setting::ScreenShake:
+        return LineStarts(line, "screen_shake");
+    case Setting::SkipIntro:
+        return LineStarts(line, "skip_intro");
     }
 
     return false;
@@ -894,6 +1015,10 @@ void WriteSettings(const s16* left, const s16* right, u32 stereo, u8 widescreen)
     PlaceSetting(lines, &count, Setting::CutsceneSkip, 0, text);
     std::snprintf(text, sizeof(text), "cutscene_speed %u", HostSettingsCutsceneSpeed());
     PlaceSetting(lines, &count, Setting::CutsceneSpeed, 0, text);
+    std::snprintf(text, sizeof(text), "screen_shake %s", HostSettingsScreenShake() ? "on" : "off");
+    PlaceSetting(lines, &count, Setting::ScreenShake, 0, text);
+    std::snprintf(text, sizeof(text), "skip_intro %s", HostSettingsSkipIntro() ? "on" : "off");
+    PlaceSetting(lines, &count, Setting::SkipIntro, 0, text);
 
     std::snprintf(text, sizeof(text), "window %s", g_DisplayWindow);
     PlaceSetting(lines, &count, Setting::Window, 0, text);

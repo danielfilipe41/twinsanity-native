@@ -59,7 +59,9 @@ bgfx::RendererType::Enum RendererFromEnvironment(bool* fallback)
     *fallback = false;
     const char* requested = std::getenv("TWINSANITY_RENDERER");
 #if defined(__EMSCRIPTEN__)
-    // The web's GL is WebGL (bgfx's GL ES renderer), and its other renderer is WebGPU
+    // The web's renderer is WebGL, which is bgfx's GL ES backend: it is the one bgfx's emscripten build carries, and the
+    // browser has it everywhere. WebGPU is named explicitly, for a build of bgfx whose WebGPU backend can wait for the
+    // browser's adapter (bgfx's own emscripten build leaves that renderer out)
     if (requested == nullptr || *requested == '\0' || std::strcmp(requested, "opengl") == 0 ||
         std::strcmp(requested, "webgl") == 0 || std::strcmp(requested, "opengles") == 0 ||
         std::strcmp(requested, "gles") == 0)
@@ -176,6 +178,42 @@ void BgfxSetAntiAliasing(AntiAlias mode)
     g_antiAliasing = mode;
 }
 
+namespace
+{
+// bgfx's own log, to the terminal: a shader that fails to compile says why here, and a page's log shows it
+class BgfxLog : public bgfx::CallbackI
+{
+public:
+    void fatal(const char* filePath, std::uint16_t line, bgfx::Fatal::Enum code, const char* message) override
+    {
+        (void)code;
+        std::fprintf(stderr, "bgfx: %s (%s:%u)\n", message, filePath, static_cast<unsigned>(line));
+        std::abort();
+    }
+
+    void traceVargs(const char* filePath, std::uint16_t line, const char* format, va_list args) override
+    {
+        (void)filePath;
+        (void)line;
+        std::vfprintf(stderr, format, args);
+    }
+
+    void profilerBegin(const char*, std::uint32_t, const char*, std::uint16_t) override {}
+    void profilerBeginLiteral(const char*, std::uint32_t, const char*, std::uint16_t) override {}
+    void profilerEnd() override {}
+    std::uint32_t cacheReadSize(std::uint64_t) override { return 0; }
+    bool cacheRead(std::uint64_t, void*, std::uint32_t) override { return false; }
+    void cacheWrite(std::uint64_t, const void*, std::uint32_t) override {}
+    void screenShot(const char*, std::uint32_t, std::uint32_t, std::uint32_t, bgfx::TextureFormat::Enum,
+                    const void*, std::uint32_t, bool) override {}
+    void captureBegin(std::uint32_t, std::uint32_t, std::uint32_t, bgfx::TextureFormat::Enum, bool) override {}
+    void captureEnd() override {}
+    void captureFrame(const void*, std::uint32_t) override {}
+};
+
+BgfxLog g_bgfxLog;
+}
+
 bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
 {
     if (g_initialized)
@@ -196,6 +234,7 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
     }
 
     bgfx::Init init;
+    init.callback = &g_bgfxLog;
     bool fallback = false;
     init.type = RendererFromEnvironment(&fallback);
     init.reset = vsync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE;
@@ -207,7 +246,12 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
     init.swapChain.width = static_cast<std::uint16_t>(g_backbufferWidth);
     init.swapChain.height = static_cast<std::uint16_t>(g_backbufferHeight);
 
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    // The page's canvas: bgfx's WebGL backend takes a context (made on the canvas its swap chain names) and its WebGPU one
+    // the canvas itself, both by the selector the shell page gives the element
+    init.platformData.type = bgfx::NativeWindowHandleType::Default;
+    init.swapChain.nwh = const_cast<char*>("#canvas");
+#elif defined(_WIN32)
     // Windows' backends (WGL, Direct3D, Vulkan) take the window as its HWND, with no display handle beside it
     void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     if (hwnd == nullptr)
@@ -243,7 +287,7 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
 
     if (!bgfx::init(init))
     {
-        std::fprintf(stderr, "bgfx: bgfx::init failed\n");
+        std::fprintf(stderr, "bgfx: bgfx::init failed (renderer %s)\n", bgfx::getRendererName(init.type));
         return false;
     }
 

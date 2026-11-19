@@ -123,7 +123,11 @@ def convert_line(line):
         # its branch labels no longer exist. The retail link defines them as 0 (tools/make_ld.py); the data holds 0 too.
         operands = [operand.strip() for operand in rest.split(",")]
         if all(LOCAL_LABEL_RE.match(operand) is not None for operand in operands):
-            rest = ", ".join(["0"] * len(operands))
+            # A switch table's targets inside a function that is C++ on the host: its labels are not there to link
+            # against. A text label's address becomes the retail value the disc holds (the table is unused); a data one
+            # keeps its label, which the linker does resolve
+            rest = ", ".join(operand if int(operand[2:], 16) >= 0x2D9D90 else f"0x{int(operand[2:], 16):08X}"
+                             for operand in operands)
         if COFF:
             # _end is ELF's end-of-image marker and PE's linker keeps it in a .endjunk section it discards, so the retail
             # data's pointer to it is zeroed (nothing on the host reads that word)
@@ -132,25 +136,6 @@ def convert_line(line):
 
     return code
 
-VADDR_COMMENT = re.compile(r"/\*\s*[0-9A-Fa-f]+\s+([0-9A-Fa-f]+)")
-VADDR_COMMENT_SHORT = re.compile(r"/\*\s*([0-9A-Fa-f]+)\s*\*/")
-
-
-def label_was_aligned(lines, index):
-    """Whether the retail label at lines[index] sat at a 16-aligned address: the first data line after it carries the
-    retail vaddr in its /* comment */. movaps/movdqa into Vector4 arrays fault without it, and the host linker lays
-    sections out at its own addresses."""
-    for following in lines[index + 1:]:
-        text = following.strip()
-        if not text or text.startswith("nonmatching"):
-            continue
-        match = VADDR_COMMENT.search(following) or VADDR_COMMENT_SHORT.search(following)
-        if match is None:
-            return False
-        return int(match.group(1), 16) % 16 == 0
-    return False
-
-
 def convert_file(src, dst):
     raws = src.read_text(encoding="utf-8", errors="replace").splitlines()
     out = []
@@ -158,8 +143,8 @@ def convert_file(src, dst):
         converted = convert_line(raw)
         if converted is None:
             continue
-        if LABEL_MACRO.match(raw) is not None and label_was_aligned(raws, index):
-            out.append("\t.p2align 4")
+        # No alignment padding: the object has to keep the retail offsets, or every symbol after a padded label sits at
+        # another address than the disc's (the layout itself is already the retail one)
         out.append(converted)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")

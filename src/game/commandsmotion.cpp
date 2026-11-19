@@ -29,7 +29,7 @@
 extern "C"
 {
     // A copy of a halfword
-    void CopyShort(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
+    u16* CopyShort(u16* to, const u16* from) RETAIL(MoveShortFromS2toS1);
     // A rigid body pushed by a force at a point
     void ApplyRigidBodyForce(ObjectRigidBody* body, const Vector4* force, const Vector4* point) RETAIL(FUN_0024c508);
     // The chunk manager the scripts' chunks are looked up in (the game context's)

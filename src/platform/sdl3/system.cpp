@@ -119,6 +119,32 @@ u32 Platform::System::CutsceneSkipSpeed()
     return HostSettingsCutsceneSpeed();
 }
 
+bool Platform::System::ScreenShake()
+{
+    return HostSettingsScreenShake();
+}
+
+void Platform::System::SetScreenShake(bool shake)
+{
+    HostSettingsSetScreenShake(shake);
+}
+
+// The run's own skip, over the file's: the launcher's --skip-intro is not a setting a player keeps
+namespace
+{
+bool g_SkipIntroRun = false;
+}
+
+bool Platform::System::SkipIntro()
+{
+    return g_SkipIntroRun || HostSettingsSkipIntro();
+}
+
+void Platform::System::SetSkipIntro(bool skip)
+{
+    g_SkipIntroRun = skip;
+}
+
 Platform::System::DateTime Platform::System::LocalTime()
 {
     std::time_t now = std::time(nullptr);

@@ -18,6 +18,9 @@
 # This machine's paths (local.example.json shows them)
 /local.json
 
+# The web toolchain, when it is installed beside the tree
+/.emsdk/
+
 # Python
 /.venv/
 __pycache__/

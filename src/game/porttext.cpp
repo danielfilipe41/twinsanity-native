@@ -54,6 +54,12 @@ const char* const Lines[PortTextCount - PortTextFirst][Slots] = {
     {"cutscene skip", "passer les cinématiques", "zwischensequenzen überspringen", "saltar cinemáticas",
      "salta le scene", "ムービーをスキップ"},
     {"skip", "passer", "überspringen", "saltar", "salta", "スキップ"},
+    {"mods", "mods", "mods", "mods", "mod", "MOD"},
+    {"restart to apply", "redémarrer pour appliquer", "neustart zum anwenden", "reinicia para aplicar",
+     "riavvia per applicare", "再起動で適用"},
+    {"no mods in the folder", "aucun mod dans le dossier", "keine mods im ordner", "no hay mods en la carpeta",
+     "nessuna mod nella cartella", "フォルダにMODがありません"},
+    {"screenshake", "secousses", "kamerawackeln", "sacudida de pantalla", "scossa dello schermo", "画面の揺れ"},
 };
 }
 

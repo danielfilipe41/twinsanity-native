@@ -4,9 +4,9 @@
 // that platform's backends there and its column here; nothing in the draws changes.
 #include "host_shaders.h"
 
-// Only this platform's blobs are compiled in: Android's GL family is GLSL ES 300, a desktop build's is GLSL 330, and
-// SPIR-V (Vulkan) is on every native platform
-#if defined(__ANDROID__)
+// Only this platform's blobs are compiled in: Android's and the web's GL family is GLSL ES 300, a desktop build's is
+// GLSL 330, and SPIR-V (Vulkan) is on every native platform
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
 #include "shaders/fs_draw2d_gles.bin.h"
 #include "shaders/fs_draw3d_gles.bin.h"
 #include "shaders/fs_draw3dflat_gles.bin.h"
@@ -146,9 +146,10 @@
 #include <cstddef>
 #include <cstdio>
 
-// The GL-family blob this platform's GL renderer takes: a desktop build's GL is OpenGL (GLSL 330), Android's is GL ES
-// (GLSL ES 300). Only that family's rows are referenced, so a build carries one GL profile and no more
-#if defined(__ANDROID__)
+// The GL-family blob this platform's GL renderer takes: a desktop build's GL is OpenGL (GLSL 330), Android's and the
+// web's is GL ES (GLSL ES 300: WebGL only runs GL ES shaders, so a web build's GL renderer is always OpenGLES). Only that
+// family's rows are referenced, so a build carries one GL profile and no more
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
 #define HOST_SHADER_GL_BLOB(stem) stem##_gles, sizeof(stem##_gles)
 #else
 #define HOST_SHADER_GL_BLOB(stem) stem##_glsl, sizeof(stem##_glsl)

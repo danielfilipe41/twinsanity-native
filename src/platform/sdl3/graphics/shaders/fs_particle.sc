@@ -5,6 +5,11 @@
 // y: its reference (retail's SetPageAlphaTest: GEQUAL against 5/128)
 $input v_color0, v_texcoord0
 
+#if BGFX_SHADER_LANGUAGE_ESSL
+// WebGL (ESSL) requires a fragment shader to state its float precision; desktop GLSL does not
+precision highp float;
+#endif
+
 #include <bgfx_shader.sh>
 
 SAMPLER2D(s_tex, 0);

@@ -712,7 +712,9 @@ extern "C"
             MenuItem* drawn[MaxLines];
             u32 count = 0;
             u32 selectedLine = 0;
-            for (u32 i = 0; i < page->items.count; i++)
+            // The arrays above are MaxLines long, and a page can hold more rows than they do (a list longer than the screen):
+            // the loop stops at the last line rather than writing past them, which smashes the stack and aborts the run
+            for (u32 i = 0; i < page->items.count && count < MaxLines; i++)
             {
                 MenuItem* item = page->items.data[i];
                 String* line = &lines[count];

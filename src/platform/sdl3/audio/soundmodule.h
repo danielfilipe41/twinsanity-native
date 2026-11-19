@@ -245,6 +245,10 @@ private:
     // Whether a voice and group (as the game hands them over) is one the silence leaves loud
     bool GroupIsLoud(u32 voiceAndGroup) const;
 
+    // A voice still reading a sound's block is keyed off when that block is let go of: left keyed on, it reads whatever the memory is
+    // handed out for next, which is heard as a burst of noise
+    void KeyOffVoicesReading(u32 sound);
+
     void TargetChannel(s32 voice, s16 left, s16 right, bool immediate);
     void StepRamps();
     void TrackChannels();

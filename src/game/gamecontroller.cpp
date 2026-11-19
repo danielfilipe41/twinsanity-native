@@ -331,13 +331,21 @@ u32 GameController::Update(u32 keepFreed)
         next = CheckingCard(&g_GlobalClock);
         break;
     case StateVivendiLogo:
+        // A run that skips the boot logos goes from the first to the second without playing either (the new game's intro is
+        // the game's own and stays)
+        if (Platform::System::SkipIntro())
+        {
+            next = StateTravellersTalesLogo;
+            break;
+        }
+
         next = PlayMovie(&g_GlobalClock, static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Vivendi, 1,
                          nullptr) != 0
                    ? StateTravellersTalesLogo
                    : NoState;
         break;
     case StateTravellersTalesLogo:
-        if (PlayMovie(&g_GlobalClock, 0, GameMovie::TravellersTales, 1, nullptr) == 0)
+        if (!Platform::System::SkipIntro() && PlayMovie(&g_GlobalClock, 0, GameMovie::TravellersTales, 1, nullptr) == 0)
         {
             break;
         }
@@ -1603,6 +1611,7 @@ u32 GameController::NewGame(TimeClock*)
 
     saveController.Restore(0, &progress, chunkManager);
     ResetGame(0);
+    // The intro is the game's own and plays whatever the run skipped at boot
     RequestMovie(static_cast<s32>(g_ClockUnitsPerSecond * LongFadeSeconds), GameMovie::Intro);
     return NextState();
 }
