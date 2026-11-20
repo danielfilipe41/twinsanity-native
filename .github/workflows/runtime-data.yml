@@ -3,6 +3,9 @@ name: runtime data
 # The check needs the retail disc: its executable's bytes are what the runtime build loads, and the split's objects are
 # what those bytes are compared against. The disc is not in the repository, so the job runs on a runner that has one and
 # reads its path from the repository variable TWINSANITY_DISC (default: disc, the working directory's copy).
+#
+# Run it from the Actions tab, not from a push. It waits on a self-hosted runner that a push to GitHub cannot be sure of --
+# a checkout without one sits queued -- so waking it to every change of configure.py only left a run that never finished.
 on:
   workflow_dispatch:
     inputs:
@@ -10,30 +13,6 @@ on:
         description: "Path to the disc folder or image on the runner"
         required: false
         default: disc
-  push:
-    paths:
-      - "tools/retail_map.py"
-      - "tools/retail_symbols.h"
-      - "tools/retail_parity.py"
-      - "tools/host_data.py"
-      - "tools/check_runtime_data.py"
-      - "tools/pe_link.py"
-      - "configure.py"
-      - "src/platform/null/retaildata.cpp"
-      - "include/platform/retaildata.h"
-      - ".github/workflows/runtime-data.yml"
-  pull_request:
-    paths:
-      - "tools/retail_map.py"
-      - "tools/retail_symbols.h"
-      - "tools/retail_parity.py"
-      - "tools/host_data.py"
-      - "tools/check_runtime_data.py"
-      - "tools/pe_link.py"
-      - "configure.py"
-      - "src/platform/null/retaildata.cpp"
-      - "include/platform/retaildata.h"
-      - ".github/workflows/runtime-data.yml"
 
 jobs:
   parity:
