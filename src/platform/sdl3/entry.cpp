@@ -121,6 +121,15 @@ int main(int argc, char** argv)
             skipIntro = true;
             continue;
         }
+#if defined(__EMSCRIPTEN__)
+        // The page cannot set a variable for the run it starts, and its log is where the frame's numbers are read: the flag
+        // turns on the line graphics.cpp prints once a second (the same one TWINSANITY_FRAME_LOG does)
+        if (std::strcmp(argv[index], "--frame-log") == 0)
+        {
+            setenv("TWINSANITY_FRAME_LOG", "1", 1);
+            continue;
+        }
+#endif
         argv[count++] = argv[index];
     }
     argc = count;

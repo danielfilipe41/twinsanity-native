@@ -51,17 +51,23 @@
   body.playing #menu { display: none; }
   /* The run's log: the page has no terminal to write it to, so it is kept here and shown when the run stops on something
      the player needs to read, or when the player asks for it (F3) */
-  #log { display: none; position: fixed; left: 0; bottom: 0; margin: 0; padding: .4rem .6rem; max-height: 40vh; overflow: hidden;
+  /* A run that stopped, or one whose numbers are wanted, is read here: grey on a phone with no keyboard and no terminal, so
+     the panel scrolls (a phone drags it under a finger, which needs touch-action) and sits above the touch controls, whose
+     own boxes would otherwise take the drag */
+  #log { display: none; position: fixed; left: 0; bottom: 0; margin: 0; padding: .4rem .6rem; max-height: 45vh; overflow: auto;
+         -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; z-index: 4;
          background: rgba(8, 8, 12, .82); color: #b8e0a0; font: 12px/1.35 Consolas, "Cascadia Mono", Menlo, monospace; white-space: pre-wrap;
-         pointer-events: none; }
+         pointer-events: auto; }
   body.show-log #log { display: block; }
-  /* The log's reminder is the run's, not the start screen's: over the page's grey it would read as nothing at all */
-  #hint { display: none; position: fixed; right: .5rem; bottom: .4rem; color: rgba(240, 240, 235, .6);
-          font: 11px Consolas, "Cascadia Mono", Menlo, monospace; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); pointer-events: none; }
+  /* The log's own switch: the run's, not the start screen's, so it is over the picture rather than the menu. The top-right
+     corner is the one no control of this page is in */
+  #hint { display: none; position: fixed; right: .5rem; top: .5rem; z-index: 5; margin: 0; padding: .3rem .55rem;
+          border: 1px solid rgba(240, 240, 235, .22); border-radius: .3rem; background: rgba(8, 8, 12, .5);
+          color: rgba(240, 240, 235, .8); font: 11px/1.2 Consolas, "Cascadia Mono", Menlo, monospace; cursor: pointer; }
+  #hint:hover { background: rgba(8, 8, 12, .75); }
   body.playing #hint { display: block; }
-  /* A touch screen has no F3 key */
+  /* A touch screen has no F3 key: its switch is the log button by the layout's gear */
   body.touch #hint { display: none; }
-  body.show-log #hint { display: none; }
   /* A phone's or a tablet's controls: a stick under the left thumb and the pad's buttons under the right. Sized in the
      screen's smaller side, so they sit under the thumbs whichever way the device is held */
   #touch { display: none; position: fixed; inset: 0; z-index: 2; touch-action: none; -webkit-user-select: none;
@@ -147,7 +153,7 @@
 </div>
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <pre id="log"></pre>
-<div id="hint">F3: log</div>
+<button type="button" id="hint" title="The run's log: F3, or the backquote key">log</button>
 <div id="touch">
   <div class="stick" id="stick"><div class="knob" id="stick-knob"></div></div>
   <div class="look" id="look"><div class="knob" id="look-knob"></div></div>
@@ -164,6 +170,7 @@
 <div id="touch-tools">
   <button type="button" id="touch-edit" aria-label="Move the touch controls">&#9881;</button>
   <button type="button" id="touch-reset" aria-label="Put the touch controls back">&#8634;</button>
+  <button type="button" id="touch-log" aria-label="The run's log">log</button>
 </div>
 <div id="touch-panel">
   <div class="chips">
@@ -195,15 +202,32 @@
 
   function showLog() {
     document.body.classList.add('show-log');
+    var log = document.getElementById('log');
+    log.scrollTop = log.scrollHeight;
   }
 
-  // F3 asks for the log, and asks again to put it away
-  window.addEventListener('keydown', function (event) {
-    if (event.key === 'F3') {
-      event.preventDefault();
-      document.body.classList.toggle('show-log');
+  function toggleLog() {
+    if (document.body.classList.contains('show-log')) {
+      document.body.classList.remove('show-log');
+    } else {
+      showLog();
     }
-  });
+  }
+
+  // The log, asked for and put away again. Capture, so the game's own key handling (SDL's, on the canvas) does not take the
+  // press first. F3 is the key the button names, but a Windows laptop's top row is often the media keys (F3 arrives as a
+  // volume or playback key), and Chrome keeps F3 for its find-next, so the backquote does the same thing and is always sent
+  window.addEventListener('keydown', function (event) {
+    if (event.key === 'F3' || event.code === 'F3' || event.key === '`' || event.code === 'Backquote') {
+      event.preventDefault();
+      toggleLog();
+    } else if (event.key === 'Escape' && document.body.classList.contains('show-log')) {
+      event.preventDefault();
+      toggleLog();
+    }
+  }, true);
+
+  document.getElementById('hint').addEventListener('click', toggleLog);
 
   var reportedError = false;
   window.addEventListener('error', function (event) {
@@ -683,6 +707,11 @@
         if (exe) {
           args.push('--exe', exe);
         }
+        // ?stats puts the frame's numbers (fps, the step and draw counts, the CPU and GPU milliseconds) in the log once a
+        // second, which is what a report of a slow picture is made of
+        if (/[?&]stats\b/.test(location.search)) {
+          args.push('--frame-log');
+        }
         report('starting the game with ' + args.join(' '));
         // Added, not set: the touch controls' class is already there on a device that wants them
         document.body.classList.add('playing');
@@ -700,15 +729,15 @@
       request.overrideMimeType('text/plain; charset=x-user-defined');
       request.setRequestHeader('Range', 'bytes=' + offset + '-' + (offset + length - 1));
       request.send();
-      if (request.status !== 206 && request.status !== 200) {
+      if (request.status !== 206) {
+        // A server, or a browser's own file, that ignores the Range header answers 200 with the whole image in one string,
+        // which is the memory this path exists to avoid: both callers read ranges only after a probe said they are answered
         throw new Error('range ' + request.status + ' ' + request.statusText);
       }
-      // A server that ignored the Range header answers 200 with the whole image, whose bytes start at 0
       var text = request.responseText;
-      var start = request.status === 206 ? 0 : offset;
       var bytes = new Uint8Array(length);
       for (var index = 0; index < length; index++) {
-        bytes[index] = text.charCodeAt(start + index) & 0xFF;
+        bytes[index] = text.charCodeAt(index) & 0xFF;
       }
       return bytes;
     }
@@ -863,6 +892,20 @@
       FS.mount(discFilesystem(url, size), {}, '/disc');
     }
 
+    // Whether a URL answers a request for part of itself. A picked file is one too: the browser gives it a blob: URL of its
+    // own, and answers the same Range headers a server does, out of the file on the disk. Asked with an asynchronous request
+    // and two bytes, so a browser that ignores the header costs two bytes and no more (the body is dropped unread)
+    function answersRanges(url) {
+      return fetch(url, { headers: { Range: 'bytes=0-1' } }).then(function (response) {
+        if (response.body && response.body.cancel) {
+          response.body.cancel();
+        }
+        return response.status === 206;
+      }, function () {
+        return false;
+      });
+    }
+
     function startUrl(url) {
       status.textContent = 'Reading the disc…';
       report('reading ' + url);
@@ -902,9 +945,25 @@
 
       play.disabled = true;
       status.textContent = 'Reading the disc…';
-      writeDisc(file).then(function () {
-        begin('/disc.iso');
-      }, function (error) {
+      // The image is read a chunk at a time where the browser will answer for part of it, as a disc the site hosts is: a
+      // copy of a two-gigabyte image in the page's own memory is more than a phone's tab has (the run died there before the
+      // game's first frame), and on a desktop it is the copy the run then has to hold beside its own data. Only what the
+      // game reads is ever held, and only the last 64 MB of it
+      var url = URL.createObjectURL(file);
+      answersRanges(url).then(function (ranges) {
+        if (ranges && file.size !== 0) {
+          status.textContent = 'Playing…';
+          report('streaming the disc: ' + Math.round(file.size / 1048576) + ' MB, read a chunk at a time as the game asks');
+          mountDisc(url, file.size);
+          begin('/disc/disc.iso');
+          return undefined;
+        }
+        URL.revokeObjectURL(url);
+        report('the disc is copied into the page: this browser does not answer for part of a file');
+        return writeDisc(file).then(function () {
+          begin('/disc.iso');
+        });
+      }).catch(function (error) {
         status.textContent = 'The disc does not read: ' + error;
         report('the disc does not read: ' + error);
         play.disabled = false;
@@ -1401,6 +1460,9 @@
     resetButton.addEventListener('click', function () {
       resetLayout();
     });
+
+    // The log, for a screen with no F3 key to ask with
+    document.getElementById('touch-log').addEventListener('click', toggleLog);
   })();
 </script>
 {{{ SCRIPT }}}
