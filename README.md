@@ -11,14 +11,17 @@ build (minor some tweaks and things necessary for some features); it reaches the
 Nothing from the game is included in the repository. You need your own copy of the disc: any of its four releases plays (see
 [Other regions](#other-regions)), and the European one is the only one that can be built with.
 
+**Play in your browser:** <https://danielfilipe41.github.io/twinsanity-native/> — the page takes your own disc (the ISO, or
+dragged in as a file) and boots the game in the tab. Nothing is uploaded and the site serves no game data; your saves and
+mods are kept in the browser's own storage.
+
 ## Status
 
-Linux runs perfectly, Windows cross-builds from Linux and runs under Wine; every other platform has its backend only.
+Linux runs perfectly, Windows cross-builds from Linux and runs under Wine, and the web build plays in a browser; every
+other platform has its backend only.
 
 Known issues:
-- Still missing work for other backends.
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
-- Build only supported with PAL SLES file
 - Pop in still kinda noticeable idk how to fix
 - Sometimes audio plays for a bit then stops then goes again
 - Rarely cutscene skip's are so fast that the game doesnt have time to load the terrain (if you can reproduce it please open up an issue about it)
@@ -202,9 +205,9 @@ other mod (a marker says which zip was unpacked; a newer zip unpacks again). **N
 own), and TwinsanityEvolved language packs (this port plays its disc's own languages).
 
 The same chain runs on every host. On Android the preferences folder is the app's own writable storage and `mods_dir` can name
-a folder the app can reach (its own files folder, or one a launcher prepared); on the web the folder lives in the page's file
-system, which needs a persistent mount (IDBFS) over the preferences folder for mods and `mods.txt` to survive a reload — this
-checkout's web target compiles but does not link yet.
+a folder the app can reach (its own files folder, or one a launcher prepared); on the web the preferences folder is mounted as
+IDBFS (kept in the browser's storage) and flushed as the run goes, so the saves, the mods and `mods.txt` survive a reload. The
+disc image itself is only in the page's memory, and is asked for again the next time.
 
 ## Building
 
@@ -212,7 +215,7 @@ checkout's web target compiles but does not link yet.
 |---|---|---|
 | Linux | [docs/BUILD_LINUX.md](docs/BUILD_LINUX.md) | builds and runs; OpenGL and Vulkan |
 | Windows | [docs/BUILD_WINDOWS.md](docs/BUILD_WINDOWS.md) | cross-builds from Linux, runs under Wine |
-| Web (wasm32) | [docs/BUILD_WEB.md](docs/BUILD_WEB.md) | compiles TU by TU, does not link yet |
+| Web (wasm32) | [docs/BUILD_WEB.md](docs/BUILD_WEB.md) | builds and runs in the browser; published to GitHub Pages |
 | PS2 | [docs/BUILD_PS2.md](docs/BUILD_PS2.md) | the original decompilation build |
 
 Every build needs a 32-bit x86 toolchain (the retail data uses 32-bit pointers and fixed addresses), Python 3.10 or later
