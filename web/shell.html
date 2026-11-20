@@ -192,9 +192,14 @@
 
   // The game's own log, on the page: its stderr is where a run says what it read and what it failed at, and a browser has
   // no terminal to show it in
+  // A run's start-up is what a report is made of and it comes first, so the log keeps room for it: two hundred lines
+  // were spent before the first frame (the disc, the window, the renderer, the shaders) and a minute of playing then
+  // dropped them. Four thousand is every line a run prints in a session's worth of play
+  var LogLines = 4000;
+
   function report(text) {
     lines.push(String(text));
-    while (lines.length > 200) {
+    while (lines.length > LogLines) {
       lines.shift();
     }
     document.getElementById('log').textContent = lines.join('\n');
