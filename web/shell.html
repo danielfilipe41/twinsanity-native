@@ -5,30 +5,62 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Crash Twinsanity</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #101014; color: #e8e8ea; font: 16px/1.45 system-ui, sans-serif; }
-  #menu { max-width: 42rem; margin: 0 auto; padding: 3rem 1.5rem; }
-  #menu.dropping { outline: 2px dashed #e8b23a; outline-offset: 1rem; border-radius: .5rem; }
-  /* A picker is one row: its name, then the system's own button beside it. The name must not wrap above the button, or it
-     reads as the name of the row under it */
-  #menu .field { display: flex; align-items: center; gap: .7rem; margin: .7rem 0; color: #a8a8b0; }
-  #menu .field > span { flex: 0 0 auto; white-space: nowrap; }
-  #menu .field input { flex: 1 1 auto; min-width: 0; }
-  #menu .note { margin: -.3rem 0 .9rem; color: #8f9c7c; font-size: .9rem; }
-  h1 { font-size: 1.6rem; margin: 0 0 1rem; }
-  p { color: #a8a8b0; }
+  /* Montserrat, read from beside the page (web/fonts, copied into the build): the site's own file, so the start screen
+     asks no font CDN for anything and looks the same with no network. It is the variable font, so one file is every
+     weight the page asks for; SIL OFL 1.1, its licence beside it */
+  @font-face { font-family: Montserrat; src: url(montserrat.woff2) format("woff2"); font-weight: 100 900;
+               font-style: normal; font-display: swap; }
+  /* Start screen: dark grey page, left-aligned. Montserrat SemiBold for the title and anything that has to stand out,
+     Montserrat Regular for the subtitle and labels, Consolas for anything technical (file names, status, the log) */
+  :root { --bg: #2a2b2d; --ink: #e8e6e1; --mute: #a4a39e; --line: #48494c; --field: #38393c; --accent: #e8b23a;
+          --sans: Montserrat, "Segoe UI", system-ui, sans-serif;
+          --mono: Consolas, "Cascadia Mono", Menlo, "DejaVu Sans Mono", monospace; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 400 15px/1.6 var(--sans); }
+  #menu { max-width: 36rem; margin: 0 auto; padding: 12vh 1.6rem 3rem; }
+  #menu.dropping { box-shadow: inset 0 0 0 2px var(--accent); }
+  #menu h1 { margin: 0 0 .7rem; font: 600 2.5rem/1.08 var(--sans); letter-spacing: -.015em; }
+  #menu p { margin: 0 0 1.6rem; max-width: 30rem; color: var(--mute); font: 400 1rem/1.6 var(--sans); }
+  #menu hr { border: 0; border-top: 1px solid var(--line); margin: 1.8rem 0 1.5rem; }
+  /* A picker is one row: its name in a narrow column, then the system's own picker beside it */
+  #menu .field { display: grid; grid-template-columns: 9rem minmax(0, 1fr); align-items: center;
+                 gap: 1rem; margin: 0 0 .8rem; }
+  #menu .field > span { font: 400 .88rem/1.4 var(--sans); color: var(--ink); white-space: nowrap; }
+  #menu .field > span.tech { font-family: var(--mono); font-size: .84rem; }
+  #menu .field input { font: 400 .8rem/1.4 var(--mono); color: var(--mute); min-width: 0; }
+  #menu input[type=file]::file-selector-button { font: 600 .78rem/1 var(--sans); padding: .55rem 1rem;
+      margin-right: .9rem; border: 1px solid #5c5d61; border-radius: 3px; background: var(--field);
+      color: var(--ink); cursor: pointer; }
+  #menu input[type=file]::file-selector-button:hover { background: #444548; }
+  #menu .note { margin: .5rem 0 0; font: 400 .8rem/1.5 var(--mono); color: var(--mute); }
+  #menu .note:empty { display: none; }
+  #menu .small { margin: 2.4rem 0 0; color: var(--mute); font: 400 .84rem/1.6 var(--sans); }
   input, button { font: inherit; }
-  button { margin-top: 1rem; padding: .6rem 1.4rem; border: 0; border-radius: .3rem; background: #e8b23a; color: #1a1a1a; cursor: pointer; }
-  button:disabled { opacity: .45; cursor: default; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #play { margin: 1.8rem 0 0; padding: .75rem 2rem; border: 0; border-radius: 3px; background: var(--accent);
+          color: #1d1d1e; cursor: pointer; font: 600 .95rem/1 var(--sans); }
+  #play:hover:not(:disabled) { background: #f0c05a; }
+  #play:disabled { background: #38393c; color: #7c7b78; cursor: default; }
+  #status { margin: 1rem 0 0; min-height: 1.2em; font: .8rem/1.5 var(--mono); color: var(--mute); }
+  code { font-family: var(--mono); font-size: .92em; color: var(--ink); }
+  @media (max-width: 32rem) {
+    #menu { padding-top: 7vh; }
+    #menu h1 { font-size: 2rem; }
+    #menu .field { grid-template-columns: minmax(0, 1fr); gap: .35rem; margin-bottom: 1.1rem; }
+  }
   canvas { display: block; width: 100vw; height: 100vh; outline: none; }
   body.playing #menu { display: none; }
   /* The run's log: the page has no terminal to write it to, so it is kept here and shown when the run stops on something
      the player needs to read, or when the player asks for it (F3) */
   #log { display: none; position: fixed; left: 0; bottom: 0; margin: 0; padding: .4rem .6rem; max-height: 40vh; overflow: hidden;
-         background: rgba(8, 8, 12, .82); color: #b8e0a0; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap;
+         background: rgba(8, 8, 12, .82); color: #b8e0a0; font: 12px/1.35 Consolas, "Cascadia Mono", Menlo, monospace; white-space: pre-wrap;
          pointer-events: none; }
   body.show-log #log { display: block; }
-  #hint { position: fixed; right: .5rem; bottom: .4rem; color: rgba(232, 232, 234, .5); font: 11px ui-monospace, monospace;
-          pointer-events: none; }
+  /* The log's reminder is the run's, not the start screen's: over the page's grey it would read as nothing at all */
+  #hint { display: none; position: fixed; right: .5rem; bottom: .4rem; color: rgba(240, 240, 235, .6);
+          font: 11px Consolas, "Cascadia Mono", Menlo, monospace; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); pointer-events: none; }
+  body.playing #hint { display: block; }
+  /* A touch screen has no F3 key */
+  body.touch #hint { display: none; }
   body.show-log #hint { display: none; }
   /* A phone's or a tablet's controls: a stick under the left thumb and the pad's buttons under the right. Sized in the
      screen's smaller side, so they sit under the thumbs whichever way the device is held */
@@ -72,9 +104,10 @@
   body.touch-edit #touch .stick, body.touch-edit #touch .look, body.touch-edit #touch .buttons,
   body.touch-edit #touch .small { outline: 2px dashed rgba(232, 178, 58, .75); outline-offset: 3px; cursor: move; }
   /* The panel the layout is set with: which control the sliders are on, its size and its fade */
-  #touch-panel { display: none; position: fixed; left: 50%; top: 2vmin; transform: translateX(-50%); z-index: 3;
+  /* Below the gear and START, which sit in the top corners: a panel across the top runs under START on a narrow screen */
+  #touch-panel { display: none; position: fixed; left: 50%; top: 16vmin; transform: translateX(-50%); z-index: 3;
                  padding: 1.6vmin 2vmin; border-radius: 2vmin; background: rgba(12, 12, 16, .82);
-                 border: 1px solid rgba(232, 232, 234, .18); font: 3vmin/1.3 system-ui, sans-serif; color: #e8e8ea;
+                 border: 1px solid rgba(232, 232, 234, .18); font: 400 3vmin/1.3 Montserrat, "Segoe UI", system-ui, sans-serif; color: #e8e8ea;
                  gap: 1.2vmin; flex-direction: column; align-items: center; max-width: 92vw; }
   body.touch-edit #touch-panel { display: flex; }
   #touch-panel .chips { display: flex; flex-wrap: wrap; gap: 1vmin; justify-content: center; }
@@ -82,7 +115,7 @@
                                border: 1px solid rgba(232, 232, 234, .3); background: rgba(232, 232, 234, .12); color: #e8e8ea; }
   #touch-panel .chips button.chosen { background: rgba(232, 178, 58, .85); color: #14141a; }
   #touch-panel label { display: flex; align-items: center; gap: 1.4vmin; width: 100%; justify-content: space-between; }
-  #touch-panel input[type=range] { flex: 1; min-width: 40vmin; accent-color: #e8b23a; }
+  #touch-panel input[type=range] { flex: 1; min-width: 0; accent-color: #e8b23a; }
   #touch .start { right: 4vmin; top: 4vmin; width: 18vmin; height: 9vmin; border-radius: 3vmin; font-size: 3vmin;
                   display: flex; align-items: center; justify-content: center; }
 </style>
@@ -90,11 +123,8 @@
 <body>
 <div id="menu">
   <h1>Crash Twinsanity</h1>
-  <p>This build carries none of the game's data: it reads it out of your own disc at every start. Choose the disc image
-     (an ISO, or a raw dump of the disc); it is read here in the page and never uploaded. Saves and settings are kept in this
-     browser's own storage, so they are there next time. Dropping the image onto the page works too, and so does dropping a
-     folder of mods. An image of another region (the North American or the Japanese disc) plays with the European release's
-     <code>SLES_525.68</code> given below, which is the program this build's data is read out of.</p>
+  <p>Plays from your own disc image. The image is read in this page and never uploaded, and your saves stay in this browser.</p>
+  <hr>
   <!-- No accept list: it is a filter on what a system calls a file, and an ISO is a CD image on one system and a plain
        binary on another, so a picker built from it greys the very image the page is for out -->
   <label class="field" title="The disc image: an ISO, or a raw dump of the disc">
@@ -102,16 +132,18 @@
     <input id="iso" type="file">
   </label>
   <label class="field" title="The European release's SLES_525.68, from the disc this build's data comes from: only needed for an image of another region">
-    <span>SLES_525.68 (other regions)</span>
+    <span class="tech">SLES_525.68</span>
     <input id="exe" type="file">
   </label>
   <label class="field" title="A folder of mods: each sub-folder is one mod (a Mod Crate, a TwinsanityEvolved mod, or the game's own files)">
-    <span>Mods folder (optional)</span>
+    <span>Mods folder</span>
     <input id="mods" type="file" webkitdirectory multiple>
   </label>
   <p id="mods-status" class="note"></p>
   <button id="play" disabled>Play</button>
   <p id="status">Loading the game…</p>
+  <p class="small">You can also drop the image, or a folder of mods, anywhere on this page. An image from another region needs
+     the European release's <code>SLES_525.68</code>, which this build reads its data from.</p>
 </div>
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <pre id="log"></pre>
@@ -223,7 +255,7 @@
   var syncing = false;
   var syncedAt = 0;
 
-  function syncSaves(load, done) {
+  function syncSaves(load, done, now) {
     function finish() {
       if (done) { done(); }
     }
@@ -231,7 +263,9 @@
       finish();
       return;
     }
-    if (!load && Date.now() - syncedAt < 2000) {
+    // `now` is a change that must not wait for the next flush: a mods pick removes what an earlier one put there, and a
+    // reload before the flush would put it back
+    if (!load && !now && Date.now() - syncedAt < 2000) {
       finish();
       return;
     }
@@ -547,9 +581,31 @@
       });
     }
 
+    // Everything under a path, the path itself last: the file system only removes an empty folder, so a folder's contents go
+    // before it does
+    function removePath(path) {
+      var stat = null;
+      try { stat = FS.lstat(path); } catch (error) { return; }
+      if (!FS.isDir(stat.mode)) {
+        try { FS.unlink(path); } catch (error) {}
+        return;
+      }
+      var entries = [];
+      try { entries = FS.readdir(path); } catch (error) {}
+      for (var index = 0; index < entries.length; index++) {
+        if (entries[index] !== '.' && entries[index] !== '..') {
+          removePath(path + '/' + entries[index]);
+        }
+      }
+      try { FS.rmdir(path); } catch (error) {}
+    }
+
     // The mods the player picked go into the page's file system as they are: one sub-folder per mod, keeping the folder they
-    // were picked from as the mod's own name. mods.txt is written with `*` (every mod the folder has is on) when the player has
-    // none already, so a first visit just works and a list made in the game's own mods page is left alone afterwards
+    // were picked from as the mod's own name. A pick is the set the player means to play, so what an earlier pick put there and
+    // this one does not is removed first: the folder does not grow with every pick, and a mod of a past pick does not run (or
+    // sit in the game's mods page) again -- along with anything a zip was unpacked into. mods.txt is written with `*` (every
+    // mod the folder has is on) for the pick's mods; a list the game's own mods page writes afterwards is kept until the next
+    // pick, which is what a visit that picks no folder reads
     function writeMods() {
       // The folder is made either way: the run is given it as --mods-dir, and one that is there and empty is a folder with no
       // mods rather than a path the game has to complain about
@@ -557,8 +613,28 @@
 
       var picked = modsPicked;
       if (picked.length === 0) {
-        syncSaves(false);
+        syncSaves(false, null, true);
         return Promise.resolve();
+      }
+
+      // The pick's own mods, by the top-level name each of its files sits under
+      var keep = {};
+      for (var index = 0; index < picked.length; index++) {
+        var slash = picked[index].path.indexOf('/');
+        if (slash > 0) {
+          keep[picked[index].path.substring(0, slash)] = true;
+        }
+      }
+      var removed = 0;
+      var there = [];
+      try { there = FS.readdir(ModsDirectory); } catch (error) {}
+      for (var entry = 0; entry < there.length; entry++) {
+        var name = there[entry];
+        if (name === '.' || name === '..' || name === 'mods.txt' || keep[name]) {
+          continue;
+        }
+        removePath(ModsDirectory + '/' + name);
+        removed++;
       }
 
       var written = 0;
@@ -577,14 +653,10 @@
       }
 
       return Promise.all(writes).then(function () {
-        var list = ModsDirectory + '/mods.txt';
-        var listed = false;
-        try { listed = FS.stat(list) !== undefined; } catch (error) {}
-        if (!listed) {
-          FS.writeFile(list, new TextEncoder().encode('*\n'));
-        }
-        report('mods: ' + written + ' files in ' + ModsDirectory + (listed ? ' (keeping mods.txt)' : ' (all on)'));
-        syncSaves(false);
+        FS.writeFile(ModsDirectory + '/mods.txt', new TextEncoder().encode('*\n'));
+        report('mods: ' + written + ' files from the pick in ' + ModsDirectory + ' (all on)' +
+               (removed !== 0 ? ', ' + removed + ' of an earlier pick removed' : ''));
+        syncSaves(false, null, true);
       }, function (error) {
         report('mods: ' + error);
       });
@@ -1016,6 +1088,19 @@
     var layout = null;
     var selected = 'all';
 
+    // A phone held upright leaves the stylesheet's places too low: they are a share of the screen's shorter side, so in
+    // portrait the pad's buttons and the triggers would crowd the bottom edge and the right shoulder would sit halfway up
+    // the screen. These are shares of the width across and of the height up, which is the room a thumb has in a hand. They
+    // are used only for a device with no layout of its own; one the player has arranged is theirs
+    var PortraitLayout = {
+      stick: { left: 4, bottom: 4, scale: 1, opacity: 1 },
+      look: { left: 71, bottom: 4, scale: 1, opacity: 1 },
+      buttons: { left: 71, bottom: 26, scale: 1, opacity: 1 },
+      l1: { left: 4, bottom: 30, scale: 1, opacity: 1 },
+      r1: { left: 85, bottom: 48, scale: 1, opacity: 1 },
+      start: { left: 78, bottom: 88, scale: 1, opacity: 1 }
+    };
+
     function controlOf(name) {
       return document.getElementById(name);
     }
@@ -1121,6 +1206,10 @@
           window.localStorage.removeItem(LayoutKey);
         } catch (error) {
         }
+        if (window.innerHeight > window.innerWidth) {
+          layout = JSON.parse(JSON.stringify(PortraitLayout));
+          placeAll();
+        }
         return;
       }
 
@@ -1144,6 +1233,11 @@
           element.style.transform = '';
           element.style.opacity = '';
         }
+      }
+      // A phone held upright goes back to its own places rather than the stylesheet's, which are the landscape's
+      if (window.innerHeight > window.innerWidth) {
+        layout = JSON.parse(JSON.stringify(PortraitLayout));
+        placeAll();
       }
       select(null);
     }

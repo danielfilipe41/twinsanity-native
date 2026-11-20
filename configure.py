@@ -377,6 +377,9 @@ def main_web():
         "rule link",
         "  command = $cxx -o $out $in $ldflags",
         "  description = LINK $out",
+        "rule copy",
+        "  command = cp $in $out",
+        "  description = COPY $out",
         "rule configure",
         f"  command = PLATFORM=web{' DATA=runtime' if RUNTIME_DATA else ''} python3 configure.py",
         "  generator = 1",
@@ -416,7 +419,11 @@ def main_web():
             f"build data: phony {' '.join(data_objects)}",
             # The page's build: every TU, the data's symbols and the code table, bgfx for wasm and SDL3's port
             f"build build/web/game.html: link {' '.join(src_objects + data_objects)}",
-            "build game: phony build/web/game.html",
+            # The page's own Montserrat (variable, so one file is every weight) and its licence, kept in web/ with the page
+            # and served beside it: the start screen makes no request to a font CDN, and looks the same offline
+            "build build/web/montserrat.woff2: copy web/fonts/montserrat.woff2",
+            "build build/web/OFL.txt: copy web/fonts/OFL.txt",
+            "build game: phony build/web/game.html build/web/montserrat.woff2 build/web/OFL.txt",
         ]
     lines += [
         f"build compile: phony {' '.join(src_objects + data_objects)}",

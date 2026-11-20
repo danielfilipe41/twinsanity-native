@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The page as a site: the three files GitHub Pages serves.
+"""The page as a site: the files GitHub Pages serves.
 
-The web build writes build/web/game.html, game.js and game.wasm; a site is those three, with game.html as index.html. The
-disc is never one of them: the page reads the player's own image (the picker, or a drag and drop) or the one the site
+The web build writes build/web/game.html, game.js and game.wasm, and copies the page's own font (Montserrat, SIL OFL) and
+its licence beside them; a site is those, with game.html as index.html. The disc is never one of them: the page reads the player's own image (the picker, or a drag and drop) or the one the site
 hosts, and the repository carries neither the image nor SLES_525.68. The files are listed by name rather than copied with
 a glob because a disc image is often sitting beside the build (build/web/pal.iso, a symlink to the real one), and a glob
 would publish it.
@@ -22,7 +22,8 @@ BUILD = HERE / "build" / "web"
 SITE = HERE / "build" / "site"
 
 # What is on the site, and where each file comes from: nothing else is ever copied
-FILES = {"index.html": "game.html", "game.js": "game.js", "game.wasm": "game.wasm"}
+FILES = {"index.html": "game.html", "game.js": "game.js", "game.wasm": "game.wasm",
+         "montserrat.woff2": "montserrat.woff2", "OFL.txt": "OFL.txt"}
 BRANCH = "gh-pages"
 # GitHub Pages refuses a file over 100 MB and a site over 1 GB; this build is ~4.7 MB, so anything near that is not it
 LIMIT = 100 * 1024 * 1024
@@ -109,7 +110,7 @@ def main():
         print(f"  {name:14} {size:>9} bytes")
     print(f"  {sum(written.values()):14} {sum(written.values()):>9} bytes in all")
     if "--push" not in sys.argv:
-        print("\nnothing published: --push puts these three files on the "
+        print("\nnothing published: --push puts these files on the "
               f"{BRANCH} branch, which is what Pages serves")
         return
     commit = push()

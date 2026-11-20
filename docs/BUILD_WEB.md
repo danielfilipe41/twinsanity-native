@@ -62,12 +62,12 @@ site origin, and survive a reload.
 
 ## GitHub Pages
 
-A site is the build's three files with `game.html` as `index.html`, and nothing else -- in particular no disc image and no
-`SLES_525.68`, which the repository never carries and the page never needs: a visitor hands it their own image, and, when it
-is an image of another region, the European release's `SLES_525.68` in the page's second picker (passed to the game as
-`--exe`). 
-`tools/publish_web.py` writes that site to `build/site` and, with `--push`, makes it the `gh-pages` branch (a history of
-its own, so no source file is ever on the site) and pushes it:
+A site is the build's files with `game.html` as `index.html`: the module and its wasm, the page's own Montserrat and its
+licence, and nothing else. In particular no disc image and no `SLES_525.68`, which the repository never carries and the
+page never needs: a visitor hands it their own image, and, when it is an image of another region, the European release's
+`SLES_525.68` in the page's second picker (passed to the game as `--exe`). `tools/publish_web.py` writes that site to
+`build/site` and, with `--push`, makes it the `gh-pages` branch (a history of its own, so no source file is ever on the
+site) and pushes it:
 
 ```sh
 DATA=runtime PLATFORM=web python3 configure.py && ninja game
@@ -82,7 +82,7 @@ Then in the repository on GitHub: **Settings**, **Pages**, **Build and deploymen
 branch **gh-pages**, folder **/ (root)**. The page is then at `https://<user>.github.io/<repo>/` (the script prints the
 address it works out from `origin`); the first deployment takes a minute or two.
 
-The script copies three files by name rather than the build folder wholesale, because a disc image usually sits beside
+The script copies those files by name rather than the build folder wholesale, because a disc image usually sits beside
 the build (`build/web/pal.iso` is a symlink to the real one on a development machine) and a copy of the folder would
 publish it. It also refuses a file near Pages' 100 MB limit and anything named like the disc.
 
