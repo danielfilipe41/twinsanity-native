@@ -139,11 +139,65 @@ std::string BasePath()
 #endif
 }
 
-// The cards' base: a modded game's saves go to the cards beside the vanilla ones (platform/mods.h), so a modded save never
-// touches them
+// A mod's id as a folder's name: what a file system takes of it, and no more than one takes
+std::string FolderName(const std::string& id)
+{
+    std::string name;
+    for (const char letter : id)
+    {
+        const bool plain = (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z') ||
+                           (letter >= '0' && letter <= '9') || letter == '-' || letter == '_';
+        name += plain ? letter : '-';
+    }
+    return name.empty() ? std::string("mod") : name;
+}
+
+// The cards' base: a run with no mod is the vanilla one, and a modded run has the cards of the mods that are on -- a folder of
+// their own inside the game's own (platform/mods.h), so a modded save never touches the vanilla ones and two lots of mods do
+// not load each other's. One mod's folder is named for it; several are named for the first and a digest of the lot in the order
+// they apply, so the same mods always find the same cards
 std::string CardBasePath()
 {
-    return Platform::Mods::Enabled() ? BasePath() + "-mods" : BasePath();
+    if (!Platform::Mods::Enabled())
+    {
+        return BasePath();
+    }
+
+    std::string first;
+    u32 count = 0;
+    u64 digest = 0xcbf29ce484222325ull;
+    for (const Platform::Mods::Mod& mod : Platform::Mods::Mods())
+    {
+        if (!mod.on)
+        {
+            continue;
+        }
+        if (count++ == 0)
+        {
+            first = FolderName(mod.id);
+            if (first.size() > 48)
+            {
+                first.resize(48);
+            }
+        }
+        for (const char letter : mod.id)
+        {
+            digest ^= static_cast<unsigned char>(letter);
+            digest *= 0x100000001b3ull;
+        }
+        digest ^= '\n';
+        digest *= 0x100000001b3ull;
+    }
+
+    std::string name = count == 0 ? std::string("on") : first;
+    if (count > 1)
+    {
+        char digestText[16];
+        std::snprintf(digestText, sizeof(digestText), "-%06llx",
+                      static_cast<unsigned long long>((digest >> 24) & 0xFFFFFFull));
+        name += digestText;
+    }
+    return BasePath() + "/cards-mods/" + name;
 }
 
 std::string CardPath(s32 port, s32 slot)
@@ -633,6 +687,11 @@ u32 Platform::Saves::SaveBytes(u32 kilobytes, u32 files)
 f32 Platform::Saves::DeviceLatencyScale()
 {
     return 0.05f;
+}
+
+std::string Platform::Saves::CardsFolder()
+{
+    return CardBasePath();
 }
 
 void Platform::Saves::DataDirectory(char* path, u32 size)

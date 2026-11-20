@@ -58,6 +58,7 @@ struct ComposedPiece
 {
     u64 start = 0;
     u64 length = 0;
+    bool zero = false;
     bool image = false;
     u64 imageOffset = 0;
     std::shared_ptr<ComposedSource> source;
@@ -125,7 +126,12 @@ s32 ReadComposed(const std::shared_ptr<const Composed>& composed, u64 offset, vo
         const u64 available = piece->length - within;
         const s32 chunk = available < static_cast<u64>(wanted - done) ? static_cast<s32>(available) : wanted - done;
         s32 read = -1;
-        if (piece->image)
+        if (piece->zero)
+        {
+            std::memset(destination + done, 0, static_cast<size_t>(chunk));
+            read = chunk;
+        }
+        else if (piece->image)
         {
             read = Platform::Iso9660::ReadAt(piece->imageOffset + within, destination + done, chunk);
         }
@@ -947,6 +953,118 @@ s32 OpenHostFile(const std::string& host, s32 flags)
     return Install(std::move(file));
 }
 
+// The disc's own file a recipe's base ranges read: the image's bytes, or the folder's -- taken apart from the mods, since a
+// recipe is made over the disc as it is
+bool RecipeBase(const std::string& key, ComposedPiece* piece, u64* size)
+{
+    std::string gamePath = key;
+    for (char& letter : gamePath)
+    {
+        if (letter == '/')
+        {
+            letter = '\\';
+        }
+    }
+
+    if (g_ImageRoot)
+    {
+        u64 offset = 0;
+        u32 imageSize = 0;
+        if (!Platform::Iso9660::Find(gamePath.c_str(), &offset, &imageSize))
+        {
+            return false;
+        }
+        piece->image = true;
+        piece->imageOffset = offset;
+        *size = imageSize;
+        return true;
+    }
+
+    const std::string host = ResolveInsensitive(HostPath(gamePath.c_str()));
+    if (host.empty())
+    {
+        return false;
+    }
+    std::shared_ptr<ComposedSource> source = OpenSource(host, size);
+    if (source == nullptr)
+    {
+        return false;
+    }
+    piece->source = source;
+    return true;
+}
+
+// A file of the disc a mod gives as ranges (a TwinsanityEvolved recipe), made whole: its base ranges read the disc's own
+// file, its payload ranges the mod's own files, and the zeroes the recipe leaves are read as zeroes. The recipe's pieces are
+// read as the game asks for them, so a mod that changes a few hundred kilobytes of CRASH.BD costs only those. nullptr when a
+// piece cannot be read (what is wrong is said in the log)
+std::shared_ptr<Composed> ComposeRanges(const Platform::Mods::Ranges& ranges)
+{
+    auto composed = std::make_shared<Composed>();
+    ComposedPiece base; // the disc's own file, opened once: every base range reads a slice of it
+    u64 baseSize = 0;
+    bool baseRead = false;
+
+    for (const Platform::Mods::RangePiece& piece : ranges.pieces)
+    {
+        ComposedPiece out;
+        out.length = piece.length;
+        switch (piece.kind)
+        {
+            case Platform::Mods::RangePiece::Kind::Zero:
+                out.zero = true;
+                break;
+
+            case Platform::Mods::RangePiece::Kind::Payload: {
+                u64 size = 0;
+                std::shared_ptr<ComposedSource> source = OpenSource(piece.host, &size);
+                if (source == nullptr || piece.offset > size || piece.length > size - piece.offset)
+                {
+                    std::fprintf(stderr, "mods: %s %s does not hold %llu bytes at %llu: %s is not applied\n", ranges.path.c_str(),
+                                 piece.host.c_str(), static_cast<unsigned long long>(piece.length),
+                                 static_cast<unsigned long long>(piece.offset), ranges.path.c_str());
+                    return nullptr;
+                }
+                out.source = source;
+                out.sourceOffset = piece.offset;
+                break;
+            }
+
+            case Platform::Mods::RangePiece::Kind::Base: {
+                if (!baseRead)
+                {
+                    if (!RecipeBase(ranges.path, &base, &baseSize))
+                    {
+                        std::fprintf(stderr, "mods: %s: the disc has no %s for the recipe to be made over: not applied\n",
+                                     ranges.path.c_str(), ranges.path.c_str());
+                        return nullptr;
+                    }
+                    baseRead = true;
+                }
+                if (piece.offset > baseSize || piece.length > baseSize - piece.offset)
+                {
+                    std::fprintf(stderr,
+                                 "mods: %s: its ranges read %llu bytes at %llu over a file of %llu: not applied (made for another "
+                                 "disc?)\n",
+                                 ranges.path.c_str(), static_cast<unsigned long long>(piece.length),
+                                 static_cast<unsigned long long>(piece.offset), static_cast<unsigned long long>(baseSize));
+                    return nullptr;
+                }
+                out.image = base.image;
+                out.imageOffset = base.imageOffset + piece.offset;
+                out.source = base.source;
+                out.sourceOffset = piece.offset;
+                break;
+            }
+        }
+
+        out.start = composed->size;
+        composed->size += piece.length;
+        composed->pieces.push_back(std::move(out));
+    }
+    return composed;
+}
+
 // The game's name for an archive entry: upper case, '\\' separators, no leading one
 std::string ArchiveKey(const std::string& name)
 {
@@ -978,7 +1096,10 @@ bool ComposeModsArchive()
     g_ArchiveKnown = true;
 
     const std::vector<Platform::Mods::ArchiveFile>& files = Platform::Mods::ArchiveFiles();
-    if (files.empty())
+    // A TwinsanityEvolved mod gives the archive's data as the ranges it changes of the disc's own (and its index the same way)
+    const Platform::Mods::Ranges* indexRanges = Platform::Mods::RangesFile("CRASH6\\CRASH.BH");
+    const Platform::Mods::Ranges* dataRanges = Platform::Mods::RangesFile("CRASH6\\CRASH.BD");
+    if (files.empty() && dataRanges == nullptr)
     {
         return false;
     }
@@ -992,6 +1113,22 @@ bool ComposeModsArchive()
         if (!ReadWholeBytes(*modIndex, &index))
         {
             std::fprintf(stderr, "mods: %s does not read: the disc's own archive is used\n", modIndex->c_str());
+            return false;
+        }
+    }
+    else if (indexRanges != nullptr)
+    {
+        std::shared_ptr<Composed> composed = ComposeRanges(*indexRanges);
+        if (composed == nullptr)
+        {
+            std::fprintf(stderr, "mods: the archive's index does not compose: the disc's own is used\n");
+            return false;
+        }
+        index.resize(static_cast<size_t>(composed->size));
+        if (!index.empty() &&
+            ReadComposed(composed, 0, index.data(), static_cast<s32>(index.size())) != static_cast<s32>(index.size()))
+        {
+            std::fprintf(stderr, "mods: the archive's index does not read: the disc's own is used\n");
             return false;
         }
     }
@@ -1021,9 +1158,18 @@ bool ComposeModsArchive()
         return false;
     }
 
-    // The data below the mods' entries: a mod's whole CRASH.BD, or the disc's
+    // The data below the mods' entries: a mod's CRASH.BD (whole, or the ranges it changes of the disc's), or the disc's
     auto composed = std::make_shared<Composed>();
-    if (modData != nullptr)
+    if (dataRanges != nullptr)
+    {
+        composed = ComposeRanges(*dataRanges);
+        if (composed == nullptr)
+        {
+            std::fprintf(stderr, "mods: the disc's CRASH6/CRASH.BD does not compose from the mod's ranges: its own is used\n");
+            return false;
+        }
+    }
+    else if (modData != nullptr)
     {
         u64 size = 0;
         std::shared_ptr<ComposedSource> source = OpenSource(*modData, &size);
@@ -1287,6 +1433,18 @@ s32 Platform::Files::Open(const char* path, s32 flags)
                 return modded;
             }
             std::fprintf(stderr, "mods: %s does not open: the disc's own %s is read\n", host->c_str(), path);
+        }
+
+        // A disc file a mod gives as ranges (a TwinsanityEvolved recipe): made whole as the game reads it
+        if (const Platform::Mods::Ranges* ranges = Platform::Mods::RangesFile(path))
+        {
+            if (std::shared_ptr<Composed> composition = ComposeRanges(*ranges))
+            {
+                auto file = std::make_unique<HostFile>();
+                file->composed = true;
+                file->composition = std::move(composition);
+                return Install(std::move(file));
+            }
         }
     }
 

@@ -13,15 +13,21 @@
 //
 //   * a Mod Crate (the community's, made for Crate Mod Loader): ModCrateInfo.txt, layer0/ (files of the disc) and layer1/
 //     (entries of the game's archive, CRASH6/CRASH.BD, by their index path);
-//   * a TwinsanityEvolved mod folder: mod.json with a disc/ tree laid out like the disc;
+//   * a TwinsanityEvolved mod folder: mod.json with a disc/ tree laid out like the disc. A file of that tree may come as a
+//     `.ranges` recipe (TwinsanityEvolved keeps only what a mod changes of a large file): the slices of the disc's own file
+//     and of the mod's own payload file the file is made of, which Platform::Files composes as the game reads it;
 //   * a zip of a mod (the community ships crates so): unpacked once into mods/<zip name>/, then read like any folder;
+//   * a patch of the whole disc image (xdelta3's VCDIFF, PPF or BPS, as the community ships a change of the disc), dropped in
+//     the mods folder as itself or as a folder of its own: the image is the patched one while the game reads it, with no copy
+//     of it made (Platform::DiscPatch). One patch at a time, and only of a plain ISO image;
 //   * a folder of the game's own files as its tools build them (TT Lab's build output, or loose files): a path under CRASH6/,
 //     FMV/, SYSTEM.CNF or a disc serial is a file of the disc, a path under one of the archive's own folders is an entry of
 //     the archive.
 //
 // A mod's disc files replace the disc's whole (Platform::Files::Open answers them first, read-only). Its archive entries are
 // put into a rebuilt CRASH6/CRASH.BH and appended to a composed CRASH6/CRASH.BD, so an entry grows or shrinks without the
-// disc being touched. While any mod is on, the game's saves go to the modded memory cards (Platform::Saves).
+// disc being touched. While any mod is on, the game's saves go to the cards of the mods that are on (Platform::Saves): one
+// folder per lot of mods, never the vanilla cards and never another lot's.
 //
 // Not applied, and said in the log when a mod carries them: a crate's ModCrateSettings.txt and scripts (code changes of Crate
 // Mod Loader's own), a modified executable's code (the port runs its own), and a language pack (a disc's languages are its
@@ -38,12 +44,38 @@ struct ArchiveFile
     std::string host;
 };
 
+// One piece of a TwinsanityEvolved recipe (`<disc path>.ranges`): bytes of the disc's own file, of the mod's own payload, or
+// zeroes
+struct RangePiece
+{
+    enum class Kind
+    {
+        Base,    // the disc's own file, at `offset`
+        Payload, // the mod's own file (`host`), at `offset`
+        Zero,    // zeroes
+    };
+
+    Kind kind = Kind::Base;
+    u64 offset = 0;
+    u64 length = 0;
+    std::string host; // Payload: the mod's own file
+};
+
+// A file of the disc a mod gives as the pieces it changes rather than whole, with the size its pieces add up to
+struct Ranges
+{
+    std::string path; // the disc's path it is for (upper case, '/' separators)
+    u64 size = 0;
+    std::vector<RangePiece> pieces;
+};
+
 struct Mod
 {
     std::string id;      // the folder's name
     std::string name, author, version, description;
-    std::string kind;    // "crate" | "mod" (a mod.json) | "files" (the game's own files)
+    std::string kind;    // "crate" | "mod" (a mod.json) | "files" (the game's own files) | "patch" (a patch of the image)
     std::string dir;     // the folder read
+    std::string patch;   // a patch mod's file
     bool on = false;     // applied by this run
     bool listed = false; // named by mods.txt (whether or not it could be applied)
     u32 discFiles = 0;      // files of the disc it replaces or adds
@@ -79,6 +111,8 @@ u32 ArchiveFileCount();
 // The host file replacing this disc path, or nullptr. The path is one of the game's ("Crash6\\Crash.bh", any case, either
 // slash); a file the mods add answers here too
 const std::string* File(const char* discPath);
+// The recipe a TwinsanityEvolved mod gives for this disc path (its `.ranges` file), or nullptr. Same paths as File
+const Ranges* RangesFile(const char* discPath);
 // The whole CRASH6/CRASH.BH and CRASH6/CRASH.BD a mod ships (a rebuilt archive pair), or nullptr
 const std::string* ArchiveIndex();
 const std::string* ArchiveData();

@@ -2,6 +2,8 @@
 
 #include "common.h"
 
+#include <string>
+
 // The game's saves, on the storage of a port and a slot (the PS2's memory cards). A save is a directory of files, named by the
 // game's region and product codes and the save's name ("/BESLES-52568CRASH" on the PS2). One operation runs at a time: it starts
 // when the storage is there and runs in the Updates after, the storage's info refreshed while none does. The operations keep their
@@ -67,6 +69,11 @@ bool Initialise(const char* region, const char* product);
 // The directory the host's cards live under ($XDG_DATA_HOME/twinsanity, ~/.local/share/twinsanity without it). The
 // host's settings file sits beside them and derives its path from this, so where user data lives has one definition
 void DataDirectory(char* path, u32 size);
+
+// Where this run's cards are: the host's own directory for a run with no mod, and the cards of the mods that are on when any
+// is (a folder of its own inside it, so the vanilla saves and another lot of mods' are never read). What the log names, and
+// where a player finds the saves of the mods they play
+std::string CardsFolder();
 
 // Moves the operation on (the storage of the port and slot checked while none runs) and copies the storage's info to info (when
 // it's given). Returns the operation running

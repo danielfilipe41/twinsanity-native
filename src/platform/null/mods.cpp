@@ -7,7 +7,11 @@
 // about themselves.
 #include "platform/mods.h"
 
+#include "platform/discpatch.h"
 #include "platform/files.h"
+#include "platform/saves.h"
+
+#include "iso9660.h"
 
 // The zip reader the community's crates arrive in (third_party/miniz, public domain)
 #include "miniz.h"
@@ -33,6 +37,8 @@ std::string g_Folder;
 std::vector<Mod> g_Mods;
 // The whole disc files the mods replace or add, by the game's path (upper case, '/' separators)
 std::map<std::string, std::string> g_Disc;
+// The files of the disc the mods give as ranges rather than whole (a TwinsanityEvolved recipe), by the same path
+std::map<std::string, Platform::Mods::Ranges> g_Ranges;
 // The archive's entries they replace or add, by the game's name (upper case, '\\' separators)
 std::map<std::string, std::string> g_Archive;
 std::vector<ArchiveFile> g_ArchiveFiles;
@@ -578,10 +584,277 @@ void AddDisc(const std::string& key, const std::string& host, Applied* applied)
         return;
     }
     g_Disc[key] = host;
+    // A whole file is the file: a recipe for the same path (an earlier mod's) is no longer what it is made of
+    g_Ranges.erase(key);
     if (applied != nullptr)
     {
         applied->disc++;
     }
+}
+
+// A TwinsanityEvolved recipe's name (`<disc path>.ranges`)
+bool IsRanges(const std::string& name)
+{
+    const std::string lower = Lower(name);
+    return lower.size() > 7 && lower.compare(lower.size() - 7, 7, ".ranges") == 0;
+}
+
+// A decimal number of a recipe's own (digits only, and no more than a 64-bit one)
+bool Number(const std::string& text, u64* value)
+{
+    if (text.empty() || text.size() > 20)
+    {
+        return false;
+    }
+    u64 number = 0;
+    for (const char digit : text)
+    {
+        if (digit < '0' || digit > '9')
+        {
+            return false;
+        }
+        const u64 add = static_cast<u64>(digit - '0');
+        if (number > (0xFFFFFFFFFFFFFFFFull - add) / 10)
+        {
+            return false;
+        }
+        number = number * 10 + add;
+    }
+    *value = number;
+    return true;
+}
+
+// Whether a name is a patch of the whole disc image: xdelta3's VCDIFF, a PPF or a BPS, by the names the community gives them
+bool PatchName(const std::string& name)
+{
+    const std::string lower = Lower(name);
+    for (const char* extension : {".xdelta", ".xdelta3", ".vcdiff", ".ppf", ".bps"})
+    {
+        const size_t length = std::strlen(extension);
+        if (lower.size() > length && lower.compare(lower.size() - length, length, extension) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The folder's patch, when the folder holds one patch and nothing of the disc's own (a patch dropped in the mods folder as a
+// folder of its own): an empty path when it is not one
+fs::path PatchIn(const fs::path& folder)
+{
+    fs::path patch;
+    std::error_code error;
+    for (const auto& entry : fs::directory_iterator(folder, error))
+    {
+        std::error_code type;
+        if (entry.is_directory(type))
+        {
+            return {};
+        }
+        if (!entry.is_regular_file(type))
+        {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (Metadata(name))
+        {
+            continue;
+        }
+        if (!PatchName(name))
+        {
+            return {};
+        }
+        if (!patch.empty())
+        {
+            return {};
+        }
+        patch = entry.path();
+    }
+    return patch;
+}
+
+// A path inside the mod's folder: relative, with no `..` and no drive or device in it
+bool SafeRelative(const std::string& path, std::string* clean)
+{
+    const std::string text = Slashes(path);
+    if (text.empty() || text[0] == '/' || (text.size() > 1 && text[1] == ':'))
+    {
+        return false;
+    }
+    std::string joined;
+    size_t at = 0;
+    while (at <= text.size())
+    {
+        const size_t end = text.find('/', at);
+        const std::string part = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? text.size() + 1 : end + 1;
+        if (part.empty() || part == ".")
+        {
+            continue;
+        }
+        if (part == ".." || part.find(':') != std::string::npos)
+        {
+            return false;
+        }
+        joined += (joined.empty() ? "" : "/") + part;
+    }
+    if (joined.empty())
+    {
+        return false;
+    }
+    *clean = joined;
+    return true;
+}
+
+// A TwinsanityEvolved recipe: a file of the disc kept as the pieces it changes -- `base <offset> <length>` of the disc's own
+// file, `file <payload> <offset> <length>` of one of the mod's own files, `zero <length>`, with '#' a comment when it starts a
+// line or follows a blank. Platform::Files makes the file out of them (files.cpp), so a mod keeps only what it changes
+bool ReadRanges(const fs::path& root, const fs::path& recipe, const std::string& key, const std::string& label, Applied* applied)
+{
+    std::string text;
+    if (!ReadText(recipe, &text))
+    {
+        std::fprintf(stderr, "mods: %s does not read: the file is left out\n", Slashes(recipe.string()).c_str());
+        return false;
+    }
+    if (text.size() > (64u << 20))
+    {
+        std::fprintf(stderr, "mods: %s is over 64 MB: not a recipe, the file is left out\n", Slashes(recipe.string()).c_str());
+        return false;
+    }
+
+    Platform::Mods::Ranges ranges;
+    ranges.path = key;
+    size_t line = 0;
+    size_t at = 0;
+    if (text.size() >= 3 && static_cast<u8>(text[0]) == 0xEF && static_cast<u8>(text[1]) == 0xBB &&
+        static_cast<u8>(text[2]) == 0xBF)
+    {
+        at = 3;
+    }
+    while (at <= text.size())
+    {
+        const size_t end = text.find('\n', at);
+        std::string lineText = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? text.size() + 1 : end + 1;
+        line++;
+
+        // The comment, the way TwinsanityEvolved writes one
+        for (size_t index = 0; index < lineText.size(); index++)
+        {
+            if (lineText[index] == '#' && (index == 0 || lineText[index - 1] == ' ' || lineText[index - 1] == '\t'))
+            {
+                lineText.resize(index);
+                break;
+            }
+        }
+
+        // The line's words, and where each starts (a payload's name may hold blanks)
+        std::vector<std::string> words;
+        std::vector<size_t> starts;
+        for (size_t index = 0; index < lineText.size();)
+        {
+            while (index < lineText.size() && (lineText[index] == ' ' || lineText[index] == '\t' || lineText[index] == '\r'))
+            {
+                index++;
+            }
+            if (index >= lineText.size())
+            {
+                break;
+            }
+            const size_t begin = index;
+            while (index < lineText.size() && lineText[index] != ' ' && lineText[index] != '\t' && lineText[index] != '\r')
+            {
+                index++;
+            }
+            words.push_back(lineText.substr(begin, index - begin));
+            starts.push_back(begin);
+        }
+        if (words.empty())
+        {
+            continue;
+        }
+
+        const std::string where = "mods: " + label + " line " + std::to_string(line) + ": ";
+        const std::string operation = Lower(words[0]);
+        Platform::Mods::RangePiece piece;
+        if (operation == "base")
+        {
+            if (words.size() != 3 || !Number(words[1], &piece.offset) || !Number(words[2], &piece.length))
+            {
+                std::fprintf(stderr, "%sbase <offset> <length>: the file is left out\n", where.c_str());
+                return false;
+            }
+            piece.kind = Platform::Mods::RangePiece::Kind::Base;
+        }
+        else if (operation == "file")
+        {
+            if (words.size() < 4 || !Number(words[words.size() - 2], &piece.offset) || !Number(words.back(), &piece.length))
+            {
+                std::fprintf(stderr, "%sfile <path> <offset> <length>: the file is left out\n", where.c_str());
+                return false;
+            }
+            std::string relative = lineText.substr(starts[1], starts[words.size() - 2] - starts[1]);
+            while (!relative.empty() && (relative.back() == ' ' || relative.back() == '\t'))
+            {
+                relative.pop_back();
+            }
+            std::string clean;
+            if (!SafeRelative(relative, &clean))
+            {
+                std::fprintf(stderr, "%s'%s' is not a path inside the mod's folder: the file is left out\n", where.c_str(),
+                             relative.c_str());
+                return false;
+            }
+            piece.host = Slashes((root / clean).string());
+            piece.kind = Platform::Mods::RangePiece::Kind::Payload;
+        }
+        else if (operation == "zero")
+        {
+            if (words.size() != 2 || !Number(words[1], &piece.length))
+            {
+                std::fprintf(stderr, "%szero <length>: the file is left out\n", where.c_str());
+                return false;
+            }
+            piece.kind = Platform::Mods::RangePiece::Kind::Zero;
+        }
+        else
+        {
+            std::fprintf(stderr, "%s'%s' is not base, file or zero: the file is left out\n", where.c_str(), words[0].c_str());
+            return false;
+        }
+
+        if (piece.length == 0)
+        {
+            continue;
+        }
+        if (ranges.size + piece.length > 0xFFFFFFFFull)
+        {
+            std::fprintf(stderr, "mods: %s is over 4 GB: the file is left out\n", label.c_str());
+            return false;
+        }
+        ranges.size += piece.length;
+        ranges.pieces.push_back(std::move(piece));
+    }
+
+    if (ranges.pieces.empty())
+    {
+        std::fprintf(stderr, "mods: %s has no base, file or zero in it: the file is left out\n", label.c_str());
+        return false;
+    }
+
+    if (g_Disc.erase(key) != 0)
+    {
+        std::fprintf(stderr, "mods: %s: %s is a recipe of a file an earlier mod gives whole: the recipe is the one read\n",
+                     label.c_str(), key.c_str());
+    }
+    g_Ranges[key] = std::move(ranges);
+    if (applied != nullptr)
+    {
+        applied->disc++;
+    }
+    return true;
 }
 
 void AddArchive(const std::string& key, const std::string& host, Applied* applied)
@@ -602,6 +875,12 @@ void ScanFiles(const fs::path& tree, const Mod* mod, Applied* applied)
 {
     for (const std::string& relative : FilesRecursive(tree))
     {
+        // A recipe is not a file of the disc: ScanMod reads what it says the file is made of
+        if (IsRanges(relative))
+        {
+            continue;
+        }
+
         // A mod's own notes are not content
         if (Metadata(relative.substr(relative.find_last_of('/') + 1)))
         {
@@ -757,6 +1036,18 @@ bool ScanMod(const fs::path& folder, Mod* mod, Applied* applied)
     }
 
     ScanFiles(disc, mod, applied);
+
+    // TwinsanityEvolved's recipes: a file of the disc kept as the ranges a mod changes of it, made whole by Platform::Files
+    for (const std::string& relative : FilesRecursive(disc))
+    {
+        if (!IsRanges(relative))
+        {
+            continue;
+        }
+        const std::string key = DiscKey(relative.substr(0, relative.size() - 7));
+        ReadRanges(folder, disc / relative, key, mod->id + ": disc/" + relative, applied);
+    }
+
     return applied->disc != 0 || applied->archive != 0;
 }
 
@@ -864,9 +1155,11 @@ std::string ResolveFolder(const char* named, const char* preferred, const char* 
 
 void Forget()
 {
+    Platform::DiscPatch::Forget();
     g_Folder.clear();
     g_Mods.clear();
     g_Disc.clear();
+    g_Ranges.clear();
     g_Archive.clear();
     g_ArchiveFiles.clear();
     g_Listed.clear();
@@ -934,7 +1227,13 @@ void Platform::Mods::Initialise(const char* folder, const std::vector<std::strin
         mod.dir = Slashes(modDir.string());
 
         fs::path crateRoot;
-        if (FindCrateRoot(modDir, &crateRoot))
+        const fs::path patch = PatchIn(modDir);
+        if (!patch.empty())
+        {
+            mod.kind = "patch";
+            mod.patch = Slashes(patch.string());
+        }
+        else if (FindCrateRoot(modDir, &crateRoot))
         {
             mod.kind = "crate";
             std::string text;
@@ -967,6 +1266,31 @@ void Platform::Mods::Initialise(const char* folder, const std::vector<std::strin
         }
 
         g_Mods.push_back(std::move(mod));
+    }
+
+    // A patch dropped in the mods folder as itself is a mod too, named by the file's own name
+    {
+        std::error_code listError;
+        for (const auto& entry : fs::directory_iterator(dir, listError))
+        {
+            std::error_code type;
+            if (!entry.is_regular_file(type))
+            {
+                continue;
+            }
+            const std::string file = entry.path().filename().string();
+            if (!PatchName(file))
+            {
+                continue;
+            }
+            Mod mod;
+            mod.id = file.substr(0, file.find_last_of('.'));
+            mod.name = mod.id;
+            mod.kind = "patch";
+            mod.dir = Slashes(entry.path().string());
+            mod.patch = Slashes(entry.path().string());
+            g_Mods.push_back(std::move(mod));
+        }
     }
 
     bool listed = false;
@@ -1036,6 +1360,27 @@ void Platform::Mods::Initialise(const char* folder, const std::vector<std::strin
         {
             ok = ScanMod(modDir, found, &applied);
         }
+        else if (found->kind == "patch")
+        {
+            // A patch of the whole image: the game reads the patched one as it goes, so nothing is unpacked or copied
+            const char* image = Platform::Iso9660::ImagePath();
+            if (image == nullptr || image[0] == '\0')
+            {
+                std::fprintf(stderr, "mods: %s is a patch of the disc image, and the game is playing a folder of files: no patch\n",
+                             found->id.c_str());
+            }
+            else if (Platform::DiscPatch::Loaded())
+            {
+                std::fprintf(stderr, "mods: %s is a patch, and another patch is already on: a patch of the whole image cannot be "
+                                     "put over another's, so it is left out\n",
+                             found->id.c_str());
+            }
+            else if (Platform::DiscPatch::Load(found->patch.c_str(), image))
+            {
+                Platform::Iso9660::Repatched();
+                ok = true;
+            }
+        }
         else
         {
             ScanFiles(PayloadRoot(modDir), found, &applied);
@@ -1045,7 +1390,12 @@ void Platform::Mods::Initialise(const char* folder, const std::vector<std::strin
         found->on = ok;
         found->discFiles = applied.disc;
         found->archiveFiles = applied.archive;
-        if (ok)
+        if (ok && found->kind == "patch")
+        {
+            std::fprintf(stderr, "mods: %s on (patch, %s): the disc image is the patched one\n", found->id.c_str(),
+                         Platform::DiscPatch::Label());
+        }
+        else if (ok)
         {
             std::fprintf(stderr, "mods: %s on (%s%s%s): %u files of the disc, %u entries of the archive\n", found->id.c_str(),
                          found->kind.c_str(), found->name == found->id ? "" : ", ", found->name == found->id ? "" : found->name.c_str(),
@@ -1063,7 +1413,8 @@ void Platform::Mods::Initialise(const char* folder, const std::vector<std::strin
         g_ArchiveFiles.push_back({entry.first, entry.second});
     }
 
-    g_Enabled = !g_Disc.empty() || !g_Archive.empty() || !g_IndexHost.empty() || !g_DataHost.empty();
+    g_Enabled = !g_Disc.empty() || !g_Ranges.empty() || !g_Archive.empty() || !g_IndexHost.empty() || !g_DataHost.empty() ||
+                Platform::DiscPatch::Loaded();
 }
 
 const char* Platform::Mods::Folder()
@@ -1150,7 +1501,7 @@ bool Platform::Mods::Enabled()
 
 u32 Platform::Mods::DiscFileCount()
 {
-    return static_cast<u32>(g_Disc.size());
+    return static_cast<u32>(g_Disc.size() + g_Ranges.size());
 }
 
 u32 Platform::Mods::ArchiveFileCount()
@@ -1167,6 +1518,17 @@ const std::string* Platform::Mods::File(const char* discPath)
 
     const auto found = g_Disc.find(DiscKey(discPath));
     return found == g_Disc.end() ? nullptr : &found->second;
+}
+
+const Platform::Mods::Ranges* Platform::Mods::RangesFile(const char* discPath)
+{
+    if (!g_Enabled || discPath == nullptr)
+    {
+        return nullptr;
+    }
+
+    const auto found = g_Ranges.find(DiscKey(discPath));
+    return found == g_Ranges.end() ? nullptr : &found->second;
 }
 
 const std::string* Platform::Mods::ArchiveIndex()
@@ -1217,7 +1579,12 @@ std::string Platform::Mods::Describe()
     }
 
     line += " (" + names + "): " + std::to_string(DiscFileCount()) + " files of the disc, " +
-            std::to_string(ArchiveFileCount()) + " entries of the archive; saves go to the -mods cards";
+            std::to_string(ArchiveFileCount()) + " entries of the archive";
+    if (Platform::DiscPatch::Loaded())
+    {
+        line += ", the image patched by " + std::string(Platform::DiscPatch::Label());
+    }
+    line += "; saves go to " + Platform::Saves::CardsFolder();
     return line;
 }
 
@@ -1227,6 +1594,14 @@ bool Platform::Mods::Verify()
     {
         std::fprintf(stderr, "mods: no mod is on: the disc is read as it is\n");
         return true;
+    }
+
+    // A patch of the image: the game reads it through Platform::DiscPatch, which is what the volume was read again through
+    if (Platform::DiscPatch::Loaded())
+    {
+        std::fprintf(stderr, "mods: the disc image is patched (%s): %llu bytes as it leaves it, your image %llu\n",
+                     Platform::DiscPatch::Label(), static_cast<unsigned long long>(Platform::DiscPatch::Size()),
+                     static_cast<unsigned long long>(Platform::Iso9660::Bytes()));
     }
 
     // The index the game is given (through the file layer, so the rebuilt one when the mods make one)
@@ -1379,8 +1754,29 @@ bool Platform::Mods::Verify()
         Platform::Files::Close(file);
     }
 
+    // The files the mods give as ranges: each composes from what it names (a payload that does not hold its ranges, or a base
+    // range past the disc's file, is said as it composes) and reads as long as its recipe says
+    for (const auto& entry : g_Ranges)
+    {
+        const s32 file = Platform::Files::Open(entry.first.c_str(), Platform::Files::OpenRead);
+        if (file < 0)
+        {
+            std::fprintf(stderr, "mods: %s does not compose from its recipe\n", entry.first.c_str());
+            problems++;
+            continue;
+        }
+        const s32 end = Platform::Files::Seek(file, 0, Platform::Files::SeekEnd);
+        if (end < 0 || static_cast<u64>(end) != entry.second.size)
+        {
+            std::fprintf(stderr, "mods: %s is %d bytes long where its recipe adds up to %llu\n", entry.first.c_str(), end,
+                         static_cast<unsigned long long>(entry.second.size));
+            problems++;
+        }
+        Platform::Files::Close(file);
+    }
+
     std::fprintf(stderr, "mods: verified %zu entries of the archive and %zu files of the disc the mods change: ",
-                 g_ArchiveFiles.size(), g_Disc.size());
+                 g_ArchiveFiles.size(), g_Disc.size() + g_Ranges.size());
     if (problems == 0)
     {
         std::fprintf(stderr, "what the game reads is the mods'\n");

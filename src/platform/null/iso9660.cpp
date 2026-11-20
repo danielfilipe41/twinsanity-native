@@ -8,6 +8,8 @@
 
 #include "iso9660.h"
 
+#include "platform/discpatch.h"
+
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -37,6 +39,7 @@ std::FILE* g_Image = nullptr;
 u64 g_Bytes = 0;          // the volume's logical bytes (sectors * 2048)
 u32 g_Stride = SectorSize; // 2048 for a plain image, 2352 for a raw dump
 u32 g_UserOffset = 0;      // raw: where a sector's 2048 user bytes start
+std::string g_Path;        // the image the reader opened (a patch of it is read over it)
 u32 g_Sectors = 0;
 char g_VolumeId[33] = {};
 u32 g_RootLba = 0;
@@ -132,6 +135,12 @@ bool NameMatches(const std::string& recorded, const std::string& wanted)
 // The image's logical bytes: a plain image is the file itself, a raw dump loses its sync headers and ECC to the remap
 s32 ReadBytes(u64 offset, void* buffer, s32 size)
 {
+    // A patch of the disc: the image is the patched one, its own bytes and the patch's pieces as the game asks for them
+    if (Platform::DiscPatch::Loaded())
+    {
+        return Platform::DiscPatch::ReadAt(offset, buffer, size);
+    }
+
     u8* destination = static_cast<u8*>(buffer);
     if (g_Image == nullptr || size <= 0 || offset >= g_Bytes)
     {
@@ -376,6 +385,7 @@ bool Platform::Iso9660::Open(const char* imagePath)
 
     std::lock_guard<std::mutex> lock(g_Mutex);
     g_Image = file;
+    g_Path = imagePath;
     g_Bytes = bytes;
     g_Stride = stride;
     g_UserOffset = userOffset;
@@ -399,6 +409,51 @@ bool Platform::Iso9660::Open(const char* imagePath)
     return true;
 }
 
+const char* Platform::Iso9660::ImagePath()
+{
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    return g_Path.c_str();
+}
+
+bool Platform::Iso9660::Repatched()
+{
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    if (!Platform::DiscPatch::Loaded() || g_Image == nullptr)
+    {
+        return false;
+    }
+
+    // The volume as the patch leaves it. Its size, its root directory and its volume identifier all come from the patched
+    // image, and the answers this reader kept were the unpatched volume's
+    g_Bytes = Platform::DiscPatch::Size();
+    g_paths.clear();
+    g_directories.clear();
+
+    u8 descriptor[SectorSize] = {};
+    if (g_Stride != SectorSize ||
+        ReadBytes(static_cast<u64>(PvdSector) * SectorSize, descriptor, sizeof(descriptor)) !=
+            static_cast<s32>(sizeof(descriptor)) ||
+        descriptor[0] != 1 || std::memcmp(descriptor + 1, "CD001", 5) != 0 || descriptor[RootRecordOffset] < 33)
+    {
+        std::fprintf(stderr, "iso9660: the patched image has no volume descriptor at sector 16\n");
+        return false;
+    }
+
+    g_Sectors = Le32(descriptor + VolumeSpaceOffset);
+    std::memcpy(g_VolumeId, descriptor + VolumeIdOffset, 32);
+    g_VolumeId[32] = '\0';
+    for (u32 index = 32; index > 0 && g_VolumeId[index - 1] == ' '; index--)
+    {
+        g_VolumeId[index - 1] = '\0';
+    }
+    const Record root = Decode(descriptor + RootRecordOffset);
+    g_RootLba = root.lba;
+    g_RootSize = root.size;
+    std::fprintf(stderr, "iso9660: the patched image's volume \"%s\", %u sectors, %llu bytes\n", g_VolumeId, g_Sectors,
+                 static_cast<unsigned long long>(g_Bytes));
+    return true;
+}
+
 void Platform::Iso9660::Close()
 {
     std::lock_guard<std::mutex> lock(g_Mutex);
@@ -407,6 +462,7 @@ void Platform::Iso9660::Close()
         std::fclose(g_Image);
     }
     g_Image = nullptr;
+    g_Path.clear();
     g_Bytes = 0;
     g_Stride = SectorSize;
     g_UserOffset = 0;

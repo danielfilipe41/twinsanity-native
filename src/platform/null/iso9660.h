@@ -26,6 +26,12 @@ bool Find(const char* gamePath, u64* offset, u32* size);
 // Positioned, so two threads reading do not split each other's read; returns the bytes read, negative on failure
 s32 ReadAt(u64 offset, void* buffer, s32 size);
 
+// The image the reader opened ("" when it has none): a patch of the disc (Platform::DiscPatch) is read over it
+const char* ImagePath();
+// A patch of the image was loaded (or dropped): the volume is read again through it -- its size, its directories and its files,
+// which the patch may have changed. False when no patch is loaded
+bool Repatched();
+
 // The volume's logical size in bytes: sectors * 2048, not the file's size when the file is raw
 u64 Bytes();
 // The volume identifier the image records ("CRASH6" on the PAL disc)

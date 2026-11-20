@@ -175,19 +175,29 @@ disc's own folder cannot be written; `mods.txt` and unpacked zips live in whiche
 whenever that folder is writable. A folder that exists but cannot be written still has its mods read: the log says its
 `mods.txt` cannot change and zips cannot unpack there.
 
-Three shapes are read, decided by what a folder holds, never by its name:
+Four shapes are read, decided by what a folder holds, never by its name:
 
 - **A Mod Crate** (Crate Mod Loader's, what the community ships): `ModCrateInfo.txt`, `layer0/` (the disc's files) and
   `layer1/` (entries of `CRASH6/CRASH.BD` by their index path).
-- **A TwinsanityEvolved mod folder**: `mod.json` with a `disc/` tree laid out like the disc.
+- **A TwinsanityEvolved mod folder**: `mod.json` with a `disc/` tree laid out like the disc. A file of that tree may come as
+  the ranges a mod changes of it instead of whole -- TwinsanityEvolved's `<disc path>.ranges` recipe naming the slices of the
+  disc's own file (`base <offset> <length>`), of the mod's payload (`file <path> <offset> <length>`) and the zeroes between
+  them -- and the port composes the file as the game reads it, so a mod that changes a few bytes of a 900 MB `CRASH.BD` costs
+  only those bytes.
 - **A folder of the game's own built files** (TT Lab's output, or loose files): `CRASH6/` and `FMV/` are the disc's files, and
   `Startup/`, `Levels/`, `Language/` and `Extras/` are the archive's entries. A bare file the tools write (`Default.rm2`,
   `bossarea.sm2`, a text bank) is placed by its name when the archive has exactly one entry of that name.
+- **A patch of the disc image** -- a `.xdelta`/`.vcdiff`, `.ppf` or `.bps` file, loose in the mods folder or in a folder of
+  its own, one per mod. The patch is laid over the disc image as it is read, so a patched disc is played without writing a
+  patched copy anywhere. It has to be a plain ISO (a raw dump's sector offsets are its own and are not read), and only one
+  patch mod is applied at a time: a second patch, or a patch chosen while the game plays a folder of files, is said in the
+  log and left off. The patched image's saves go to its own `cards-mods/<patch>/` too.
 
 A mod's disc files replace the disc's whole. Its archive entries go into a rebuilt `CRASH6/CRASH.BH` and are appended to a
 composed `CRASH6/CRASH.BD`, so an entry may grow or shrink without the disc being touched. Mods are read at start-up, so a
-change takes effect the next time the game starts. While any mod is on, saves go to the `-mods` memory cards beside the vanilla
-ones: a modded save never touches them.
+change takes effect the next time the game starts. While any mod is on, the saves go to the memory cards of the mods that are
+on, never the vanilla ones and never another lot's: `cards-mods/<mod>/` inside the game's data folder, or `<first>-<digest>`
+when several are on (the digest covers the mods in the order they apply, so the same mods always find the same cards).
 
 ```sh
 build/host/sdl3/game-with-data --mods-dir "path/to/mods" --mod DarkLair   # add one to what mods.txt lists, for this run
@@ -204,10 +214,15 @@ other mod (a marker says which zip was unpacked; a newer zip unpacks again). **N
 `ModCrateSettings.txt` and scripts (code changes of Crate Mod Loader's own), a modified executable's code (the port runs its
 own), and TwinsanityEvolved language packs (this port plays its disc's own languages).
 
+A patch is read in the three formats the community ships: xdelta3's VCDIFF, PPF 1.0/2.0/3.0 and BPS. A bit of it may still be
+left to another tool, and the log says so rather than guessing: an xdelta3 patch made with secondary compression or with its
+own code table, and a patch that writes more than 384 MB of new bytes. In those cases apply the patch to the image with
+xdelta3 or Delta Patcher and play the patched image, which the port reads as any other disc.
+
 The same chain runs on every host. On Android the preferences folder is the app's own writable storage and `mods_dir` can name
 a folder the app can reach (its own files folder, or one a launcher prepared); on the web the preferences folder is mounted as
-IDBFS (kept in the browser's storage) and flushed as the run goes, so the saves, the mods and `mods.txt` survive a reload. The
-disc image itself is only in the page's memory, and is asked for again the next time.
+IDBFS (kept in the browser's storage) and flushed as the run goes, so the saves, the modded saves' own folders, the mods and
+`mods.txt` survive a reload. The disc image itself is only in the page's memory, and is asked for again the next time.
 
 ## Building
 
