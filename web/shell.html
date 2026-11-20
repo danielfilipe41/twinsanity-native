@@ -7,6 +7,13 @@
 <style>
   html, body { margin: 0; height: 100%; background: #101014; color: #e8e8ea; font: 16px/1.45 system-ui, sans-serif; }
   #menu { max-width: 42rem; margin: 0 auto; padding: 3rem 1.5rem; }
+  #menu.dropping { outline: 2px dashed #e8b23a; outline-offset: 1rem; border-radius: .5rem; }
+  /* A picker is one row: its name, then the system's own button beside it. The name must not wrap above the button, or it
+     reads as the name of the row under it */
+  #menu .field { display: flex; align-items: center; gap: .7rem; margin: .7rem 0; color: #a8a8b0; }
+  #menu .field > span { flex: 0 0 auto; white-space: nowrap; }
+  #menu .field input { flex: 1 1 auto; min-width: 0; }
+  #menu .note { margin: -.3rem 0 .9rem; color: #8f9c7c; font-size: .9rem; }
   h1 { font-size: 1.6rem; margin: 0 0 1rem; }
   p { color: #a8a8b0; }
   input, button { font: inherit; }
@@ -85,11 +92,19 @@
   <h1>Crash Twinsanity</h1>
   <p>This build carries none of the game's data: it reads it out of your own disc at every start. Choose the disc image
      (an ISO, or a raw dump of the disc); it is read here in the page and never uploaded. Saves and settings are kept in this
-     browser's own storage, so they are there next time.</p>
-  <input id="iso" type="file" accept=".iso,.bin,application/octet-stream">
-  <label class="mods" title="A folder of mods: each sub-folder is one mod (a Mod Crate, a TwinsanityEvolved mod, or the game's own files)">
-    Mods folder (optional): <input id="mods" type="file" webkitdirectory multiple>
+     browser's own storage, so they are there next time. Dropping the image onto the page works too, and so does dropping a
+     folder of mods.</p>
+  <!-- No accept list: it is a filter on what a system calls a file, and an ISO is a CD image on one system and a plain
+       binary on another, so a picker built from it greys the very image the page is for out -->
+  <label class="field" title="The disc image: an ISO, or a raw dump of the disc">
+    <span>Disc image</span>
+    <input id="iso" type="file">
   </label>
+  <label class="field" title="A folder of mods: each sub-folder is one mod (a Mod Crate, a TwinsanityEvolved mod, or the game's own files)">
+    <span>Mods folder (optional)</span>
+    <input id="mods" type="file" webkitdirectory multiple>
+  </label>
+  <p id="mods-status" class="note"></p>
   <button id="play" disabled>Play</button>
   <p id="status">Loading the game…</p>
 </div>
@@ -326,6 +341,137 @@
       }
     });
 
+    // The mods: the files of the folder the player chose, each with the path it has inside that folder, so a sub-folder
+    // stays a mod's own folder (and the folder itself is the mod's name). A folder dropped on the page is read the same
+    // way -- through the drop's own entries, which is the one path to a folder every browser has offered for years
+    var modsChooser = document.getElementById('mods');
+    var modsStatus = document.getElementById('mods-status');
+    var modsPicked = [];
+
+    function sayMods(name) {
+      if (modsPicked.length === 0) {
+        modsStatus.textContent = 'nothing to read in ' + name;
+        return;
+      }
+      var mods = {};
+      modsPicked.forEach(function (item) {
+        var slash = item.path.indexOf('/');
+        if (slash > 0) {
+          mods[item.path.substring(0, slash)] = true;
+        }
+      });
+      var count = Object.keys(mods).length;
+      modsStatus.textContent = modsPicked.length + ' files from ' + name +
+        (count > 1 ? ' (' + count + ' mods)' : '');
+    }
+
+    modsChooser.addEventListener('change', function () {
+      modsPicked = [];
+      for (var index = 0; index < modsChooser.files.length; index++) {
+        var file = modsChooser.files[index];
+        modsPicked.push({ path: file.webkitRelativePath || file.name, file: file });
+      }
+      if (modsPicked.length !== 0) {
+        sayMods(modsChooser.files[0].webkitRelativePath.split('/')[0] || 'the files chosen');
+      }
+    });
+
+    // A picker that cannot take a folder (no webkitdirectory) is put away rather than left to hand the page loose files:
+    // the folder is dropped on the page instead
+    if (!('webkitdirectory' in document.createElement('input'))) {
+      modsChooser.style.display = 'none';
+      modsChooser.parentNode.querySelector('span').textContent = 'Mods folder: drop the folder on this page';
+    }
+
+    // The entries a dropped folder holds, walked to the bottom (a directory reader answers a batch at a time, and is
+    // asked again until it answers with nothing)
+    function readFolder(entry, path, out) {
+      return new Promise(function (resolve) {
+        if (entry.isFile) {
+          entry.file(function (file) {
+            out.push({ path: path + entry.name, file: file });
+            resolve();
+          }, function () {
+            resolve();
+          });
+          return;
+        }
+        var reader = entry.createReader();
+        var children = [];
+        function batch() {
+          reader.readEntries(function (entries) {
+            if (entries.length === 0) {
+              Promise.all(children).then(function () {
+                resolve();
+              });
+              return;
+            }
+            for (var index = 0; index < entries.length; index++) {
+              children.push(readFolder(entries[index], path + entry.name + '/', out));
+            }
+            batch();
+          }, function () {
+            resolve();
+          });
+        }
+        batch();
+      });
+    }
+
+    function takeModsFolder(entry) {
+      modsPicked = [];
+      modsStatus.textContent = 'reading ' + entry.name + '…';
+      readFolder(entry, '', modsPicked).then(function () {
+        sayMods(entry.name);
+        report('mods: ' + modsPicked.length + ' files from ' + entry.name);
+      });
+    }
+
+    // An image dropped on the page is taken as the one the picker chose: the picker is the system's, and what a system
+    // makes of an image is its own business (see the note by the input), while a drop always hands the page the file itself
+    var menu = document.getElementById('menu');
+    var drops = 0;
+    menu.addEventListener('dragenter', function (event) {
+      event.preventDefault();
+      drops++;
+      menu.classList.add('dropping');
+    });
+    menu.addEventListener('dragover', function (event) {
+      event.preventDefault();
+    });
+    menu.addEventListener('dragleave', function (event) {
+      event.preventDefault();
+      if (--drops <= 0) {
+        drops = 0;
+        menu.classList.remove('dropping');
+      }
+    });
+    menu.addEventListener('drop', function (event) {
+      event.preventDefault();
+      drops = 0;
+      menu.classList.remove('dropping');
+      var items = event.dataTransfer && event.dataTransfer.items;
+      var entry = items && items.length !== 0 && items[0].webkitGetAsEntry ? items[0].webkitGetAsEntry() : null;
+      // A folder is the mods; a file is the disc image
+      if (entry && entry.isDirectory) {
+        takeModsFolder(entry);
+        return;
+      }
+      var files = event.dataTransfer && event.dataTransfer.files;
+      if (!files || files.length === 0) {
+        return;
+      }
+      try {
+        var transfer = new DataTransfer();
+        transfer.items.add(files[0]);
+        chooser.files = transfer.files;
+      } catch (error) {
+        report('the dropped image cannot be taken: ' + error);
+        return;
+      }
+      chooser.dispatchEvent(new Event('change'));
+    });
+
     // The disc's bytes go into the page's file system whole, in chunks so the read does not double the image in memory,
     // and the game is then run exactly as a desktop run is: --disc names the image and the loader reads SLES_525.68 out
     // of it at the first start
@@ -333,6 +479,11 @@
       return new Promise(function (resolve, reject) {
         try { FS.unlink('/disc.iso'); } catch (error) {}
         var stream = FS.open('/disc.iso', 'w+');
+        // The image's size is taken in one allocation first: a file system file grows by copying what it holds into a
+        // larger store, and an image grown that way briefly needs its own size twice over -- more than the 4 GB the module
+        // can address once the game's own memory is there. Truncation goes by path: FS.open hands back a stream here, and
+        // FS.ftruncate wants the descriptor number
+        FS.truncate('/disc.iso', file.size);
         var chunk = 16 * 1024 * 1024;
         var offset = 0;
 
@@ -366,6 +517,10 @@
         var reader = response.body.getReader();
         try { FS.unlink('/disc.iso'); } catch (error) {}
         var stream = FS.open('/disc.iso', 'w+');
+        // As above: the image's size in one allocation, when the server says what it is
+        if (total > 0) {
+          FS.truncate('/disc.iso', total);
+        }
         var offset = 0;
 
         function pump() {
@@ -395,8 +550,8 @@
       // mods rather than a path the game has to complain about
       FS.mkdirTree(ModsDirectory);
 
-      var picked = document.getElementById('mods').files;
-      if (!picked || picked.length === 0) {
+      var picked = modsPicked;
+      if (picked.length === 0) {
         syncSaves(false);
         return Promise.resolve();
       }
@@ -404,9 +559,9 @@
       var written = 0;
       var writes = [];
       for (var index = 0; index < picked.length; index++) {
-        (function (file) {
-          var relative = file.webkitRelativePath || file.name;
-          var target = ModsDirectory + '/' + relative;
+        (function (item) {
+          var target = ModsDirectory + '/' + item.path;
+          var file = item.file;
           writes.push(file.arrayBuffer().then(function (buffer) {
             var slash = target.lastIndexOf('/');
             FS.mkdirTree(target.substring(0, slash));

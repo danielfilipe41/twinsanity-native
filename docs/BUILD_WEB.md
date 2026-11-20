@@ -59,3 +59,36 @@ Range support falls back to downloading the image whole.
 
 Saves and settings live in the page's IndexedDB mount of `~/.local/share/twinsanity`, so they are per browser and per
 site origin, and survive a reload.
+
+## GitHub Pages
+
+A site is the build's three files with `game.html` as `index.html`, and nothing else -- in particular no disc image and no
+`SLES_525.68`, which the repository never carries and the page never needs: a visitor hands it their own image. 
+`tools/publish_web.py` writes that site to `build/site` and, with `--push`, makes it the `gh-pages` branch (a history of
+its own, so no source file is ever on the site) and pushes it:
+
+```sh
+DATA=runtime PLATFORM=web python3 configure.py && ninja game
+python3 tools/publish_web.py --push
+```
+
+`.github/workflows/pages.yml` does the same on a push that touches the page (and on demand from the Actions tab): it
+installs the emsdk, generates and builds bgfx for wasm32, builds the page and runs the script. The page is published the
+same way locally and from CI, so there is one thing to get right.
+
+Then in the repository on GitHub: **Settings**, **Pages**, **Build and deployment**, source **Deploy from a branch**,
+branch **gh-pages**, folder **/ (root)**. The page is then at `https://<user>.github.io/<repo>/` (the script prints the
+address it works out from `origin`); the first deployment takes a minute or two.
+
+The script copies three files by name rather than the build folder wholesale, because a disc image usually sits beside
+the build (`build/web/pal.iso` is a symlink to the real one on a development machine) and a copy of the folder would
+publish it. It also refuses a file near Pages' 100 MB limit and anything named like the disc.
+
+What a visitor gets: the page asks for their own image, reads it in the tab and never uploads it. The picker path keeps
+the whole image in the module's memory (~2.4 GB of the 4 GB the module addresses), so the page takes the image's size in
+one allocation before reading it -- growing a file system file by copying costs twice its size for a moment, which a
+full disc does not fit in. A hosted image (`?disc=<url>`) is read a chunk at a time instead when the host answers Range
+requests, and needs no memory for the image.
+
+Pages serves `.wasm` as `application/wasm`, which is what the module asks for. It needs no cross-origin isolation: this
+build has no threads and no `SharedArrayBuffer`.

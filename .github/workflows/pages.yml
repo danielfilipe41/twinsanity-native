@@ -1,0 +1,65 @@
+name: web page
+
+# The browser build, put on the page's branch (gh-pages) for GitHub Pages to serve. The build is the sources only: no disc
+# image and no SLES_525.68, which the repository never carries -- the page asks each visitor for their own image. A push to
+# master that touches anything the page is made of rebuilds it; the button rebuilds it too.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "web/**"
+      - "src/**"
+      - "include/**"
+      - "third_party/miniz/**"
+      - "symbol_addrs.txt"
+      - "configure.py"
+      - "tools/retail_map.py"
+      - "tools/retail_symbols.h"
+      - "tools/publish_web.py"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: web-page
+  cancel-in-progress: true
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Emscripten 7.0.0
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 7.0.0
+
+      # bgfx's own project files are not in its checkout (its .build is ignored), so its wasm targets are generated first,
+      # then only the four libraries this build links: the examples the makefile's wasm target also builds are not needed
+      - name: bgfx, bx and bimg for wasm32
+        run: |
+          set -o pipefail
+          export EMSCRIPTEN="$(dirname "$(command -v emcc)")"
+          make -C third_party/bgfx .build/projects/gmake-wasm
+          make -C third_party/bgfx/.build/projects/gmake-wasm config=release bgfx bimg bimg_decode bx -j"$(nproc)"
+
+      - name: Build the page
+        run: |
+          set -o pipefail
+          DATA=runtime PLATFORM=web python3 configure.py
+          ninja game
+
+      # The three files and nothing else: the script lists them by name, so a disc image beside the build cannot be
+      # published, and it refuses anything named like the disc
+      - name: Publish it
+        run: |
+          set -o pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 tools/publish_web.py --push
