@@ -6,6 +6,9 @@ lists.
     python configure.py [--matching]
 
 --matching links the asm alone (no src/, no PS2SDK), for `ninja check`, which compares the load image with the retail one.
+PROFILE=1 (a web build) keeps the wasm's function names, so a profiler reading a phone's frame says the C++ function it was
+in instead of wasm-function[1234]. That is a name table in the wasm: nothing about the code or its speed changes.
+
 PLATFORM (an environment variable, ps2 by default) picks the platform layer's side in src/platform/. Where the toolchain is comes
 from tools/local_config.py ($PS2DEV, local.json, else /usr/local/ps2dev or C:/ps2dev). The commands run the tools with the
 Python running this script, so the same works on Linux and Windows (where ninja runs commands without a shell).
@@ -53,6 +56,8 @@ WINDOWS = TARGET == "windows"
 RUNTIME_DATA = os.environ.get("DATA") == "runtime"
 RUNTIME_DATA_FLAGS = ["-DTWINSANITY_RUNTIME_DATA", f"-I{(HERE / 'tools').as_posix()}",
                       f"-I{(HERE / 'build' / 'host' / 'runtime').as_posix()}"] if RUNTIME_DATA else []
+# PROFILE=1 (PLATFORM=web): the link keeps the wasm's function names for a profiler (see the docstring)
+PROFILE = os.environ.get("PROFILE") == "1"
 
 # Host builds (PLATFORM=null/sdl3): 32-bit x86 keeps the retail 32-bit-pointer layouts, so CHECK_SIZE/OFFSET hold.
 # -malign-double matches the MIPS ABI's 8-byte doubles; SSE2 avoids x87 extended precision. No -mno-check-zero-division:
@@ -363,7 +368,8 @@ def main_web():
                                           # the mismatch where the x86 builds silently tolerate it
                                           '-sEMULATE_FUNCTION_POINTER_CASTS=1',
                                           '-sINVOKE_RUN=0', '-sFORCE_FILESYSTEM=1', '-lidbfs.js',
-                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS', '--shell-file', 'web/shell.html'] +
+                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS',                                '--shell-file', 'web/shell.html'] +
+                                (['--profiling-funcs'] if PROFILE else []) +
                                 web_bgfx_flags())}",
         "",
         "rule cxx",
