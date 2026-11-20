@@ -487,7 +487,27 @@ void Platform::Movie::WaitFrame(Player* player)
         return;
     }
 
-    host->nextPresent = now + interval;
+    // The schedule moves on by the movie's interval, not from this present: a callback lands on the display's grid, so a
+    // present that was due between two callbacks goes up on the later one, and a schedule restarted from the moment each
+    // picture appeared carried that rounding into the next one (a 25 a second movie asks for a present every 40 ms, which
+    // a 60 Hz page only gives at 50 ms), slowing the picture down frame by frame until it trailed the sound. Kept on the
+    // movie's own clock, one present's lateness is made up by the next.
+    host->nextPresent += interval;
+    // A picture or more behind now (a stall, or a page the browser throttled): the pictures that went by are dropped
+    // instead of played late, so the video stays with the sound rather than drifting further from it
+    while (now - host->nextPresent > interval)
+    {
+        host->nextPresent += interval;
+        if (host->queued > 0)
+        {
+            if (host->queued > 1)
+            {
+                host->queue[0] = host->queue[1];
+            }
+            host->queued--;
+        }
+    }
+
     host->present();
 #else
     host->nextPresent += interval;

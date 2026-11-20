@@ -23,6 +23,61 @@
   #hint { position: fixed; right: .5rem; bottom: .4rem; color: rgba(232, 232, 234, .5); font: 11px ui-monospace, monospace;
           pointer-events: none; }
   body.show-log #hint { display: none; }
+  /* A phone's or a tablet's controls: a stick under the left thumb and the pad's buttons under the right. Sized in the
+     screen's smaller side, so they sit under the thumbs whichever way the device is held */
+  #touch { display: none; position: fixed; inset: 0; z-index: 2; touch-action: none; -webkit-user-select: none;
+           user-select: none; pointer-events: none; }
+  body.playing.touch #touch { display: block; }
+  #touch .stick, #touch .look { position: absolute; border-radius: 50%; background: rgba(16, 16, 20, .3);
+                                 border: 2px solid rgba(232, 232, 234, .25); pointer-events: auto; }
+  #touch .stick { left: 4vmin; bottom: 4vmin; width: 32vmin; height: 32vmin; }
+  #touch .look { right: 3vmin; bottom: 3vmin; width: 26vmin; height: 26vmin; }
+  #touch .knob { position: absolute; left: 50%; top: 50%; width: 12vmin; height: 12vmin; margin: -6vmin 0 0 -6vmin;
+                 border-radius: 50%; background: rgba(232, 232, 234, .32); pointer-events: none; }
+  /* The pad's buttons above the looking stick, as the right thumb goes: the buttons, then the stick under them */
+  #touch .buttons { position: absolute; right: 3vmin; bottom: 31vmin; width: 26vmin; height: 26vmin; pointer-events: none; }
+  #touch .buttons button, #touch .small { position: absolute; margin: 0; padding: 0; width: 11vmin; height: 11vmin;
+                                          border: 2px solid rgba(232, 232, 234, .3); border-radius: 50%;
+                                          background: rgba(232, 232, 234, .2); color: #f2f2f4; font-size: 4.2vmin;
+                                          line-height: 1; pointer-events: auto; }
+  #touch .buttons button.pressed, #touch .small.pressed { background: rgba(232, 178, 58, .75); color: #14141a; }
+  /* The shapes' glyphs are drawn at sizes that look alike in a circle of the same button: a circle's ring is wider than a
+     triangle's or a square's is tall */
+  #touch .buttons .north { left: 50%; top: 0; margin-left: -5.5vmin; font-size: 4.6vmin; }
+  #touch .buttons .east { font-size: 3.4vmin; }
+  #touch .buttons .west { font-size: 4vmin; }
+  #touch .buttons .south { font-size: 3.8vmin; }
+  #touch .buttons .south { left: 50%; bottom: 0; margin-left: -5.5vmin; }
+  #touch .buttons .west { left: 0; top: 50%; margin-top: -5.5vmin; }
+  #touch .buttons .east { right: 0; top: 50%; margin-top: -5.5vmin; }
+  #touch .shoulder { position: absolute; width: 12vmin; height: 8vmin; border-radius: 3vmin; font-size: 3.2vmin;
+                     display: flex; align-items: center; justify-content: center; }
+  #touch .l1 { left: 4vmin; bottom: 40vmin; }
+  #touch .r1 { right: 3vmin; bottom: 60vmin; }
+  /* The layout's own controls: the gear moves the controls about, and the arrow puts them back */
+  #touch-tools { position: fixed; left: 2vmin; top: 2vmin; z-index: 3; display: none; gap: 2vmin; }
+  body.playing.touch #touch-tools { display: flex; }
+  #touch-tools button { margin: 0; padding: 0; width: 11vmin; height: 11vmin; min-width: 34px; min-height: 34px;
+                        border-radius: 50%; border: 2px solid rgba(232, 232, 234, .3); background: rgba(16, 16, 20, .5);
+                        color: #e8e8ea; font-size: 4vmin; }
+  #touch-reset { display: none; }
+  body.touch-edit #touch-reset { display: block; }
+  body.touch-edit #touch .stick, body.touch-edit #touch .look, body.touch-edit #touch .buttons,
+  body.touch-edit #touch .small { outline: 2px dashed rgba(232, 178, 58, .75); outline-offset: 3px; cursor: move; }
+  /* The panel the layout is set with: which control the sliders are on, its size and its fade */
+  #touch-panel { display: none; position: fixed; left: 50%; top: 2vmin; transform: translateX(-50%); z-index: 3;
+                 padding: 1.6vmin 2vmin; border-radius: 2vmin; background: rgba(12, 12, 16, .82);
+                 border: 1px solid rgba(232, 232, 234, .18); font: 3vmin/1.3 system-ui, sans-serif; color: #e8e8ea;
+                 gap: 1.2vmin; flex-direction: column; align-items: center; max-width: 92vw; }
+  body.touch-edit #touch-panel { display: flex; }
+  #touch-panel .chips { display: flex; flex-wrap: wrap; gap: 1vmin; justify-content: center; }
+  #touch-panel .chips button { margin: 0; padding: .6vmin 1.6vmin; border-radius: 1.6vmin; font-size: 2.6vmin;
+                               border: 1px solid rgba(232, 232, 234, .3); background: rgba(232, 232, 234, .12); color: #e8e8ea; }
+  #touch-panel .chips button.chosen { background: rgba(232, 178, 58, .85); color: #14141a; }
+  #touch-panel label { display: flex; align-items: center; gap: 1.4vmin; width: 100%; justify-content: space-between; }
+  #touch-panel input[type=range] { flex: 1; min-width: 40vmin; accent-color: #e8b23a; }
+  #touch .start { right: 4vmin; top: 4vmin; width: 18vmin; height: 9vmin; border-radius: 3vmin; font-size: 3vmin;
+                  display: flex; align-items: center; justify-content: center; }
 </style>
 </head>
 <body>
@@ -32,12 +87,45 @@
      (an ISO, or a raw dump of the disc); it is read here in the page and never uploaded. Saves and settings are kept in this
      browser's own storage, so they are there next time.</p>
   <input id="iso" type="file" accept=".iso,.bin,application/octet-stream">
+  <label class="mods" title="A folder of mods: each sub-folder is one mod (a Mod Crate, a TwinsanityEvolved mod, or the game's own files)">
+    Mods folder (optional): <input id="mods" type="file" webkitdirectory multiple>
+  </label>
   <button id="play" disabled>Play</button>
   <p id="status">Loading the game…</p>
 </div>
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <pre id="log"></pre>
 <div id="hint">F3: log</div>
+<div id="touch">
+  <div class="stick" id="stick"><div class="knob" id="stick-knob"></div></div>
+  <div class="look" id="look"><div class="knob" id="look-knob"></div></div>
+  <div class="buttons" id="buttons">
+    <button type="button" class="north" data-bit="triangle" aria-label="triangle">&#9651;</button>
+    <button type="button" class="east" data-bit="circle" aria-label="circle">&#9711;</button>
+    <button type="button" class="west" data-bit="square" aria-label="square">&#9633;</button>
+    <button type="button" class="south" data-bit="cross" aria-label="cross">&#10005;</button>
+  </div>
+  <div class="small shoulder l1" id="l1" data-bit="l1">L1</div>
+  <div class="small shoulder r1" id="r1" data-bit="r1">R1</div>
+  <div class="small start" id="start" data-bit="start">START</div>
+</div>
+<div id="touch-tools">
+  <button type="button" id="touch-edit" aria-label="Move the touch controls">&#9881;</button>
+  <button type="button" id="touch-reset" aria-label="Put the touch controls back">&#8634;</button>
+</div>
+<div id="touch-panel">
+  <div class="chips">
+    <button type="button" data-select="all">All</button>
+    <button type="button" data-select="stick">Walk</button>
+    <button type="button" data-select="look">Look</button>
+    <button type="button" data-select="buttons">Buttons</button>
+    <button type="button" data-select="l1">L1</button>
+    <button type="button" data-select="r1">R1</button>
+    <button type="button" data-select="start">Start</button>
+  </div>
+  <label>Size <input id="touch-scale" type="range" min="60" max="180" step="5" value="100"></label>
+  <label>Fade <input id="touch-fade" type="range" min="25" max="100" step="5" value="100"></label>
+</div>
 <script>
   var lines = [];
   // The page's own timers, so a run can stop them when the page goes away
@@ -105,6 +193,9 @@
   // the disc kept last time) are the player's next visit too
   var SavesDirectory = '/home/web_user/.local/share/twinsanity';
   var savesMounted = false;
+  // The mods folder the run is given (--mods-dir): one sub-folder per mod, and mods.txt listing the ones that are on. It sits
+  // inside the saves' storage, so the mods a player picks are there next visit rather than only for this run
+  var ModsDirectory = SavesDirectory + '/mods';
 
   // One sync at a time: two in flight overwrite each other's store (a reload used to start one while the run it replaced
   // was still in the middle of another, and the next load then waited on the browser's own timeout), and a flush that just
@@ -296,10 +387,56 @@
       });
     }
 
+    // The mods the player picked go into the page's file system as they are: one sub-folder per mod, keeping the folder they
+    // were picked from as the mod's own name. mods.txt is written with `*` (every mod the folder has is on) when the player has
+    // none already, so a first visit just works and a list made in the game's own mods page is left alone afterwards
+    function writeMods() {
+      // The folder is made either way: the run is given it as --mods-dir, and one that is there and empty is a folder with no
+      // mods rather than a path the game has to complain about
+      FS.mkdirTree(ModsDirectory);
+
+      var picked = document.getElementById('mods').files;
+      if (!picked || picked.length === 0) {
+        syncSaves(false);
+        return Promise.resolve();
+      }
+
+      var written = 0;
+      var writes = [];
+      for (var index = 0; index < picked.length; index++) {
+        (function (file) {
+          var relative = file.webkitRelativePath || file.name;
+          var target = ModsDirectory + '/' + relative;
+          writes.push(file.arrayBuffer().then(function (buffer) {
+            var slash = target.lastIndexOf('/');
+            FS.mkdirTree(target.substring(0, slash));
+            FS.writeFile(target, new Uint8Array(buffer));
+            written++;
+          }));
+        })(picked[index]);
+      }
+
+      return Promise.all(writes).then(function () {
+        var list = ModsDirectory + '/mods.txt';
+        var listed = false;
+        try { listed = FS.stat(list) !== undefined; } catch (error) {}
+        if (!listed) {
+          FS.writeFile(list, new TextEncoder().encode('*\n'));
+        }
+        report('mods: ' + written + ' files in ' + ModsDirectory + (listed ? ' (keeping mods.txt)' : ' (all on)'));
+        syncSaves(false);
+      }, function (error) {
+        report('mods: ' + error);
+      });
+    }
+
     function begin(image) {
-      report('starting the game with --disc ' + image);
-      document.body.className = 'playing';
-      Module.callMain(['--disc', image]);
+      writeMods().then(function () {
+        report('starting the game with --mods-dir ' + ModsDirectory + ' --disc ' + image);
+        // Added, not set: the touch controls' class is already there on a device that wants them
+        document.body.classList.add('playing');
+        Module.callMain(['--mods-dir', ModsDirectory, '--disc', image]);
+      });
     }
 
     // A disc the site hosts is not copied into memory: the page asks the server for the bytes the game reads, a chunk at a
@@ -328,10 +465,64 @@
     // The image mounted as a file system: a read is answered out of the chunks already fetched and fetches any other chunk
     // then, and only the most recently used are kept, so the page's memory does not grow with the disc
     function discFilesystem(url, size) {
-      var chunkSize = 1 << 20;
+      // 2 MB a read: each one is a blocking request plus a byte-by-byte decode of the response string, so fewer, larger reads
+      // cost less per byte than many small ones. 32 of them kept is the same 64 MB of disc the page held before
+      var chunkSize = 1 << 21;
       var chunks = new Map();
       var order = [];
-      var kept = 64;
+      var kept = 32;
+      // The chunks a background request is already bringing, so one is not asked for twice, and how many may be in flight:
+      // a load's misses come in bursts, and one request per miss at once would hold the page's memory in whole chunks
+      var fetching = {};
+      var inFlight = 0;
+      var ahead = 1;
+      var maxInFlight = 2;
+
+      function remember(index, bytes) {
+        if (chunks.has(index)) {
+          return;
+        }
+        chunks.set(index, bytes);
+        order.push(index);
+        if (order.length > kept) {
+          chunks.delete(order.shift());
+        }
+      }
+
+      // The next chunks, fetched while the page is free: the reads that need them then find them here instead of stopping
+      // the game for a request each. An asynchronous request may take its bytes as an ArrayBuffer (only a blocking one may
+      // not), so a chunk brought this way costs no decode at all
+      function prefetch(index) {
+        var start = index * chunkSize;
+        if (start >= size || chunks.has(index) || fetching[index] || inFlight >= maxInFlight) {
+          return;
+        }
+        fetching[index] = true;
+        inFlight++;
+        var length = Math.min(chunkSize, size - start);
+        var request = new XMLHttpRequest();
+        request.open('GET', url, true);
+        request.responseType = 'arraybuffer';
+        request.setRequestHeader('Range', 'bytes=' + start + '-' + (start + length - 1));
+        request.onload = function () {
+          delete fetching[index];
+          inFlight--;
+          if (request.status !== 206 && request.status !== 200) {
+            return;
+          }
+          var bytes = new Uint8Array(request.response || new ArrayBuffer(0));
+          if (request.status === 206) {
+            remember(index, bytes);
+          } else if (bytes.length >= start + length) {
+            remember(index, bytes.subarray(start, start + length));
+          }
+        };
+        request.onerror = function () {
+          delete fetching[index];
+          inFlight--;
+        };
+        request.send();
+      }
 
       function chunk(index) {
         var held = chunks.get(index);
@@ -340,10 +531,9 @@
         }
         var start = index * chunkSize;
         var bytes = readRange(url, start, Math.min(chunkSize, size - start));
-        chunks.set(index, bytes);
-        order.push(index);
-        if (order.length > kept) {
-          chunks.delete(order.shift());
+        remember(index, bytes);
+        for (var next = 1; next <= ahead; next++) {
+          prefetch(index + next);
         }
         return bytes;
       }
@@ -468,6 +658,475 @@
         report('the disc does not read: ' + error);
         play.disabled = false;
       });
+    });
+  })();
+</script>
+<script>
+  // The touch controls a phone or a tablet plays with. The page draws them, and the game reads them as pad 0's, through
+  // HostTouchSticks and HostTouchButtons (platform/sdl3/pads.cpp) rather than as key presses: the right stick's keys are the
+  // face buttons' keys, so a stick sent as keys would press circle and square while the camera moved. As pad input they are
+  // analog and separate, exactly what a gamepad's sticks and buttons are
+  (function () {
+    // A touch screen says so with a coarse pointer; ?touch asks for them on a machine that has none, to look at them
+    var forced = /[?&]touch\b/.test(location.search);
+    var coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    if (!forced && (!coarse || !navigator.maxTouchPoints)) {
+      return;
+    }
+
+    document.body.classList.add('touch');
+    var touch = document.getElementById('touch');
+    // While the layout is being moved, nothing the controls do reaches the game
+    var editing = false;
+    var Controls = ['stick', 'look', 'buttons', 'l1', 'r1', 'start'];
+    var LayoutKey = 'twinsanity-touch-layout';
+
+    // The report's button bits, as the game reads them (src/platform/sdl3/pads.cpp's Bit constants)
+    var Bits = { l2: 0x1, r2: 0x2, l1: 0x4, r1: 0x8, triangle: 0x10, circle: 0x20, cross: 0x40, square: 0x80,
+                 select: 0x100, l3: 0x200, r3: 0x400, start: 0x800, up: 0x1000, right: 0x2000, down: 0x4000,
+                 left: 0x8000 };
+    var heldButtons = 0;
+
+    function sendButtons() {
+      if (Module && Module._HostTouchButtons) {
+        Module._HostTouchButtons(heldButtons);
+      }
+    }
+
+    // A button of the pad: held while the finger is on it, let go when it lifts, leaves, or the browser takes the pointer back
+    function bindButton(element) {
+      var bit = Bits[element.getAttribute('data-bit')] || 0;
+      if (bit === 0) {
+        return;
+      }
+
+      element.addEventListener('pointerdown', function (event) {
+        event.preventDefault();
+        if (editing) {
+          return;
+        }
+        if (element.setPointerCapture) {
+          try {
+            element.setPointerCapture(event.pointerId);
+          } catch (error) {
+          }
+        }
+        element.classList.add('pressed');
+        heldButtons |= bit;
+        sendButtons();
+      });
+
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (type) {
+        element.addEventListener(type, function (event) {
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          element.classList.remove('pressed');
+          heldButtons &= ~bit;
+          sendButtons();
+        });
+      });
+    }
+
+    var buttons = touch.querySelectorAll('[data-bit]');
+    for (var index = 0; index < buttons.length; index++) {
+      bindButton(buttons[index]);
+    }
+
+    // The sticks: the left one walks, the right one looks. Each is analog from its middle out to its edge, with a dead spot the
+    // thumb rests in, and both go to the game together (it takes the pair)
+    var axes = { leftX: 0, leftY: 0, rightX: 0, rightY: 0 };
+
+    function sendSticks() {
+      if (Module && Module._HostTouchSticks) {
+        Module._HostTouchSticks(axes.leftX, axes.leftY, axes.rightX, axes.rightY);
+      }
+    }
+
+    function makeStick(name) {
+      var element = document.getElementById(name);
+      var knob = document.getElementById(name + '-knob');
+      var xKey = name === 'stick' ? 'leftX' : 'rightX';
+      var yKey = name === 'stick' ? 'leftY' : 'rightY';
+      var pointer = null;
+
+      function place(event) {
+        var box = element.getBoundingClientRect();
+        var reach = box.width / 2;
+        var dx = event.clientX - (box.left + reach);
+        var dy = event.clientY - (box.top + reach);
+        var length = Math.sqrt(dx * dx + dy * dy);
+        if (length > reach) {
+          dx = dx / length * reach;
+          dy = dy / length * reach;
+          length = reach;
+        }
+        knob.style.transform = 'translate(' + dx.toFixed(0) + 'px, ' + dy.toFixed(0) + 'px)';
+
+        // A seventh of the travel is the dead spot, and the rest of it is scaled so the edge is still full deflection
+        var DeadSpot = 0.14;
+        var pushed = reach > 0 ? length / reach : 0;
+        var amount = pushed <= DeadSpot ? 0 : (pushed - DeadSpot) / (1 - DeadSpot);
+        axes[xKey] = length > 0 ? Math.round(dx / length * amount * 127) : 0;
+        axes[yKey] = length > 0 ? Math.round(dy / length * amount * 127) : 0;
+        sendSticks();
+      }
+
+      function release() {
+        pointer = null;
+        axes[xKey] = 0;
+        axes[yKey] = 0;
+        knob.style.transform = 'none';
+        sendSticks();
+      }
+
+      element.addEventListener('pointerdown', function (event) {
+        event.preventDefault();
+        if (editing) {
+          return;
+        }
+        if (pointer !== null) {
+          return;
+        }
+        pointer = event.pointerId;
+        if (element.setPointerCapture) {
+          try {
+            element.setPointerCapture(event.pointerId);
+          } catch (error) {
+          }
+        }
+        place(event);
+      });
+
+      element.addEventListener('pointermove', function (event) {
+        if (event.pointerId === pointer) {
+          event.preventDefault();
+          place(event);
+        }
+      });
+
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (type) {
+        element.addEventListener(type, function (event) {
+          if (event.pointerId === pointer) {
+            if (event.cancelable) {
+              event.preventDefault();
+            }
+            release();
+          }
+        });
+      });
+
+      return release;
+    }
+
+    var releaseLeft = makeStick('stick');
+    var releaseRight = makeStick('look');
+
+    // A run that stops, or a page that loses the pointer, holds nothing down
+    window.addEventListener('blur', function () {
+      releaseLeft();
+      releaseRight();
+      heldButtons = 0;
+      sendButtons();
+    });
+
+    // Where the controls sit and how they look is the player's: the gear lets each be dragged about, made bigger or smaller and
+    // faded, and what was chosen is kept for the next visit. Sizes and places are a percentage of the screen's sides, so turning
+    // the device keeps the arrangement; a control's size is a scale about its own middle, so the place it was dragged to stays
+    var LayoutKey = 'twinsanity-touch-layout';
+    var layout = null;
+    var selected = 'all';
+
+    function controlOf(name) {
+      return document.getElementById(name);
+    }
+
+    // Each control's place, size and fade as the page has them now: read once, the first time one is moved or sized
+    function snapshot() {
+      var made = {};
+      var previous = layout;
+      for (var index = 0; index < Controls.length; index++) {
+        var name = Controls[index];
+        var element = controlOf(name);
+        if (!element) {
+          continue;
+        }
+        var box = element.getBoundingClientRect();
+        // A control with no box is not laid out (the run has not started): there is no place to remember yet, so this is
+        // left for the first time one is really moved
+        if (box.width === 0 || box.height === 0) {
+          layout = previous;
+          return false;
+        }
+        made[name] = {
+          left: Number((box.left / window.innerWidth * 100).toFixed(2)),
+          bottom: Number(((window.innerHeight - box.bottom) / window.innerHeight * 100).toFixed(2)),
+          scale: 1,
+          opacity: 1
+        };
+      }
+      layout = made;
+      return true;
+    }
+
+    function placeControl(name) {
+      var element = controlOf(name);
+      var place = layout[name];
+      if (!element || !place) {
+        return;
+      }
+      element.style.left = place.left + '%';
+      element.style.bottom = place.bottom + '%';
+      element.style.right = 'auto';
+      element.style.top = 'auto';
+      element.style.transform = place.scale === 1 ? 'none' : 'scale(' + place.scale + ')';
+      element.style.opacity = place.opacity === 1 ? '' : String(place.opacity);
+    }
+
+    function placeAll() {
+      if (!layout) {
+        return;
+      }
+      for (var index = 0; index < Controls.length; index++) {
+        placeControl(Controls[index]);
+      }
+    }
+
+    function saveLayout() {
+      if (!layout) {
+        return;
+      }
+      try {
+        window.localStorage.setItem(LayoutKey, JSON.stringify(layout));
+      } catch (error) {
+      }
+    }
+
+    // A saved layout is only used if every control's place, size and fade make sense and they are not all in one spot (a
+    // layout written while the controls had no place yet put them all at a corner, off the screen)
+    function usable(saved) {
+      if (!saved) {
+        return false;
+      }
+      var places = {};
+      var count = 0;
+      for (var index = 0; index < Controls.length; index++) {
+        var place = saved[Controls[index]];
+        if (!place || typeof place.left !== 'number' || typeof place.bottom !== 'number' ||
+            typeof place.scale !== 'number' || place.scale < 0.3 || place.scale > 3 ||
+            typeof place.opacity !== 'number' || place.opacity < 0.1 || place.opacity > 1) {
+          return false;
+        }
+        // A place at either far edge leaves the control entirely outside the screen (its place is its lower left corner), which
+        // is where a layout written before the controls had a place put them
+        if (place.left < -10 || place.left > 99.5 || place.bottom < -10 || place.bottom > 99.5) {
+          return false;
+        }
+        places[place.left + '/' + place.bottom] = true;
+        count++;
+      }
+      return count > 0 && Object.keys(places).length > 1;
+    }
+
+    function loadLayout() {
+      var saved = null;
+      try {
+        saved = JSON.parse(window.localStorage.getItem(LayoutKey) || 'null');
+      } catch (error) {
+        saved = null;
+      }
+
+      if (!usable(saved)) {
+        layout = null;
+        try {
+          window.localStorage.removeItem(LayoutKey);
+        } catch (error) {
+        }
+        return;
+      }
+
+      layout = saved;
+      placeAll();
+    }
+
+    function resetLayout() {
+      layout = null;
+      try {
+        window.localStorage.removeItem(LayoutKey);
+      } catch (error) {
+      }
+      for (var index = 0; index < Controls.length; index++) {
+        var element = controlOf(Controls[index]);
+        if (element) {
+          element.style.left = '';
+          element.style.bottom = '';
+          element.style.right = '';
+          element.style.top = '';
+          element.style.transform = '';
+          element.style.opacity = '';
+        }
+      }
+      select(null);
+    }
+
+    // The controls' panel: which control the two sliders are on, and where they are
+    var panel = document.getElementById('touch-panel');
+    var scaleRow = document.getElementById('touch-scale');
+    var fadeRow = document.getElementById('touch-fade');
+
+    function select(name) {
+      selected = name;
+      var chips = panel.querySelectorAll('[data-select]');
+      for (var index = 0; index < chips.length; index++) {
+        chips[index].classList.toggle('chosen', chips[index].getAttribute('data-select') === name);
+      }
+      var chosen = layout && name ? layout[name] : null;
+      scaleRow.value = chosen ? String(Math.round(chosen.scale * 100)) : '100';
+      fadeRow.value = chosen ? String(Math.round(chosen.opacity * 100)) : '100';
+    }
+
+    // A slider moves the control it is on, or every control when it is on all of them
+    function setForAll(property, value) {
+      for (var index = 0; index < Controls.length; index++) {
+        var name = Controls[index];
+        if (layout && layout[name]) {
+          layout[name][property] = value;
+        }
+      }
+      placeAll();
+    }
+
+    function sliderMoved(property) {
+      if (!layout) {
+        snapshot();
+        if (selected === 'all') {
+          // The snapshot's places are what the controls have now, so they are the layout from here on
+          placeAll();
+        }
+      }
+      return function () {
+        var value = Number(this.value) / 100;
+        if (selected === 'all' || !layout[selected]) {
+          setForAll(property, value);
+        } else {
+          layout[selected][property] = value;
+          placeControl(selected);
+        }
+        saveLayout();
+      };
+    }
+
+    scaleRow.addEventListener('input', sliderMoved('scale'));
+    fadeRow.addEventListener('input', sliderMoved('opacity'));
+
+    var chips = panel.querySelectorAll('[data-select]');
+    for (var chip = 0; chip < chips.length; chip++) {
+      chips[chip].addEventListener('click', function (event) {
+        event.preventDefault();
+        var name = this.getAttribute('data-select');
+        if (name !== 'all' && !layout) {
+          snapshot();
+          placeAll();
+        }
+        select(name);
+      });
+    }
+
+    // A control dragged about: its place in the layout follows the finger, clamped to the screen
+    function makeMovable(name) {
+      var element = controlOf(name);
+      if (!element) {
+        return;
+      }
+      var fromX = 0;
+      var fromY = 0;
+      var startLeft = 0;
+      var startBottom = 0;
+      var dragging = false;
+
+      element.addEventListener('pointerdown', function (event) {
+        if (!editing) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        if (!layout) {
+          snapshot();
+        }
+        if (!layout[name]) {
+          return;
+        }
+        select(name);
+        fromX = event.clientX;
+        fromY = event.clientY;
+        startLeft = layout[name].left;
+        startBottom = layout[name].bottom;
+        dragging = true;
+        if (element.setPointerCapture) {
+          try {
+            element.setPointerCapture(event.pointerId);
+          } catch (error) {
+          }
+        }
+      });
+
+      element.addEventListener('pointermove', function (event) {
+        if (!dragging) {
+          return;
+        }
+        event.preventDefault();
+        var box = element.getBoundingClientRect();
+        var scale = layout[name].scale || 1;
+        var width = box.width / scale;
+        var height = box.height / scale;
+        var left = startLeft / 100 * window.innerWidth + (event.clientX - fromX);
+        var bottom = startBottom / 100 * window.innerHeight - (event.clientY - fromY);
+        left = Math.max(0, Math.min(window.innerWidth - width, left));
+        bottom = Math.max(0, Math.min(window.innerHeight - height, bottom));
+        layout[name].left = Number((left / window.innerWidth * 100).toFixed(2));
+        layout[name].bottom = Number((bottom / window.innerHeight * 100).toFixed(2));
+        placeControl(name);
+      });
+
+      ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (type) {
+        element.addEventListener(type, function () {
+          if (dragging) {
+            dragging = false;
+            saveLayout();
+          }
+        });
+      });
+    }
+
+    for (var control = 0; control < Controls.length; control++) {
+      makeMovable(Controls[control]);
+    }
+
+    loadLayout();
+    select('all');
+
+    var editButton = document.getElementById('touch-edit');
+    var resetButton = document.getElementById('touch-reset');
+    editButton.addEventListener('click', function () {
+      editing = !editing;
+      document.body.classList.toggle('touch-edit', editing);
+      editButton.innerHTML = editing ? '&#10003;' : '&#9881;';
+      if (editing) {
+        if (!layout) {
+          snapshot();
+        }
+        select(layout ? selected : 'all');
+      } else {
+        releaseLeft();
+        releaseRight();
+        heldButtons = 0;
+        sendButtons();
+        saveLayout();
+      }
+    });
+
+    resetButton.addEventListener('click', function () {
+      resetLayout();
     });
   })();
 </script>

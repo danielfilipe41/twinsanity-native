@@ -88,6 +88,7 @@ void LoadRenderRate()
     }
 
     g_RenderRateLoaded = true;
+    bool listed = false;
     for (const std::string& line : SettingsLines())
     {
         int rate = 0;
@@ -95,8 +96,23 @@ void LoadRenderRate()
         if (std::sscanf(line.c_str(), "render %d", &rate) == 1 && rate >= 0)
         {
             g_RenderRate = rate;
+            listed = true;
         }
     }
+
+#if defined(__EMSCRIPTEN__)
+    // A page's frames are the browser's: it calls the game back once a display frame, so the picture is paced by the tab and
+    // not by the file. Left at the disc's 50, every present is a step's own and Platform::Time::DisplayRate() equals
+    // FrameRate(), which is the case HostFrame::BeginLogicStep keeps no eased sample for: the 60 Hz callback then draws a 50 Hz
+    // game in a 60 Hz stream, which reads as judder. Unlimited makes each callback draw the eased frame between two steps
+    // instead. A `render` line of the player's own still wins
+    if (!listed)
+    {
+        g_RenderRate = 0;
+    }
+#else
+    (void)listed;
+#endif
 }
 
 // The file's `antialias` line: the picture's antialiasing. Read once before the renderer makes the first frame's targets

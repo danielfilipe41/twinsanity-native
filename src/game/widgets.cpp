@@ -190,6 +190,7 @@ void ConstructSprite(SpriteWidget* widget, Sprite* sprite)
     widget->bobBase = 0.0f;
     widget->bobAmount = 0.0f;
     widget->wobbleTime = 0.0f;
+    widget->wobbleBase = 0.0f;
     widget->wobbleAmount = 0.0f;
 }
 
@@ -580,7 +581,6 @@ void RectangleWidget::WhileDisappearing(s32 elapsed)
 SpriteWidget* SpriteWidget::Construct(SpriteWidget* widget, f32 anchor, Sprite* sprite)
 {
     RectangleWidget::Construct(widget, anchor);
-    // The wobble's base isn't set here, only by the other constructor
     ConstructSprite(widget, sprite);
     return widget;
 }

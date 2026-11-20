@@ -14,10 +14,46 @@
 #include <cstdio>
 #include <cstdlib>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
 extern "C"
 {
     volatile u32 g_TestPadButtons = 0;
 }
+
+#if defined(__EMSCRIPTEN__)
+namespace
+{
+// The page's touch controls as pad 0: its sticks (an axis from -128 to 127 about the middle) and the bits of the buttons it
+// holds. A phone or a tablet has neither a keyboard nor a gamepad, and the page draws the controls; they come in here rather
+// than as key events, because the right stick's keys are the face buttons' and a stick would press them
+constexpr u8 TouchMiddle = 128;
+s32 g_TouchLeftX = 0;
+s32 g_TouchLeftY = 0;
+s32 g_TouchRightX = 0;
+s32 g_TouchRightY = 0;
+u32 g_TouchHeld = 0;
+}
+
+// Called by the page (web/shell.html): each stick's x and y, -128 (left or up) to 127 (right or down), 0 in the middle
+extern "C" EMSCRIPTEN_KEEPALIVE void HostTouchSticks(s32 leftX, s32 leftY, s32 rightX, s32 rightY)
+{
+    g_TouchLeftX = leftX < -128 ? -128 : leftX > 127 ? 127 : leftX;
+    g_TouchLeftY = leftY < -128 ? -128 : leftY > 127 ? 127 : leftY;
+    g_TouchRightX = rightX < -128 ? -128 : rightX > 127 ? 127 : rightX;
+    g_TouchRightY = rightY < -128 ? -128 : rightY > 127 ? 127 : rightY;
+}
+
+// The buttons the page holds down, in the report's own bits (the Bit constants below: L2 1, R2 2, L1 4, R1 8, triangle 0x10,
+// circle 0x20, cross 0x40, square 0x80, select 0x100, L3 0x200, R3 0x400, start 0x800, up 0x1000, right 0x2000, down 0x4000,
+// left 0x8000)
+extern "C" EMSCRIPTEN_KEEPALIVE void HostTouchButtons(u32 held)
+{
+    g_TouchHeld = held;
+}
+#endif
 
 namespace
 {
@@ -441,6 +477,26 @@ s32 Platform::Pads::Read(s32 port, s32 slot, u8* data)
             rightY = FullPressure;
         }
     }
+
+#if defined(__EMSCRIPTEN__)
+    // The page's touch controls are pad 0's too, as analog as a pad's sticks and on the report's bits: the game reads them
+    // exactly as it reads a gamepad's, so a level's menus, the movies' skips and the game all see them
+    if (port == 0 && slot == 0)
+    {
+        held |= g_TouchHeld;
+        if (g_TouchLeftX != 0 || g_TouchLeftY != 0)
+        {
+            leftX = static_cast<u8>(TouchMiddle + g_TouchLeftX);
+            leftY = static_cast<u8>(TouchMiddle + g_TouchLeftY);
+        }
+
+        if (g_TouchRightX != 0 || g_TouchRightY != 0)
+        {
+            rightX = static_cast<u8>(TouchMiddle + g_TouchRightX);
+            rightY = static_cast<u8>(TouchMiddle + g_TouchRightY);
+        }
+    }
+#endif
 
     // What was pressed this frame, for the options' controller page to bind as a row is rebound
     NotePressed(pad, keys, keysCount);

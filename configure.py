@@ -190,6 +190,9 @@ def bgfx_flags():
 # module. -ffp-contract=off and -fno-delete-null-pointer-checks are the retail arithmetic's, as on the other hosts. SDL3
 # comes from the emsdk's port (-sUSE_SDL=3) rather than third_party/SDL: it carries the Emscripten backend
 WEB_CXXFLAGS = ["-O2", "-std=gnu++26", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-common",
+                # wasm SIMD128: the game's vector and colour loops are the arithmetic that carries the load (asset parsing,
+                # texture converts, the renderer's transforms), and the browser has had it as a baseline feature for years
+                "-msimd128",
                 "-fno-strict-aliasing", "-ffunction-sections", "-ffp-contract=off", "-fno-delete-null-pointer-checks",
                 "-Wall", "-Wno-invalid-offsetof", "-fno-omit-frame-pointer", "-Iinclude", "-Iinclude/host",
                 "-Ithird_party/miniz",
