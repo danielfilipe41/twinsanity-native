@@ -172,74 +172,6 @@ bgfx::TextureHandle g_halfDepth = BGFX_INVALID_HANDLE;
 // Whether the volumes are testing against that copied scene depth (true) or against their own footprint depth (false)
 bool g_volumesOverSceneDepth = false;
 
-#if defined(__EMSCRIPTEN__)
-// TEMPORARY probe: the coverage target read back, so a run says whether the volumes leave anything in it. The target is
-// cleared GREEN for it (BeginShadows), so green proves the read reaches the target at all and any red is a shell a volume drew
-bgfx::TextureHandle g_probeRead = BGFX_INVALID_HANDLE;
-u32 g_probeSize = 0;
-u32 g_probePending = 0;
-u32 g_probeWaited = 0;
-u32 g_probeTick = 0;
-u8* g_probePixels = nullptr;
-u32 g_probeBytes = 0;
-
-void ProbeTick(u32 width, u32 height)
-{
-    if (g_probePending != 0)
-    {
-        if (++g_probeWaited < 4)
-        {
-            return;
-        }
-        g_probePending = 0;
-        g_probeWaited = 0;
-        u32 peakR = 0;
-        u32 peakG = 0;
-        u32 red = 0;
-        for (u32 pixel = 0; pixel + 3 < g_probeBytes; pixel += 4)
-        {
-            peakR = g_probePixels[pixel] > peakR ? g_probePixels[pixel] : peakR;
-            peakG = g_probePixels[pixel + 1] > peakG ? g_probePixels[pixel + 1] : peakG;
-            red += g_probePixels[pixel] != 0 ? 1 : 0;
-        }
-        std::fprintf(stderr, "probe coverage: peak R %u G %u, %u pixels with red\n", peakR, peakG, red);
-        return;
-    }
-    if (++g_probeTick % 120 != 0 || !bgfx::isValid(g_halfColour) || width == 0 || height == 0)
-    {
-        return;
-    }
-    const u32 size = width * height * 4;
-    if (g_probeBytes < size)
-    {
-        delete[] g_probePixels;
-        g_probePixels = new u8[size];
-        g_probeBytes = size;
-    }
-    if (!bgfx::isValid(g_probeRead) || g_probeSize != width * 65536u + height)
-    {
-        if (bgfx::isValid(g_probeRead))
-        {
-            bgfx::destroy(g_probeRead);
-        }
-        g_probeRead = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1,
-                                            bgfx::TextureFormat::RGBA8,
-                                            BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK | BGFX_SAMPLER_MIN_POINT |
-                                                BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
-        g_probeSize = width * 65536u + height;
-    }
-    if (!bgfx::isValid(g_probeRead))
-    {
-        return;
-    }
-    bgfx::setViewRect(HostShadowVolumeDepthView, 0, 0, static_cast<u16>(width), static_cast<u16>(height));
-    bgfx::blit(HostShadowVolumeDepthView, {.handle = g_probeRead}, {.handle = g_halfColour});
-    bgfx::touch(HostShadowVolumeDepthView);
-    g_probePending = bgfx::read({.handle = g_probeRead}, g_probePixels);
-    g_probeWaited = 0;
-}
-#endif
-
 // The coverage target: the frame's size, an RGBA8 colour the volumes write their coverage's alpha into and a D24S8 depth
 // (their own test, which they write as they draw). Remade when the frame's size changes
 void MakeHalf(u32 width, u32 height)
@@ -252,10 +184,52 @@ void MakeHalf(u32 width, u32 height)
     if (bgfx::isValid(g_half))
     {
         bgfx::destroy(g_half);
+#if defined(__EMSCRIPTEN__)
+        // The framebuffer was made without taking the textures' ownership (the depth is the scene's), so the colour is ours to free
+        if (bgfx::isValid(g_halfColour))
+        {
+            bgfx::destroy(g_halfColour);
+        }
+#endif
     }
 
     g_halfWidth = width;
     g_halfHeight = height;
+#if defined(__EMSCRIPTEN__)
+    // The coverage target takes the SCENE's own depth as its depth attachment. The volumes then test against the frame's depth
+    // exactly as they do on the desktop, and there is no depth copy to make -- which is what the web was missing, bgfx's GL ES
+    // blit carrying only GL_COLOR_BUFFER_BIT, so the copy landed nothing and the volumes had only their own cleared depth (the
+    // pair of culling passes, which the proxy meshes do not support). One depth texture may be attached to two framebuffers;
+    // the scene's pass and the volumes' never run at once
+    bgfx::TextureHandle sceneDepth = BGFX_INVALID_HANDLE;
+    if (bgfx::isValid(g_frame) && g_frameHasDepth)
+    {
+        sceneDepth = bgfx::getTexture(g_frame, 1);
+    }
+    const bgfx::TextureHandle colour = bgfx::createTexture2D(
+        static_cast<u16>(width), static_cast<u16>(height), false, 1, bgfx::TextureFormat::RGBA8,
+        BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+    if (bgfx::isValid(colour) && bgfx::isValid(sceneDepth))
+    {
+        const bgfx::TextureHandle handles[2] = {colour, sceneDepth};
+        // Not owned: the depth is the scene's and the colour is destroyed with this target (below)
+        g_half = bgfx::createFrameBuffer(2, handles, false);
+    }
+    if (!bgfx::isValid(g_half))
+    {
+        if (bgfx::isValid(colour))
+        {
+            bgfx::destroy(colour);
+        }
+        std::fprintf(stderr, "bgfx: no shadow coverage target the renderer accepts\n");
+        return;
+    }
+    g_halfColour = colour;
+    g_halfDepth = sceneDepth;
+    // The frame's depth IS the coverage target's depth here, which is what this says (BeginShadows copies only when they differ)
+    g_halfDepthBlit = true;
+#endif
+#if !defined(__EMSCRIPTEN__)
     bgfx::TextureHandle colour =
         bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, bgfx::TextureFormat::RGBA8,
                               BGFX_TEXTURE_RT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
@@ -265,10 +239,11 @@ void MakeHalf(u32 width, u32 height)
     // the renderer can attach: D24S8 is attachment-only on some Vulkan drivers (AMD's radv), so the first the renderer
     // accepts is taken
     const bool depthBlit = Platform::Graphics::HostDepthBlitSupported();
-    const u64 depthFlags = depthBlit
-        ? BGFX_TEXTURE_RT | BGFX_TEXTURE_BLIT_DST | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT |
-              BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP
-        : BGFX_TEXTURE_RT | BGFX_TEXTURE_RT_WRITE_ONLY;
+    // A texture on every renderer, never a BGFX_TEXTURE_RT_WRITE_ONLY renderbuffer: GL turns a write-only target into a
+    // renderbuffer, which is an attachment and nothing else, while this depth is the coverage target's own test surface and
+    // the copy destination the scene's depth is blitted into. BGFX_TEXTURE_RT alone already says it is drawn, never sampled
+    const u64 depthFlags = BGFX_TEXTURE_RT | (depthBlit ? BGFX_TEXTURE_BLIT_DST : 0) | BGFX_SAMPLER_MIN_POINT |
+                           BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
     static constexpr bgfx::TextureFormat::Enum DepthFormats[] = {bgfx::TextureFormat::D24S8,
                                                                  bgfx::TextureFormat::D32F,
                                                                  bgfx::TextureFormat::D16};
@@ -283,8 +258,16 @@ void MakeHalf(u32 width, u32 height)
     }
     if (!bgfx::isValid(colour) || !bgfx::isValid(depth))
     {
-        // Fail here rather than let createFrameBuffer walk an invalid handle
-        std::fprintf(stderr, "bgfx: no shadow coverage target the renderer accepts\n");
+        // Fail here rather than let createFrameBuffer walk an invalid handle. Said once per size: the pass retries every frame
+        // while it has no target, and a line per frame buries everything else in the log
+        static u32 toldWidth = 0;
+        static u32 toldHeight = 0;
+        if (toldWidth != width || toldHeight != height)
+        {
+            toldWidth = width;
+            toldHeight = height;
+            std::fprintf(stderr, "bgfx: no shadow coverage target the renderer accepts\n");
+        }
         return;
     }
     const bgfx::TextureHandle handles[2] = {colour, depth};
@@ -292,6 +275,7 @@ void MakeHalf(u32 width, u32 height)
     g_halfColour = colour;
     g_halfDepth = depth;
     g_halfDepthBlit = depthBlit;
+#endif
 }
 }
 
@@ -320,17 +304,14 @@ void BeginShadows()
     }
 
     // The frame's colour into the copy the resolve's gate samples: the frame the resolve darkens (the scene target in the
-    // game, whatever a harness sets otherwise), copied because a pass cannot sample the colour it is drawing into
-    static u32 copiedFrame = 0xFFFFFFFFu;
-    const u32 frame = bgfx::getStats()->gpuFrameNum;
-    if (copiedFrame != frame)
+    // game, whatever a harness sets otherwise), copied because a pass cannot sample the colour it is drawing into. Every frame:
+    // the frame counter this used to test first is bgfx's gpuFrameNum, which stays 0 for a whole web run, so the copy was made
+    // once -- on a frame with nothing drawn -- and read black ever after, which is why the web's destination-alpha gate had to
+    // be off and shadows were painted over the casters themselves
+    MakeFrameCopy(width, height);
+    if (bgfx::isValid(g_frameCopy) && bgfx::isValid(g_frame))
     {
-        copiedFrame = frame;
-        MakeFrameCopy(width, height);
-        if (bgfx::isValid(g_frameCopy) && bgfx::isValid(g_frame))
-        {
-            bgfx::blit(HostShadowVolumeView, {.handle = g_frameCopy}, {.handle = bgfx::getTexture(g_frame, 0)});
-        }
+        bgfx::blit(HostShadowVolumeView, {.handle = g_frameCopy}, {.handle = bgfx::getTexture(g_frame, 0)});
     }
 
     // The volumes' pass: the offscreen view draws into the coverage target, cleared to no coverage each frame. Each volume
@@ -351,7 +332,8 @@ void BeginShadows()
         sceneDepth = bgfx::getTexture(g_frame, 1);
     }
     g_volumesOverSceneDepth = g_halfDepthBlit && bgfx::isValid(sceneDepth) && bgfx::isValid(g_halfDepth);
-    if (g_volumesOverSceneDepth)
+    // Nothing to copy when the coverage target already holds the frame's depth itself (the web attaches it)
+    if (g_volumesOverSceneDepth && g_halfDepth.idx != sceneDepth.idx)
     {
         bgfx::setViewRect(HostShadowVolumeDepthView, 0, 0, static_cast<u16>(g_halfWidth), static_cast<u16>(g_halfHeight));
         bgfx::blit(HostShadowVolumeDepthView, {.handle = g_halfDepth}, {.handle = sceneDepth});
@@ -362,15 +344,9 @@ void BeginShadows()
     // Only the coverage target is bound. With the frame's depth copied in, the volumes test against THAT and the depth must not
     // be cleared; without one they test against their own depth, which is cleared to the near end for them to write
     bgfx::setViewFrameBuffer(HostShadowVolumeView, g_half);
-#if defined(__EMSCRIPTEN__)
-    // TEMPORARY probe: green instead of no coverage, so a read-back of the target says whether the read reaches it
-    constexpr u32 clearColour = 0x0000FF00u;
-#else
-    constexpr u32 clearColour = ShadowClearColour;
-#endif
     bgfx::setViewClear(HostShadowVolumeView,
                        g_volumesOverSceneDepth ? BGFX_CLEAR_COLOR : (BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH),
-                       clearColour, ShadowClearDepth, 0);
+                       ShadowClearColour, ShadowClearDepth, 0);
 
     bgfx::touch(HostShadowVolumeView);
 
@@ -405,9 +381,6 @@ void EndShadows()
     // The resolve covers the frame (the target it darkens), which is the size it was given with the target
     const u32 width = g_frameWidth != 0 ? g_frameWidth : BgfxWindowWidth;
     const u32 height = g_frameHeight != 0 ? g_frameHeight : BgfxWindowHeight;
-#if defined(__EMSCRIPTEN__)
-    ProbeTick(width, height);
-#endif
 
     // One fullscreen triangle over the frame (the overhang samples clamp to the edge)
     bgfx::TransientVertexBuffer buffer;
@@ -475,21 +448,10 @@ void EndShadows()
     // distance in metres the ramp falls from full to none over, which is NOT retail (retail has no such number): it exists only
     // because the host's perspective depth cannot be used as that index directly, packing the whole visible world into its last
     // few percent.
-    // The web grades the shadow with neither of the two textures it would need: the frame's colour copy (the destination-alpha
-    // gate) comes from a target-to-target blit and the frame's depth from a depth sample, and on WebGL neither gives a value a
-    // shadow can be graded by - the gate reads black and zeroes every pixel, the depth reads 0 and the palette ramp lands on its
-    // transparent end, so a shadow would be lost whole. One strength over everything is what retail's single factor amounts to
-    // anyway (the ramp only spread it), so the web draws that instead
+    // The ramp itself is one strength on the web: it indexes the palette by the frame's depth, and WebGL's sampling of a depth
+    // texture read as plain data lands on the palette's transparent end, which loses the shadow whole. The destination-alpha gate
+    // next to it is the frame's own colour and needs nothing of the kind, so that one is the same on every renderer
 #if defined(__EMSCRIPTEN__)
-    g_shadowLinearValue[3] = 0.0f;
-    {
-        static bool loggedRamp = false;
-        if (!loggedRamp)
-        {
-            loggedRamp = true;
-            std::fprintf(stderr, "shadows: web draws one strength (no frame-colour gate, no depth ramp)\n");
-        }
-    }
     const f32 forcedRamp[4] = {1.0f, 1.0f, 0.0f, 0.0f};
     bgfx::setUniform(g_shadowRampU, forcedRamp);
 #endif
@@ -524,13 +486,16 @@ void DrawShadowMesh(RigidModel* mesh, const Matrix4x4* toScreen, const Matrix4x4
     constexpr u64 VolumeBlend = BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_FACTOR, BGFX_STATE_BLEND_ONE);
     // 8/255 in every channel: the state's write mask picks which one a pass may land in
     constexpr u32 VolumeShellFactor = 0x08080808u;
-    constexpr u64 VolumeStateScene = BGFX_STATE_WRITE_R | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
+    // The channels the pair's two passes land in: away shells in R, facing in G (the resolve takes their difference)
+    constexpr u64 ChannelAway = BGFX_STATE_WRITE_R;
+    constexpr u64 ChannelFacing = BGFX_STATE_WRITE_G;
+    constexpr u64 VolumeStateScene = ChannelAway | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
     // With no frame depth to copy (a target of its own, a harness's) the volumes test against their own depth, cleared near and
     // written as they draw: only faces past the first pass, so the away shells count once and the coverage is the volume's own
     // footprint
     constexpr u64 VolumeStateOwn =
-        BGFX_STATE_WRITE_R | BGFX_STATE_DEPTH_TEST_GEQUAL | BGFX_STATE_WRITE_Z | VolumeBlend;
-    constexpr u64 VolumeTakeBack = BGFX_STATE_WRITE_G | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
+        ChannelAway | BGFX_STATE_DEPTH_TEST_GEQUAL | BGFX_STATE_WRITE_Z | VolumeBlend;
+    constexpr u64 VolumeTakeBack = ChannelFacing | BGFX_STATE_DEPTH_TEST_GEQUAL | VolumeBlend;
     // Both shells in one draw: every channel open and no culling, the fragment shader naming the channel the face's facing
     // deserves. The blend is additive and no depth is written, so a pixel's R and G come out the same whatever order the
     // shells arrive in, and the resolve takes their difference as it always did -- the pair's two draws become one submit of
