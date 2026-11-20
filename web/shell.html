@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover: in fullscreen the picture is the whole screen, under a phone's notch and its rounded corners. The
+     controls take that room into account themselves (the safe-area insets below) -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Crash Twinsanity</title>
 <style>
   /* Montserrat, read from beside the page (web/fonts, copied into the build): the site's own file, so the start screen
@@ -47,8 +49,22 @@
     #menu h1 { font-size: 2rem; }
     #menu .field { grid-template-columns: minmax(0, 1fr); gap: .35rem; margin-bottom: 1.1rem; }
   }
-  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  /* The picture and everything over it. A phone's browser bar takes room out of the window: 100vh is the height the page
+     would have with the bar hidden, so a canvas that tall has its lower part off the screen and the picture sits off centre.
+     The dynamic height is the room that is really there, and it is re-read as the bar comes and goes. The fallback is for a
+     browser that has no dvh */
+  #play-area { position: relative; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; background: #000; touch-action: none; }
+  @supports (height: 100dvh) { canvas { height: 100dvh; } }
+  /* Fullscreen root: the page asks for this to be the fullscreen element, not the canvas, so the controls (which are inside
+     it) are still drawn over the picture. A fullscreen canvas is the whole screen by itself and everything beside it goes */
+  #play-area:fullscreen { width: 100vw; height: 100vh; background: #000; }
+  #play-area:fullscreen canvas { width: 100vw; height: 100vh; }
   body.playing #menu { display: none; }
+  /* A run fills the window: no page scroll behind the picture (a phone's own scroll of the page, and the pull that reloads
+     it), and no rubber banding */
+  body.playing { overflow: hidden; overscroll-behavior: none; }
+  body.playing #play-area { position: fixed; inset: 0; }
   /* The run's log: the page has no terminal to write it to, so it is kept here and shown when the run stops on something
      the player needs to read, or when the player asks for it (F3) */
   /* A run that stopped, or one whose numbers are wanted, is read here: grey on a phone with no keyboard and no terminal, so
@@ -61,11 +77,22 @@
   body.show-log #log { display: block; }
   /* The log's own switch: the run's, not the start screen's, so it is over the picture rather than the menu. The top-right
      corner is the one no control of this page is in */
-  #hint { display: none; position: fixed; right: .5rem; top: .5rem; z-index: 5; margin: 0; padding: .3rem .55rem;
+  #hint { display: none; position: fixed; right: calc(.5rem + env(safe-area-inset-right));
+          top: calc(.5rem + env(safe-area-inset-top)); z-index: 5; margin: 0; padding: .3rem .55rem;
           border: 1px solid rgba(240, 240, 235, .22); border-radius: .3rem; background: rgba(8, 8, 12, .5);
           color: rgba(240, 240, 235, .8); font: 11px/1.2 Consolas, "Cascadia Mono", Menlo, monospace; cursor: pointer; }
   #hint:hover { background: rgba(8, 8, 12, .75); }
   body.playing #hint { display: block; }
+  /* The picture's own switch, beside the log's: on a desktop a fullscreen canvas hides everything beside it, which is the
+     controls and the log, so the page is what goes fullscreen (see pageFullscreen) */
+  #expand { display: none; position: fixed; right: calc(3.4rem + env(safe-area-inset-right));
+            top: calc(.5rem + env(safe-area-inset-top)); z-index: 5; margin: 0; padding: .3rem .55rem;
+            border: 1px solid rgba(240, 240, 235, .22); border-radius: .3rem; background: rgba(8, 8, 12, .5);
+            color: rgba(240, 240, 235, .8); font: 11px/1.2 Consolas, "Cascadia Mono", Menlo, monospace; cursor: pointer; }
+  #expand:hover { background: rgba(8, 8, 12, .75); }
+  body.playing #expand { display: block; }
+  /* A touch screen has this switch with its layout's controls instead */
+  body.touch #expand { display: none; }
   /* A touch screen has no F3 key: its switch is the log button by the layout's gear */
   body.touch #hint { display: none; }
   /* A phone's or a tablet's controls: a stick under the left thumb and the pad's buttons under the right. Sized in the
@@ -85,7 +112,18 @@
                                           border: 2px solid rgba(232, 232, 234, .3); border-radius: 50%;
                                           background: rgba(232, 232, 234, .2); color: #f2f2f4; font-size: 4.2vmin;
                                           line-height: 1; pointer-events: auto; }
-  #touch .buttons button.pressed, #touch .small.pressed { background: rgba(232, 178, 58, .75); color: #14141a; }
+  #touch .buttons button.pressed, #touch .small.pressed, #touch .dpad button.pressed {
+    background: rgba(232, 178, 58, .75); color: #14141a; }
+  /* The pad's own directions, above the left thumb: the same four bits a controller's d-pad sends, so a game that reads them
+     sees a stick pushed to a side. Separate from the walking stick, which stays analog */
+  #touch .dpad { position: absolute; left: 4vmin; bottom: 50vmin; width: 26vmin; height: 26vmin; pointer-events: none; }
+  #touch .dpad button { position: absolute; margin: 0; padding: 0; width: 8.6vmin; height: 8.6vmin; border-radius: 2vmin;
+                        border: 2px solid rgba(232, 232, 234, .3); background: rgba(232, 232, 234, .2); color: #f2f2f4;
+                        font-size: 3.4vmin; line-height: 1; pointer-events: auto; }
+  #touch .dpad .up { left: 50%; top: 0; margin-left: -4.3vmin; }
+  #touch .dpad .down { left: 50%; bottom: 0; margin-left: -4.3vmin; }
+  #touch .dpad .left { left: 0; top: 50%; margin-top: -4.3vmin; }
+  #touch .dpad .right { right: 0; top: 50%; margin-top: -4.3vmin; }
   /* The shapes' glyphs are drawn at sizes that look alike in a circle of the same button: a circle's ring is wider than a
      triangle's or a square's is tall */
   #touch .buttons .north { left: 50%; top: 0; margin-left: -5.5vmin; font-size: 4.6vmin; }
@@ -100,7 +138,9 @@
   #touch .l1 { left: 4vmin; bottom: 40vmin; }
   #touch .r1 { right: 3vmin; bottom: 60vmin; }
   /* The layout's own controls: the gear moves the controls about, and the arrow puts them back */
-  #touch-tools { position: fixed; left: 2vmin; top: 2vmin; z-index: 3; display: none; gap: 2vmin; }
+  /* The safe-area insets keep these off a phone's notch and its rounded corner, which viewport-fit=cover lets the page use */
+  #touch-tools { position: fixed; left: calc(2vmin + env(safe-area-inset-left)); top: calc(2vmin + env(safe-area-inset-top));
+                 z-index: 3; display: none; gap: 2vmin; }
   body.playing.touch #touch-tools { display: flex; }
   #touch-tools button { margin: 0; padding: 0; width: 11vmin; height: 11vmin; min-width: 34px; min-height: 34px;
                         border-radius: 50%; border: 2px solid rgba(232, 232, 234, .3); background: rgba(16, 16, 20, .5);
@@ -108,7 +148,8 @@
   #touch-reset { display: none; }
   body.touch-edit #touch-reset { display: block; }
   body.touch-edit #touch .stick, body.touch-edit #touch .look, body.touch-edit #touch .buttons,
-  body.touch-edit #touch .small { outline: 2px dashed rgba(232, 178, 58, .75); outline-offset: 3px; cursor: move; }
+  body.touch-edit #touch .small, body.touch-edit #touch .dpad { outline: 2px dashed rgba(232, 178, 58, .75);
+                                                                  outline-offset: 3px; cursor: move; }
   /* The panel the layout is set with: which control the sliders are on, its size and its fade */
   /* Below the gear and START, which sit in the top corners: a panel across the top runs under START on a narrow screen */
   #touch-panel { display: none; position: fixed; left: 50%; top: 16vmin; transform: translateX(-50%); z-index: 3;
@@ -151,9 +192,13 @@
   <p class="small">You can also drop the image, or a folder of mods, anywhere on this page. An image from another region needs
      the European release's <code>SLES_525.68</code>, which this build reads its data from.</p>
 </div>
+<!-- The picture and the controls over it: one element, because going fullscreen is the whole page's fullscreen and not just
+     the canvas's, and the fullscreen element is the one whose children stay on the screen -->
+<div id="play-area">
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <pre id="log"></pre>
 <button type="button" id="hint" title="The run's log: F3, or the backquote key">log</button>
+<button type="button" id="expand" title="Fullscreen: the picture and its controls" aria-label="Fullscreen">&#9974;</button>
 <div id="touch">
   <div class="stick" id="stick"><div class="knob" id="stick-knob"></div></div>
   <div class="look" id="look"><div class="knob" id="look-knob"></div></div>
@@ -163,6 +208,12 @@
     <button type="button" class="west" data-bit="square" aria-label="square">&#9633;</button>
     <button type="button" class="south" data-bit="cross" aria-label="cross">&#10005;</button>
   </div>
+  <div class="dpad" id="dpad">
+    <button type="button" class="up" data-bit="up" aria-label="up">&#9650;</button>
+    <button type="button" class="right" data-bit="right" aria-label="right">&#9654;</button>
+    <button type="button" class="down" data-bit="down" aria-label="down">&#9660;</button>
+    <button type="button" class="left" data-bit="left" aria-label="left">&#9664;</button>
+  </div>
   <div class="small shoulder l1" id="l1" data-bit="l1">L1</div>
   <div class="small shoulder r1" id="r1" data-bit="r1">R1</div>
   <div class="small start" id="start" data-bit="start">START</div>
@@ -170,6 +221,7 @@
 <div id="touch-tools">
   <button type="button" id="touch-edit" aria-label="Move the touch controls">&#9881;</button>
   <button type="button" id="touch-reset" aria-label="Put the touch controls back">&#8634;</button>
+  <button type="button" id="touch-expand" aria-label="Fullscreen">&#9974;</button>
   <button type="button" id="touch-log" aria-label="The run's log">log</button>
 </div>
 <div id="touch-panel">
@@ -178,12 +230,14 @@
     <button type="button" data-select="stick">Walk</button>
     <button type="button" data-select="look">Look</button>
     <button type="button" data-select="buttons">Buttons</button>
+    <button type="button" data-select="dpad">D-pad</button>
     <button type="button" data-select="l1">L1</button>
     <button type="button" data-select="r1">R1</button>
     <button type="button" data-select="start">Start</button>
   </div>
   <label>Size <input id="touch-scale" type="range" min="60" max="180" step="5" value="100"></label>
   <label>Fade <input id="touch-fade" type="range" min="25" max="100" step="5" value="100"></label>
+</div>
 </div>
 <script>
   var lines = [];
@@ -233,6 +287,80 @@
   }, true);
 
   document.getElementById('hint').addEventListener('click', toggleLog);
+
+  // Fullscreen. The game asks for its canvas to be the fullscreen element (SDL's emscripten driver does), and a fullscreen
+  // canvas is alone on the screen: the touch controls, the log and the buttons beside it all go, which is why fullscreen on a
+  // phone looked like the controls had been taken away. The canvas's own requestFullscreen is pointed at the play area, which
+  // holds them, so SDL's ask fullscreens the picture and everything over it. The browser only allows the ask from a press, and
+  // a press is what both this button and the game's own fullscreen setting begin with
+  var playArea = document.getElementById('play-area');
+  var canvasElement = document.getElementById('canvas');
+
+  function fullscreenNow() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  function enterFullscreen() {
+    var request = playArea.requestFullscreen || playArea.webkitRequestFullscreen;
+    if (!request) {
+      report('fullscreen: this browser has none');
+      return;
+    }
+    try {
+      var asked = request.call(playArea);
+      if (asked && asked.catch) {
+        asked.catch(function (error) {
+          report('fullscreen: ' + error);
+        });
+      }
+    } catch (error) {
+      report('fullscreen: ' + error);
+    }
+  }
+
+  function leaveFullscreen() {
+    var leave = document.exitFullscreen || document.webkitExitFullscreen;
+    if (leave) {
+      try {
+        leave.call(document);
+      } catch (error) {
+      }
+    }
+  }
+
+  function toggleFullscreen() {
+    if (fullscreenNow()) {
+      leaveFullscreen();
+    } else {
+      enterFullscreen();
+    }
+  }
+
+  // SDL's fullscreen resizes the canvas in line before it asks (emscripten's strategy stretches the canvas to the screen),
+  // and that inline size would hold the canvas at the size of the screen it was asked on: the style sheet's size is the one
+  // that follows the window, so it is given back
+  canvasElement.requestFullscreen = function () {
+    canvasElement.style.width = '';
+    canvasElement.style.height = '';
+    enterFullscreen();
+    return Promise.resolve();
+  };
+  if ('webkitRequestFullscreen' in canvasElement) {
+    canvasElement.webkitRequestFullscreen = canvasElement.requestFullscreen;
+  }
+
+  // A phone's resize (the browser bar going, or the device turned) is a new window size for the game
+  function afterFullscreenChanged() {
+    window.setTimeout(function () {
+      window.dispatchEvent(new Event('resize'));
+    }, 120);
+  }
+
+  document.addEventListener('fullscreenchange', afterFullscreenChanged);
+  document.addEventListener('webkitfullscreenchange', afterFullscreenChanged);
+
+  document.getElementById('expand').addEventListener('click', toggleFullscreen);
+  document.getElementById('touch-expand').addEventListener('click', toggleFullscreen);
 
   var reportedError = false;
   window.addEventListener('error', function (event) {
@@ -993,7 +1121,7 @@
     var touch = document.getElementById('touch');
     // While the layout is being moved, nothing the controls do reaches the game
     var editing = false;
-    var Controls = ['stick', 'look', 'buttons', 'l1', 'r1', 'start'];
+    var Controls = ['stick', 'look', 'buttons', 'dpad', 'l1', 'r1', 'start'];
     var LayoutKey = 'twinsanity-touch-layout';
 
     // The report's button bits, as the game reads them (src/platform/sdl3/pads.cpp's Bit constants)
@@ -1160,6 +1288,7 @@
       stick: { left: 4, bottom: 4, scale: 1, opacity: 1 },
       look: { left: 71, bottom: 4, scale: 1, opacity: 1 },
       buttons: { left: 71, bottom: 26, scale: 1, opacity: 1 },
+      dpad: { left: 4, bottom: 46, scale: 1, opacity: 1 },
       l1: { left: 4, bottom: 30, scale: 1, opacity: 1 },
       r1: { left: 85, bottom: 48, scale: 1, opacity: 1 },
       start: { left: 78, bottom: 88, scale: 1, opacity: 1 }
@@ -1239,8 +1368,13 @@
       var places = {};
       var count = 0;
       for (var index = 0; index < Controls.length; index++) {
+        // A control a layout has no place for (one the page has since gained) keeps the style sheet's place, which is what a
+        // layout saved before the d-pad existed is
         var place = saved[Controls[index]];
-        if (!place || typeof place.left !== 'number' || typeof place.bottom !== 'number' ||
+        if (!place) {
+          continue;
+        }
+        if (typeof place.left !== 'number' || typeof place.bottom !== 'number' ||
             typeof place.scale !== 'number' || place.scale < 0.3 || place.scale > 3 ||
             typeof place.opacity !== 'number' || place.opacity < 0.1 || place.opacity > 1) {
           return false;
