@@ -117,6 +117,8 @@
   /* The pad's own directions, above the left thumb: the same four bits a controller's d-pad sends, so a game that reads them
      sees a stick pushed to a side. Separate from the walking stick, which stays analog */
   #touch .dpad { position: absolute; left: 4vmin; bottom: 50vmin; width: 26vmin; height: 26vmin; pointer-events: none; }
+  /* Its middle is a place to grab it by, while the controls are being moved */
+  body.touch-edit #touch .dpad { pointer-events: auto; }
   #touch .dpad button { position: absolute; margin: 0; padding: 0; width: 8.6vmin; height: 8.6vmin; border-radius: 2vmin;
                         border: 2px solid rgba(232, 232, 234, .3); background: rgba(232, 232, 234, .2); color: #f2f2f4;
                         font-size: 3.4vmin; line-height: 1; pointer-events: auto; }
@@ -1326,6 +1328,33 @@
       return true;
     }
 
+    // A control the layout has no place for (one the page has gained since the layout was saved) takes the place it has on the
+    // screen now, so moving or sizing it moves and sizes that control alone rather than none of them or all of them
+    function adopt(name) {
+      var element = controlOf(name);
+      if (!element) {
+        return false;
+      }
+      if (!layout && !snapshot()) {
+        return false;
+      }
+      // A control the layout already has keeps its place: this only fills in what is missing
+      if (layout[name]) {
+        return true;
+      }
+      var box = element.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) {
+        return false;
+      }
+      layout[name] = {
+        left: Number((box.left / window.innerWidth * 100).toFixed(2)),
+        bottom: Number(((window.innerHeight - box.bottom) / window.innerHeight * 100).toFixed(2)),
+        scale: 1,
+        opacity: 1
+      };
+      return true;
+    }
+
     function placeControl(name) {
       var element = controlOf(name);
       var place = layout[name];
@@ -1468,20 +1497,17 @@
     }
 
     function sliderMoved(property) {
-      if (!layout) {
-        snapshot();
-        if (selected === 'all') {
-          // The snapshot's places are what the controls have now, so they are the layout from here on
-          placeAll();
-        }
-      }
       return function () {
         var value = Number(this.value) / 100;
-        if (selected === 'all' || !layout[selected]) {
-          setForAll(property, value);
-        } else {
+        // One control: the one the panel is on, given a place of its own first if the layout has none for it yet
+        if (selected && selected !== 'all') {
+          if (!adopt(selected)) {
+            return;
+          }
           layout[selected][property] = value;
           placeControl(selected);
+        } else if (layout || snapshot()) {
+          setForAll(property, value);
         }
         saveLayout();
       };
@@ -1524,7 +1550,7 @@
         if (!layout) {
           snapshot();
         }
-        if (!layout[name]) {
+        if (!layout[name] && !adopt(name)) {
           return;
         }
         select(name);
