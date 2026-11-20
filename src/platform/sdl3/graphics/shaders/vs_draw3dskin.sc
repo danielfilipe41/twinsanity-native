@@ -23,10 +23,22 @@ uniform vec4 u_lights[7];
 // lane is the "written" flag -- a submit that leaves the uniform alone gives zero, which reads as no tint rather than black
 uniform vec4 u_material[2];
 
-// The retail skins' joint indices reach 61 over the whole disc (mesh_builder.h
-// SkinMaxJoints), so the array matches it
-uniform mat4 u_joints[128];
+// The joints as three vectors each, not a mat4 each (mesh_builder.h SkinMaxJoints names the count and why): a joint's
+// matrix is an affine transform, so its fourth row is the translation and the row after it is always 0 0 0 1. Sending
+// the three rows the transform actually uses and rebuilding the constant column here is what keeps the array inside the
+// 256 vertex uniform vectors a GL ES 3.0 device is only guaranteed to have -- four vectors a joint, over 128 of them,
+// was 512 and no phone took it (0: ERROR: too many uniforms)
+uniform vec4 u_joints[228];
 uniform vec4 u_blendWeights[4];
+
+// A joint's matrix, rebuilt from its three rows: the rows are the matrix's columns here (the retail matrices are
+// row-major and a column vector is multiplied by the transpose, which is how every matrix reaches these shaders), and
+// the last column is the constant row the packing leaves out
+mat4 JointMatrix(int index)
+{
+    int at = index * 3;
+    return mat4(u_joints[at], u_joints[at + 1], u_joints[at + 2], vec4(0.0, 0.0, 0.0, 1.0));
+}
 
 // The attributes are parameters rather than globals: shaderc's SPIR-V path compiles HLSL, where the $input attributes
 // are main's parameters and a helper function cannot see them (the GLSL path declares them as globals, so the same
@@ -39,13 +51,16 @@ vec3 SkinPosition(vec3 position, vec3 indices, vec3 inputWeights)
     vec3 weights = inputWeights;
     float total = weights.x + weights.y + weights.z;
     weights = total > 0.0 ? weights : vec3(1.0, 0.0, 0.0);
-    // Indices are stored as floats 0-255 directly
-    int first = int(indices.x + 0.5);
-    int second = int(indices.y + 0.5);
-    int third = int(indices.z + 0.5);
-    vec3 skinned = mul(u_joints[first], vec4(position, 1.0)).xyz * weights.x;
-    skinned += mul(u_joints[second], vec4(position, 1.0)).xyz * weights.y;
-    skinned += mul(u_joints[third], vec4(position, 1.0)).xyz * weights.z;
+    // Indices are stored as floats 0-255 directly. Clamped: the index's own range is wider than the array, and a joint
+    // past it (no skin on the disc reaches the end of it, and the host says so when one does) must read a matrix rather
+    // than whatever uniform follows
+    int last = 228 / 3 - 1;
+    int first = min(int(indices.x + 0.5), last);
+    int second = min(int(indices.y + 0.5), last);
+    int third = min(int(indices.z + 0.5), last);
+    vec3 skinned = mul(JointMatrix(first), vec4(position, 1.0)).xyz * weights.x;
+    skinned += mul(JointMatrix(second), vec4(position, 1.0)).xyz * weights.y;
+    skinned += mul(JointMatrix(third), vec4(position, 1.0)).xyz * weights.z;
     return skinned;
 }
 

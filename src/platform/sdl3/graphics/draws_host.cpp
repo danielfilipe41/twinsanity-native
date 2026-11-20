@@ -248,7 +248,8 @@ void MakeShared()
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_mvp = bgfx::createUniform("u_mvp", bgfx::UniformType::Mat4);
     g_lights = bgfx::createUniform("u_lights", bgfx::UniformType::Vec4, 7);
-    g_joints = bgfx::createUniform("u_joints", bgfx::UniformType::Mat4, SkinMaxJoints);
+    // Three vectors a joint, as the shader's array is (mesh_builder.h SkinMaxJoints, vs_draw3dskin.sc)
+    g_joints = bgfx::createUniform("u_joints", bgfx::UniformType::Vec4, SkinMaxJoints * 3);
     g_blendWeights = bgfx::createUniform("u_blendWeights", bgfx::UniformType::Vec4, 4);
     g_alpha = bgfx::createUniform("u_materialAlpha", bgfx::UniformType::Vec4);
     g_material = bgfx::createUniform("u_material", bgfx::UniformType::Vec4, 2);
@@ -260,11 +261,16 @@ void MakeShared()
 // cleared once a frame (HostCollectRetiredDrawBuffers), which is as long as a joint block's matrices can stay the same --
 // an animator refills its block every step, and the same address is another object's block by the next frame
 Matrix4x4 g_jointUniforms[SkinMaxJoints];
+// The same matrices as the shader reads them: three vectors a joint, its matrix's three rows (the shader rebuilds the
+// constant fourth row's column), packed when the joints change rather than per draw
+f32 g_jointVectors[SkinMaxJoints * 3 * 4];
 const Matrix4x4* g_jointCacheKey = nullptr;
 u32 g_jointCacheCount = 0;
 // The lanes of g_jointUniforms the last fill wrote real joints into (the rest are identity)
 u32 g_jointCacheFilled = 0;
 bool g_jointIdentitiesMade = false;
+// Whether a draw has already been reported as asking for more joints than the shader's array holds
+bool g_jointOverflowReported = false;
 
 Matrix4x4 JointIdentity()
 {
@@ -282,9 +288,11 @@ Matrix4x4 JointIdentity()
 // since, and a level's characters are several draws each
 void UploadJoints(const Matrix4x4* joints, u32 jointCount)
 {
+    bool changed = false;
     if (!g_jointIdentitiesMade)
     {
         g_jointIdentitiesMade = true;
+        changed = true;
         for (u32 joint = 0; joint < SkinMaxJoints; joint++)
         {
             g_jointUniforms[joint] = JointIdentity();
@@ -293,8 +301,17 @@ void UploadJoints(const Matrix4x4* joints, u32 jointCount)
 
     if (joints != g_jointCacheKey || jointCount != g_jointCacheCount)
     {
+        changed = true;
         g_jointCacheKey = joints;
         g_jointCacheCount = jointCount;
+        if (jointCount > SkinMaxJoints && !g_jointOverflowReported)
+        {
+            // Said once, so a model past the shader's array (none of the disc's is) is a log line rather than a puzzle:
+            // the joints past this one follow the last joint the array holds
+            g_jointOverflowReported = true;
+            std::fprintf(stderr, "skin: a draw has %u joints, past the shader's %u: its last joints hold the %u\n",
+                         jointCount, SkinMaxJoints, SkinMaxJoints);
+        }
         const u32 upto = jointCount < SkinMaxJoints ? jointCount : SkinMaxJoints;
         for (u32 joint = 0; joint < upto; joint++)
         {
@@ -310,7 +327,22 @@ void UploadJoints(const Matrix4x4* joints, u32 jointCount)
         g_jointCacheFilled = upto;
     }
 
-    bgfx::setUniform(g_joints, g_jointUniforms, SkinMaxJoints);
+    if (changed)
+    {
+        // The rows the shader rebuilds its matrices from, three vectors a joint
+        for (u32 joint = 0; joint < SkinMaxJoints; joint++)
+        {
+            for (u32 row = 0; row < 3; row++)
+            {
+                for (u32 lane = 0; lane < 4; lane++)
+                {
+                    g_jointVectors[joint * 12 + row * 4 + lane] = g_jointUniforms[joint].m[row][lane];
+                }
+            }
+        }
+    }
+
+    bgfx::setUniform(g_joints, g_jointVectors, SkinMaxJoints * 3);
 }
 
 void MakeEntries()

@@ -80,16 +80,22 @@ struct Ps2SkinVertex
 // caller's vertexCount budget (0 = no budget).
 bool ParseSkinSubModel(const u8* packet, size_t packetSize, u32 vertexCount, u32 shapeCount, Ps2SkinMesh* out);
 
-// The skin shader's uniforms. Joint matrices upload as one mat4 array
-// (WriteJoints dedups on bucket.lastJoints == Address(joints): same address
-// skips the upload); blend-shape weights upload as one float array of
-// shapeCount (DrawBlendSkin's weights/shapes per part). A vertex's joint lane
-// stores a 7-bit index with a 5-bit weight (mesh_builder's decode), so an index
-// can name any slot up to 127: the array is sized to the whole range, since the
-// vertex shader indexes it without a clamp and an index past the array would
-// read another uniform. The retail skins' indices reaching 61 held only for the
-// one file that survey walked, not for every model on the disc
-constexpr u32 SkinMaxJoints = 128;
+// The skin shader's uniforms. Joint matrices upload as one array of vectors,
+// three a joint (WriteJoints dedups on bucket.lastJoints == Address(joints):
+// same address skips the upload); blend-shape weights upload as one float
+// array of shapeCount (DrawBlendSkin's weights/shapes per part). A vertex's
+// joint lane stores a 7-bit index with a 5-bit weight (mesh_builder's decode),
+// so an index can name any slot up to 127; the shader clamps it to this array's
+// end, and the host says so once if a draw asks for more joints than this.
+//
+// 76 joints, not the index range's 128, because of what a phone has: GL ES 3.0
+// guarantees 256 vertex uniform vectors, and the program's matrices, lights and
+// material take 13 of them, so the joints get 228 and no more (76 x 3). A joint
+// is three vectors rather than a mat4 because a joint's transform is affine --
+// its fourth row is the translation -- so the shader rebuilds the fourth row's
+// column as 0 0 0 1. The retail skins' joint indices reach 61 (over the whole
+// disc, so the deepest pose is 62 joints), which this holds with room to spare
+constexpr u32 SkinMaxJoints = 76;
 constexpr char SkinJointsUniform[] = "u_joints";
 constexpr char SkinBlendWeightsUniform[] = "u_blendWeights";
 
