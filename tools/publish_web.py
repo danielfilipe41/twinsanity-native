@@ -29,7 +29,10 @@ LIMIT = 100 * 1024 * 1024
 
 
 def git(*arguments, data=None):
-    return subprocess.run(["git", *arguments], cwd=HERE, input=data, capture_output=True, check=True).stdout
+    result = subprocess.run(["git", *arguments], cwd=HERE, input=data, capture_output=True)
+    if result.returncode != 0:
+        raise SystemExit(f"git {' '.join(arguments)}: {result.stderr.decode().strip()}")
+    return result.stdout
 
 
 def assemble():
@@ -62,6 +65,13 @@ def assemble():
 
 
 def push():
+    # A checkout in CI has the sources' branch only: the page's branch is brought first, or the commit made below would
+    # have no parent and the push would be turned down for starting a history the remote already has
+    try:
+        git("fetch", "--depth", "1", "origin", f"+refs/heads/{BRANCH}:refs/heads/{BRANCH}")
+    except SystemExit:
+        pass
+
     tree = []
     for path in sorted(SITE.iterdir()):
         blob = git("hash-object", "-w", "--stdin", data=path.read_bytes()).decode().strip()
