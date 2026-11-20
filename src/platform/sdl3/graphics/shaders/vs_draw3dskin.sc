@@ -24,20 +24,24 @@ uniform vec4 u_lights[7];
 uniform vec4 u_material[2];
 
 // The joints as three vectors each, not a mat4 each (mesh_builder.h SkinMaxJoints names the count and why): a joint's
-// matrix is an affine transform, so its fourth row is the translation and the row after it is always 0 0 0 1. Sending
-// the three rows the transform actually uses and rebuilding the constant column here is what keeps the array inside the
-// 256 vertex uniform vectors a GL ES 3.0 device is only guaranteed to have -- four vectors a joint, over 128 of them,
-// was 512 and no phone took it (0: ERROR: too many uniforms)
+// matrix is an affine transform, its three axes in the first three rows and its position in the fourth, and the fourth
+// lane of each of those axes is the constant the fourth column would hold. Sending three vectors a joint and putting
+// the position in the lane that constant would waste is what keeps the array inside the 256 vertex uniform vectors a
+// GL ES 3.0 device is only guaranteed to have -- four vectors a joint, over 128 of them, was 512 and no phone took it
+// (0: ERROR: too many uniforms)
 uniform vec4 u_joints[228];
 uniform vec4 u_blendWeights[4];
 
-// A joint's matrix, rebuilt from its three rows: the rows are the matrix's columns here (the retail matrices are
-// row-major and a column vector is multiplied by the transpose, which is how every matrix reaches these shaders), and
-// the last column is the constant row the packing leaves out
+// A joint's matrix, from its three packed rows: the retail matrices are row-major with the position in their fourth row
+// (math.h PositionRow) and a vertex is multiplied by their transpose, so the packed rows are this matrix's three columns
+// and the position its fourth. The three rows' own fourth lane is what a transposed affine matrix leaves at zero
 mat4 JointMatrix(int index)
 {
     int at = index * 3;
-    return mat4(u_joints[at], u_joints[at + 1], u_joints[at + 2], vec4(0.0, 0.0, 0.0, 1.0));
+    vec4 x = u_joints[at];
+    vec4 y = u_joints[at + 1];
+    vec4 z = u_joints[at + 2];
+    return mat4(vec4(x.xyz, 0.0), vec4(y.xyz, 0.0), vec4(z.xyz, 0.0), vec4(x.w, y.w, z.w, 1.0));
 }
 
 // The attributes are parameters rather than globals: shaderc's SPIR-V path compiles HLSL, where the $input attributes

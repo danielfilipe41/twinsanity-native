@@ -329,15 +329,18 @@ void UploadJoints(const Matrix4x4* joints, u32 jointCount)
 
     if (changed)
     {
-        // The rows the shader rebuilds its matrices from, three vectors a joint
+        // The three rows the shader rebuilds its matrices from, three vectors a joint: an axis's three values and, in the
+        // lane the transposed affine matrix has a zero for, the position's value for that axis (PositionRow). A joint's
+        // own fourth lane is zero for a rotation and a scale, so nothing is lost by putting the position there instead
         for (u32 joint = 0; joint < SkinMaxJoints; joint++)
         {
             for (u32 row = 0; row < 3; row++)
             {
-                for (u32 lane = 0; lane < 4; lane++)
+                for (u32 lane = 0; lane < 3; lane++)
                 {
                     g_jointVectors[joint * 12 + row * 4 + lane] = g_jointUniforms[joint].m[row][lane];
                 }
+                g_jointVectors[joint * 12 + row * 4 + 3] = g_jointUniforms[joint].m[PositionRow][row];
             }
         }
     }
