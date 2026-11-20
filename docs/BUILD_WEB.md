@@ -63,7 +63,9 @@ site origin, and survive a reload.
 ## GitHub Pages
 
 A site is the build's three files with `game.html` as `index.html`, and nothing else -- in particular no disc image and no
-`SLES_525.68`, which the repository never carries and the page never needs: a visitor hands it their own image. 
+`SLES_525.68`, which the repository never carries and the page never needs: a visitor hands it their own image, and, when it
+is an image of another region, the European release's `SLES_525.68` in the page's second picker (passed to the game as
+`--exe`). 
 `tools/publish_web.py` writes that site to `build/site` and, with `--push`, makes it the `gh-pages` branch (a history of
 its own, so no source file is ever on the site) and pushes it:
 

@@ -73,7 +73,8 @@ build/host/sdl3/game-with-data --disc "../Crash Twinsanity (Europe).iso" --verif
 ```
 
 `SLES_525.68` has to be the European release's (its SHA-1 is checked): the addresses in `tools/retail_symbols.h` are that
-program's. More in [the README](../README.md#building-without-the-retail-data-dataruntime).
+program's. A disc of another region carries another one, so the European file is named instead with `--exe SLES_525.68` (or
+`TWINSANITY_EXE`), and the run plays that disc's data at its own field rate. More in [the README](../README.md#building-without-the-retail-data-dataruntime).
 
 ## Compiling without a platform layer
 

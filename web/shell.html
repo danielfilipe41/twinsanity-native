@@ -93,12 +93,17 @@
   <p>This build carries none of the game's data: it reads it out of your own disc at every start. Choose the disc image
      (an ISO, or a raw dump of the disc); it is read here in the page and never uploaded. Saves and settings are kept in this
      browser's own storage, so they are there next time. Dropping the image onto the page works too, and so does dropping a
-     folder of mods.</p>
+     folder of mods. An image of another region (the North American or the Japanese disc) plays with the European release's
+     <code>SLES_525.68</code> given below, which is the program this build's data is read out of.</p>
   <!-- No accept list: it is a filter on what a system calls a file, and an ISO is a CD image on one system and a plain
        binary on another, so a picker built from it greys the very image the page is for out -->
   <label class="field" title="The disc image: an ISO, or a raw dump of the disc">
     <span>Disc image</span>
     <input id="iso" type="file">
+  </label>
+  <label class="field" title="The European release's SLES_525.68, from the disc this build's data comes from: only needed for an image of another region">
+    <span>SLES_525.68 (other regions)</span>
+    <input id="exe" type="file">
   </label>
   <label class="field" title="A folder of mods: each sub-folder is one mod (a Mod Crate, a TwinsanityEvolved mod, or the game's own files)">
     <span>Mods folder (optional)</span>
@@ -474,7 +479,7 @@
 
     // The disc's bytes go into the page's file system whole, in chunks so the read does not double the image in memory,
     // and the game is then run exactly as a desktop run is: --disc names the image and the loader reads SLES_525.68 out
-    // of it at the first start
+    // of it at the first start (or out of the file --exe names, when the player handed one in)
     function writeDisc(file) {
       return new Promise(function (resolve, reject) {
         try { FS.unlink('/disc.iso'); } catch (error) {}
@@ -585,12 +590,31 @@
       });
     }
 
+    // The European release's own program, when the player hands one in: a disc of another region carries another program
+    // (SLUS_209.09, SLPM_658.01), while the data this build reads is the European release's
+    function writeExe() {
+      var picked = document.getElementById('exe').files;
+      if (!picked || picked.length === 0) {
+        return Promise.resolve(null);
+      }
+      return picked[0].arrayBuffer().then(function (buffer) {
+        try { FS.unlink('/SLES_525.68'); } catch (error) {}
+        FS.writeFile('/SLES_525.68', new Uint8Array(buffer));
+        report('exe: ' + picked[0].name + ' read, ' + buffer.byteLength + ' bytes');
+        return '/SLES_525.68';
+      });
+    }
+
     function begin(image) {
-      writeMods().then(function () {
-        report('starting the game with --mods-dir ' + ModsDirectory + ' --disc ' + image);
+      writeMods().then(writeExe).then(function (exe) {
+        var args = ['--mods-dir', ModsDirectory, '--disc', image];
+        if (exe) {
+          args.push('--exe', exe);
+        }
+        report('starting the game with ' + args.join(' '));
         // Added, not set: the touch controls' class is already there on a device that wants them
         document.body.classList.add('playing');
-        Module.callMain(['--mods-dir', ModsDirectory, '--disc', image]);
+        Module.callMain(args);
       });
     }
 

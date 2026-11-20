@@ -14,6 +14,7 @@
 #include <SDL3/SDL.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@ int main(int argc, char** argv)
     bool verifyDisc = false;
     bool verifyData = false;
     const char* dumpData = nullptr;
+    const char* executable = nullptr;
     const char* modsFolder = nullptr;
     std::vector<std::string> mods;
     bool noMods = false;
@@ -70,6 +72,16 @@ int main(int argc, char** argv)
         if (std::strcmp(argv[index], "--dump-data") == 0 && index + 1 < argc)
         {
             dumpData = argv[++index];
+            continue;
+        }
+        if (std::strcmp(argv[index], "--exe") == 0 && index + 1 < argc)
+        {
+            executable = argv[++index];
+            continue;
+        }
+        if (std::strncmp(argv[index], "--exe=", 6) == 0)
+        {
+            executable = argv[index] + 6;
             continue;
         }
         if (std::strcmp(argv[index], "--mods-dir") == 0 && index + 1 < argc)
@@ -142,7 +154,10 @@ int main(int argc, char** argv)
     }
 
     // The retail data: a DATA=runtime build carries none of it, and reads it out of the disc's own executable here, before
-    // anything touches a table. A build from the split already has it and this does nothing
+    // anything touches a table. A build from the split already has it and this does nothing. --exe (or TWINSANITY_EXE) names
+    // the European release's own file instead, which is what a disc of another region is played with
+    const char* namedExecutable = executable != nullptr ? executable : std::getenv("TWINSANITY_EXE");
+    Platform::RetailData::SetExecutable(namedExecutable);
     if (!Platform::RetailData::Load(verifyData))
     {
         SDL_DestroyWindow(window);

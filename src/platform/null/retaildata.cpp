@@ -5,7 +5,8 @@
 // until this file fills it from the player's own SLES_525.68, at the first start.
 //
 // The executable is the European release's, byte for byte (its SHA-1 is checked), because the symbols' addresses are
-// that program's. Every 4 byte word of the copies is then read as a pointer: a word holding a code symbol's address is
+// that program's. It is the disc's own, or the file --exe names: a disc of another region has another program at its root,
+// and the European one extracted from the disc this build's data comes from is then what the data is read out of. Every 4 byte word of the copies is then read as a pointer: a word holding a code symbol's address is
 // pointed at the port's own function for it (tools/retail_map.py's table), and a word holding an address inside the
 // program's own data is pointed at the same place in the image. What is left is data.
 #include "platform/retaildata.h"
@@ -19,6 +20,7 @@
 #include "retail_symbols.h"
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 extern "C" u8 __retail_image[];
@@ -173,6 +175,31 @@ u32 Word(const u8* at, u32 offset)
     return value;
 }
 
+// A file of the player's own, by its path on the host: what --exe names is one, and is not part of the disc
+bool ReadHost(const char* path, std::vector<u8>& bytes)
+{
+    std::FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return false;
+    }
+
+    std::fseek(file, 0, SEEK_END);
+    const long size = std::ftell(file);
+    // The release's program is a couple of megabytes: a larger file is a disc image or something else, and is not read
+    if (size <= 0 || size > (64 << 20))
+    {
+        std::fclose(file);
+        return false;
+    }
+
+    bytes.resize(static_cast<size_t>(size));
+    std::fseek(file, 0, SEEK_SET);
+    const size_t read = std::fread(bytes.data(), 1, bytes.size(), file);
+    std::fclose(file);
+    return read == bytes.size();
+}
+
 bool ReadWhole(const char* path, std::vector<u8>& bytes)
 {
     const s32 file = Platform::Files::Open(path, Platform::Files::OpenRead);
@@ -277,6 +304,12 @@ void* FindCode(u32 address)
 }
 
 bool g_Loaded = false;
+std::string g_ExecutablePath;
+}
+
+void Platform::RetailData::SetExecutable(const char* path)
+{
+    g_ExecutablePath = path != nullptr ? path : "";
 }
 
 bool Platform::RetailData::Baked()
@@ -291,12 +324,24 @@ bool Platform::RetailData::Load(bool verbose)
         return true;
     }
 
+    // The player's own copy when --exe names one (a disc of another region carries another program), else the disc's own
     std::vector<u8> executable;
-    if (!ReadWhole(Executable, executable))
+    const char* from = g_ExecutablePath.empty() ? Executable : g_ExecutablePath.c_str();
+    if (g_ExecutablePath.empty() ? !ReadWhole(Executable, executable) : !ReadHost(from, executable))
     {
-        std::fprintf(stderr, "retail-data: this build carries none of the game's data, and the disc in front of it has no "
-                             "%s at its root to read it from: use the disc (or its image) this game's copy came from\n",
-                     Executable);
+        if (g_ExecutablePath.empty())
+        {
+            std::fprintf(stderr, "retail-data: this build carries none of the game's data, and the disc in front of it has no "
+                                 "%s at its root to read it from: use the disc (or its image) this game's copy came from, or "
+                                 "name the European release's %s with --exe\n",
+                         Executable, Executable);
+        }
+        else
+        {
+            std::fprintf(stderr, "retail-data: --exe %s does not read: name the European release's %s (2152836 bytes), "
+                                 "extracted from the disc this build's data comes from\n",
+                         from, Executable);
+        }
         return false;
     }
 
@@ -310,7 +355,7 @@ bool Platform::RetailData::Load(bool verbose)
     {
         std::fprintf(stderr, "retail-data: %s is not the European release's executable (SHA-1 %s, want %s): only that "
                              "release's program has the addresses this build's data is read through\n",
-                     Executable, sha1, ReleaseSha1);
+                     from, sha1, ReleaseSha1);
         return false;
     }
 
@@ -368,7 +413,7 @@ bool Platform::RetailData::Load(bool verbose)
     if (copyCount == 0)
     {
         std::fprintf(stderr, "retail-data: %s has no data sections in the image's range: it is not this game's program\n",
-                     Executable);
+                     from);
         return false;
     }
 
@@ -444,7 +489,7 @@ bool Platform::RetailData::Load(bool verbose)
         std::fprintf(stderr, "retail-data: %s %zu bytes (the European release's), %u stretches, %u bytes; %u code "
                              "pointers, %u into a function, %u data pointers, %u words left at code addresses the port "
                              "does not define, %u words at addresses inside a function\n",
-                     Executable, executable.size(), copyCount, copiedBytes, codePointers, offsetPointers, dataPointers,
+                     from, executable.size(), copyCount, copiedBytes, codePointers, offsetPointers, dataPointers,
                      undefined, dangling);
     }
     if (undefined != 0)
@@ -486,6 +531,11 @@ bool Platform::RetailData::Dump(const char* path)
 bool Platform::RetailData::Baked()
 {
     return true;
+}
+
+void Platform::RetailData::SetExecutable(const char*)
+{
+    // A build from the split has the data already: there is no file to read
 }
 
 bool Platform::RetailData::Load(bool)

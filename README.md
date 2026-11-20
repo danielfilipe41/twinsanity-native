@@ -2,8 +2,7 @@
 
 This project is a multi-system port of Crash Twinsanity (PAL, SLES-525.68), built on top of
 [Smartkin's decompilation of the game](https://github.com/Smartkin/twinsanity-reversed). The PlayStation 2 backend comes
-from that decomp: the game code, the PS2 platform layer and the matching build. This repository adds a native Linux/PC
-backend and is where the port work happens now.
+from that decomp: the game code, the PS2 platform layer and the matching build. This repository adds a native BGFX/SDL3 backend and is where the port work happens now.
 
 The PC build uses SDL3 for the window, input and audio, and bgfx for rendering. The game code is the same C++ as the PS2
 build (minor some tweaks and things necessary for some features); it reaches the hardware through the platform layer, so the renderer, audio, files and pads can be replaced one system at a time. The 32-bit build keeps the retail pointer layouts and absolute addresses.
@@ -16,9 +15,7 @@ dragged in as a file) and boots the game in the tab. Nothing is uploaded and the
 mods are kept in the browser's own storage.
 
 ## Status
-
-Linux runs perfectly, Windows cross-builds from Linux and runs under Wine, and the web build plays in a browser; every
-other platform has its backend only.
+All plataforms but android should be working perfectly, only one 100% playthrough has been done on Linux
 
 Known issues:
 - Sometimes camera gets stuck on places still not sure if this is retail behaviour or not
@@ -129,7 +126,8 @@ the retail data, which the port carries the European build's value of. The rate 
 the particle emitters' aging and the picture's framing, so a North American disc runs at the speed its console ran at.
 
 **Only the European disc can be built with.** The North American and Japanese discs are *data* to this port: the game's own
-code is the European program's, so their program's own behaviour does not come with them. The PS2 build is the one that needs
+code is the European program's, so their program's own behaviour does not come with them. A `DATA=runtime` build plays any of
+them with the European `SLES_525.68` named by `--exe` (see below), which is the file its data is read out of. The PS2 build is the one that needs
 the program itself — `SLES_525.68` from the European disc, as above; the computer builds need no executable at all, they read
 whichever disc they are pointed at.
 What a build on another region's program would take is in [DEVELOPMENT.md](docs/DEVELOPMENT.md#another-regions-disc).
@@ -156,6 +154,18 @@ the disc, and it plays from their copy. The disc itself is needed at every start
 ```sh
 build/host/sdl3/game-with-data --disc "Crash Twinsanity (Europe).iso" --verify-data
 ```
+
+A North American or Japanese image can be played the same way. Its root carries another program (`SLUS_209.09`,
+`SLPM_658.01`), so the European one is named instead -- extracted once from the European disc, `SLES_525.68` beside it, and
+the disc's own is then not read at all:
+
+```sh
+build/host/sdl3/game-with-data --disc "Crash Twinsanity (USA).iso" --exe SLES_525.68
+build/host/sdl3/game-with-data --disc "Crash Twinsanity (USA).iso" --exe SLES_525.68 --verify-data   # the load, then exit
+```
+
+`TWINSANITY_EXE` does the same for a launcher, and the page takes the file in its own picker. The other region's data -- its
+archive, its movies, its texts -- is what the run then plays, at that disc's own field rate.
 
 The addresses and names it needs are `tools/retail_symbols.h`, generated from `symbol_addrs.txt`; `tools/retail_map.py
 --check` compares that map with the pointer words the split itself made, and `tools/retail_map.py` writes it again after a
