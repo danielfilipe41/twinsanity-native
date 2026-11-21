@@ -801,6 +801,8 @@ struct FrameStats
     u32 packets;
     u32 repeats;
     u32 blended;
+    // The draws that took the testless fragment shader, and its total: the opaque bulk keeps early-Z (draws_host.cpp)
+    u32 plain;
     u32 submits;
     u32 flushes;
     u32 flushBlended;
@@ -816,6 +818,7 @@ struct FrameStats
     u32 packetsTotal;
     u32 repeatsTotal;
     u32 blendedTotal;
+    u32 plainTotal;
     u32 screen;
     u32 draw2d;
     u32 rigidTotal;
@@ -848,6 +851,7 @@ void ShowFrameStats(const bgfx::Stats* stats)
     g_frameStats.packets = counts.rigidPackets - g_frameStats.packetsTotal;
     g_frameStats.repeats = counts.rigidRepeats - g_frameStats.repeatsTotal;
     g_frameStats.blended = counts.rigidBlended - g_frameStats.blendedTotal;
+    g_frameStats.plain = counts.plainDraws - g_frameStats.plainTotal;
     g_frameStats.submits = counts.rigidSubmits - g_frameStats.submitsTotal;
     g_frameStats.flushes = counts.rigidFlushes - g_frameStats.flushesTotal;
     g_frameStats.flushBlended = counts.rigidFlushBlended - g_frameStats.flushBlendedTotal;
@@ -859,6 +863,7 @@ void ShowFrameStats(const bgfx::Stats* stats)
     g_frameStats.packetsTotal = counts.rigidPackets;
     g_frameStats.repeatsTotal = counts.rigidRepeats;
     g_frameStats.blendedTotal = counts.rigidBlended;
+    g_frameStats.plainTotal = counts.plainDraws;
     g_frameStats.skin = counts.skinDraws - g_frameStats.skinTotal;
     g_frameStats.screen = counts.screenDraws - g_frameStats.screenTotal;
     g_frameStats.draw2d = counts.draw2dDraws - g_frameStats.draw2dTotal;
@@ -911,11 +916,12 @@ void ShowFrameStats(const bgfx::Stats* stats)
         const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
         std::fprintf(stderr,
                      "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u "
-                     "passes %u) packets %u repeats %u blended %u submits %u flushes %u/%u parses %u views %u tris %d textures %d "
+                     "passes %u) packets %u repeats %u blended %u plain %u submits %u flushes %u/%u parses %u views %u tris %d textures %d "
                      "programs %d tfree %u KB least %u\n",
                      g_frameCounter, g_frameStats.fps, g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs,
                      g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
-                     g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, g_frameStats.flushes,
+                     g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.plain, g_frameStats.submits,
+                     g_frameStats.flushes,
                      g_frameStats.flushBlended, g_frameStats.parses, stats->numViews,
                      stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms,
                      g_frameStats.transientFreeKb, g_frameStats.transientFreeLeastKb);

@@ -42,6 +42,9 @@ SHADER_OF = {
     "vs_draw3dflat": "varying_draw3dflat.def.sc",
     "vs_draw3dskinflat": "varying_draw3dflat.def.sc",
     "fs_draw3dflat": "varying_draw3dflat.def.sc",
+    # The same two without the alpha test, for the draws whose test always passes (fs_draw3dplain.sc)
+    "fs_draw3dplain": "varying_draw3d.def.sc",
+    "fs_draw3dplainflat": "varying_draw3dflat.def.sc",
     # The overdraw map's grey step, behind the 3D geometry's own vertex shaders (draws_host.cpp HostSetOverdraw)
     "fs_overdraw": "varying_draw3d.def.sc",
     "fs_shadowvolume": "varying_draw3d.def.sc",

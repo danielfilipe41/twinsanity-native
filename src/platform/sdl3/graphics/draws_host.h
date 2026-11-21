@@ -310,6 +310,10 @@ struct HostDrawCounters
     u32 rigidPackets;
     u32 rigidRepeats;
     u32 rigidBlended;
+    // The rigid and skin draws that took the testless fragment shader: the material's alpha test rejects nothing, so its
+    // fragments keep early-Z. A frame's opaque bulk should be nearly all of these, and a draw that would have taken the general
+    // shader is either a masked texture or the brighten preset
+    u32 plainDraws;
     // The submissions those draws actually made: the instanced batch's, which is what the draw count falls to
     u32 rigidSubmits;
     // The queue flushes behind those submissions, and the ones a blended draw's own place in the frame ordered (the draw that comes

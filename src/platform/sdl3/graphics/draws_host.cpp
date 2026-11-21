@@ -53,6 +53,14 @@ bool g_overdraw = false;
 // is otherwise identical, uniforms and all
 bgfx::ProgramHandle g_rigidFlatProgram = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_skinFlatProgram = BGFX_INVALID_HANDLE;
+// And all four again with the testless fragment shader (fs_draw3dplain.sc): a material whose alpha test never rejects draws
+// through these, so its fragments keep early-Z. Invalid on a backend with no blob for that shader, and then the general
+// programs serve every draw. The fragment shader knows nothing of skinning, so the skinned pair is the same two fragments
+// over the skin vertex shaders
+bgfx::ProgramHandle g_rigidPlainProgram = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_rigidFlatPlainProgram = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_skinPlainProgram = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_skinFlatPlainProgram = BGFX_INVALID_HANDLE;
 // The volumes' program: the rigid vertex shader with a fragment shader that writes one constant colour, so a shell's
 // contribution is the pass's blend factor and not a fraction of the mesh's own colours (fs_shadowvolume.sc)
 bgfx::ProgramHandle g_shadowVolumeProgram = BGFX_INVALID_HANDLE;
@@ -273,6 +281,25 @@ void MakeShared()
     bgfx::ShaderHandle skinFlatVs = HostCreateShader(HostShader::Draw3DSkinVertexFlat);
     bgfx::ShaderHandle skinFlatFs = HostCreateShader(HostShader::Draw3DFragmentFlat);
     g_skinFlatProgram = bgfx::createProgram(skinFlatVs, skinFlatFs, true);
+    // The four programs again with the testless fragment shader, for the draws whose alpha test always passes. A backend
+    // with no blob for it (Direct3D, whose DXBC needs a Windows shaderc) leaves the handles invalid, and the vertex shaders
+    // are the same ones as above, so this adds two fragment programs and nothing else
+    bgfx::ShaderHandle plainFs = HostCreateShader(HostShader::Draw3DFragmentPlain);
+    if (bgfx::isValid(plainFs))
+    {
+        bgfx::ShaderHandle plainVs = HostCreateShader(HostShader::Draw3DVertex);
+        g_rigidPlainProgram = bgfx::createProgram(plainVs, plainFs, true);
+        bgfx::ShaderHandle skinPlainVs = HostCreateShader(HostShader::Draw3DSkinVertex);
+        g_skinPlainProgram = bgfx::createProgram(skinPlainVs, plainFs, true);
+    }
+    bgfx::ShaderHandle plainFlatFs = HostCreateShader(HostShader::Draw3DFragmentPlainFlat);
+    if (bgfx::isValid(plainFlatFs))
+    {
+        bgfx::ShaderHandle plainFlatVs = HostCreateShader(HostShader::Draw3DVertexFlat);
+        g_rigidFlatPlainProgram = bgfx::createProgram(plainFlatVs, plainFlatFs, true);
+        bgfx::ShaderHandle skinPlainFlatVs = HostCreateShader(HostShader::Draw3DSkinVertexFlat);
+        g_skinFlatPlainProgram = bgfx::createProgram(skinPlainFlatVs, plainFlatFs, true);
+    }
     // The overdraw map's programs, from the same vertex shaders: only what the fragment shader writes changes
     bgfx::ShaderHandle overdrawRigidVs = HostCreateShader(HostShader::Draw3DVertex);
     bgfx::ShaderHandle overdrawRigidFs = HostCreateShader(HostShader::OverdrawFragment);
@@ -742,8 +769,8 @@ void HostModelClipMatrix(const Matrix4x4* world, const Matrix4x4* toScreen, Matr
 struct RigidInstance
 {
     f32 mvp[16];
-    // The model's rotation, three rows: the vertex shader turns the scene's light directions by it
-    f32 rot[12];
+    // The three scene light directions after the model rotation, computed once per model instead of in every vertex
+    f32 lightDirs[12];
 };
 
 // A rigid draw waiting for the frame's flush: everything its submit sets, plus its matrix. A submission is one draw call through bgfx
@@ -765,7 +792,7 @@ struct RigidQueued
     f32 cols[12];
     f32 ambient[4];
     f32 mvp[16];
-    f32 rot[12];
+    f32 lightDirs[12];
 };
 
 // The uniforms a submission sets, as the sort and the grouping compare them: alpha, scroll, colour, the lights' directions and colours
@@ -811,11 +838,17 @@ bool RigidLess(const RigidQueued& a, const RigidQueued& b)
     if (a.blendFactor != b.blendFactor) return a.blendFactor < b.blendFactor;
     if (a.minifiesThroughMips != b.minifiesThroughMips) return a.minifiesThroughMips < b.minifiesThroughMips;
 
+    // The two draws' packets, before the uniform run: a level's props share a handful of textures, so the draws that reach here
+    // are mostly different packets with the same programme, texture and state, and they settle on one integer rather than a
+    // 144-byte comparison. Everything a level's picture depends on is already equal above this line, and the order among
+    // draws that share it is no order (opaque and additive runs both commute), so this only moves the comparisons off the
+    // frame's lap: the bulk compare now runs for the repeats, which are the draws that merge anyway
+    if (a.entry != b.entry) return a.entry < b.entry;
+
     // The six uniform blocks are contiguous and all the same width in both draws, so one comparison over the run of them orders
     // them exactly as comparing each in turn did
     const int order = std::memcmp(&a.alpha, &b.alpha, RigidUniformBytes);
-    if (order != 0) return order < 0;
-    return a.entry < b.entry;
+    return order < 0;
 }
 
 // Whether two draws make the same submission (everything but the matrix)
@@ -914,8 +947,11 @@ void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceD
 
     bgfx::setVertexBuffer(0, first.entry->vertices);
     bgfx::setIndexBuffer(first.entry->indexes);
-    SetDrawLights(first.dirs, first.cols, first.ambient);
-    SetDrawMaterial(first.scroll, first.colour);
+    // Uploaded straight from the queue's own storage rather than through the packed copies: the light set and the
+    // material's pair sit contiguous and in the order the shaders' arrays take them (the static_asserts above hold that
+    // layout), so a submit saves one 112-byte and one 32-byte copy -- a thousand of each a frame in a busy scene
+    bgfx::setUniform(g_lights, first.dirs, 7);
+    bgfx::setUniform(g_material, first.scroll, 2);
     bgfx::setUniform(g_alpha, first.alpha, 1);
 
     if (arena != nullptr)
@@ -941,7 +977,7 @@ void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceD
         for (u32 index = 0; index < available; index++)
         {
             std::memcpy(instances[index].mvp, group[done + index].mvp, sizeof(instances[index].mvp));
-            std::memcpy(instances[index].rot, group[done + index].rot, sizeof(instances[index].rot));
+            std::memcpy(instances[index].lightDirs, group[done + index].lightDirs, sizeof(instances[index].lightDirs));
         }
 
         bgfx::setInstanceDataBuffer(&buffer, 0, available);
@@ -983,7 +1019,7 @@ void FlushRigidQueue()
             for (u32 index = 0; index < arenaCount; index++)
             {
                 std::memcpy(instances[index].mvp, g_rigidQueue[index].mvp, sizeof(instances[index].mvp));
-                std::memcpy(instances[index].rot, g_rigidQueue[index].rot, sizeof(instances[index].rot));
+                std::memcpy(instances[index].lightDirs, g_rigidQueue[index].lightDirs, sizeof(instances[index].lightDirs));
             }
         }
     }
@@ -1060,24 +1096,28 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
         g_counters.rigidPackets++;
     }
 
-    // The scene's lights as they are, and the model's rotation: the vertex shader turns the one by the other per instance, so every
-    // draw of a frame under one lighting environment shares the submit's uniforms (LightUniforms' arithmetic, moved into the shader)
+    // Scene light colours and ambient stay submit uniforms. Rotate each direction once per model here, rather than multiplying
+    // every vertex's normal by the model rotation three times in the vertex shader.
     f32 lightDirs[12];
     f32 lightCols[12];
     f32 lightAmbient[4];
-    f32 rotation[12] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    f32 instanceLightDirs[12] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                 0.0f, 0.0f, 1.0f, 0.0f};
     if (lights != nullptr && world != nullptr && lights->directions != nullptr && lights->colours != nullptr &&
         lights->ambient != nullptr)
     {
         std::memcpy(lightDirs, lights->directions, sizeof(lightDirs));
         std::memcpy(lightCols, lights->colours, sizeof(lightCols));
         std::memcpy(lightAmbient, lights->ambient, sizeof(lightAmbient));
-        for (u32 row = 0; row < 3; row++)
+        for (u32 light = 0; light < 3; light++)
         {
-            rotation[row * 4 + 0] = world->m[row][0];
-            rotation[row * 4 + 1] = world->m[row][1];
-            rotation[row * 4 + 2] = world->m[row][2];
-            rotation[row * 4 + 3] = 0.0f;
+            const Vector4& direction = lights->directions[light];
+            instanceLightDirs[light * 4 + 0] = world->m[0][0] * direction.x + world->m[1][0] * direction.y +
+                                               world->m[2][0] * direction.z;
+            instanceLightDirs[light * 4 + 1] = world->m[0][1] * direction.x + world->m[1][1] * direction.y +
+                                               world->m[2][1] * direction.z;
+            instanceLightDirs[light * 4 + 2] = world->m[0][2] * direction.x + world->m[1][2] * direction.y +
+                                               world->m[2][2] * direction.z;
         }
     }
     else
@@ -1113,6 +1153,23 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     queued.blendFactor = blendFactor;
     queued.texture = texture;
     queued.program = bgfx::isValid(program) ? program : g_rigidProgram;
+    // A material whose alpha test rejects nothing writes what fs_draw3dplain.sc writes, so it takes that program: no
+    // comparison chain and no discard. Both matter for a phone, where a fragment shader that may discard cannot be
+    // depth-tested before it samples, and almost every opaque draw of a level is this case (g_noAlphaTest's always, no
+    // AFAIL, no brighten preset). A draw that came in with a program of its own keeps it
+    if (alpha[0] == g_noAlphaTest[0] && alpha[2] == g_noAlphaTest[2] && alpha[3] == g_noAlphaTest[3])
+    {
+        if (queued.program.idx == g_rigidProgram.idx && bgfx::isValid(g_rigidPlainProgram))
+        {
+            queued.program = g_rigidPlainProgram;
+            g_counters.plainDraws++;
+        }
+        else if (queued.program.idx == g_rigidFlatProgram.idx && bgfx::isValid(g_rigidFlatPlainProgram))
+        {
+            queued.program = g_rigidFlatPlainProgram;
+            g_counters.plainDraws++;
+        }
+    }
     queued.minifiesThroughMips = minifiesThroughMips;
     std::memcpy(queued.alpha, alpha, sizeof(queued.alpha));
     std::memcpy(queued.scroll, &g_drawScroll, sizeof(queued.scroll));
@@ -1121,7 +1178,7 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     std::memcpy(queued.cols, lightCols, sizeof(queued.cols));
     std::memcpy(queued.ambient, lightAmbient, sizeof(queued.ambient));
     std::memcpy(queued.mvp, mvp, sizeof(queued.mvp));
-    std::memcpy(queued.rot, rotation, sizeof(queued.rot));
+    std::memcpy(queued.lightDirs, instanceLightDirs, sizeof(queued.lightDirs));
 
 
     const u32 kind = RigidDrawKind(state);
@@ -1366,15 +1423,21 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     UploadJoints(joints, jointCount);
     bgfx::setUniform(g_blendWeights, blendUniforms, 4);
     SetDrawMaterial(reinterpret_cast<const f32*>(&g_drawScroll), reinterpret_cast<const f32*>(&g_drawColour));
+    // The alpha test the caller mapped from the material: the one material state whose test rejects nothing is the plain
+    // fragment shader's, and the draw picks that programme below
+    f32 alpha[4];
     if (alphaRef != nullptr)
     {
-        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
-        bgfx::setUniform(g_alpha, alpha, 1);
+        alpha[0] = alphaRef[0];
+        alpha[1] = alphaRef[1];
+        alpha[2] = alphaRef[2];
+        alpha[3] = alphaRef[4];
     }
     else
     {
-        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+        std::memcpy(alpha, g_noAlphaTest, sizeof(alpha));
     }
+    bgfx::setUniform(g_alpha, alpha, 1);
     // The flat-shaded program for a shader with IIP cleared, else the interpolating one; the overdraw map swaps both the
     // program and what the draw writes, keeping the vertex shader that placed the triangles
     bgfx::ProgramHandle drawProgram = bgfx::isValid(program) ? program : g_skinProgram;
@@ -1383,6 +1446,22 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
         u64 mapState = MarkedForCaster(state);
         OverdrawDraw(drawProgram, mapState, true);
         bgfx::setState(mapState);
+    }
+    // The testless programme for the skin draw whose alpha test passes: the map has taken the program above when it is on,
+    // so this only matches the frame's own picture
+    if (alpha[0] == g_noAlphaTest[0] && alpha[1] == g_noAlphaTest[1] && alpha[2] == g_noAlphaTest[2] &&
+        alpha[3] == g_noAlphaTest[3])
+    {
+        if (drawProgram.idx == g_skinProgram.idx && bgfx::isValid(g_skinPlainProgram))
+        {
+            drawProgram = g_skinPlainProgram;
+            g_counters.plainDraws++;
+        }
+        else if (drawProgram.idx == g_skinFlatProgram.idx && bgfx::isValid(g_skinFlatPlainProgram))
+        {
+            drawProgram = g_skinFlatPlainProgram;
+            g_counters.plainDraws++;
+        }
     }
     bgfx::submit(view, drawProgram);
     g_counters.skinDraws++;
@@ -1456,17 +1535,19 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     SetDrawLights(reinterpret_cast<const f32*>(noDirections), reinterpret_cast<const f32*>(noLightColours),
                   reinterpret_cast<const f32*>(&ambient));
     SetDrawMaterial(reinterpret_cast<const f32*>(&g_drawScroll), reinterpret_cast<const f32*>(&g_drawColour));
+    f32 alpha[4];
     if (alphaRef != nullptr)
     {
-        const f32 alpha[4] = {alphaRef[0], alphaRef[1], alphaRef[2], alphaRef[4]};
-        bgfx::setUniform(g_alpha, alpha, 1);
+        alpha[0] = alphaRef[0];
+        alpha[1] = alphaRef[1];
+        alpha[2] = alphaRef[2];
+        alpha[3] = alphaRef[4];
     }
     else
     {
-        bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
+        std::memcpy(alpha, g_noAlphaTest, sizeof(alpha));
     }
-    // The flat-shaded program for a material whose shader cleared IIP (the skid marks' own does not: it sets gouraud 1),
-    // else the interpolating one -- the same choice the rigid and skin paths make per pass
+    bgfx::setUniform(g_alpha, alpha, 1);
     // The rigid vertex shader takes its model-to-clip matrix per instance (the packet path's instancing), so the strip is one
     // instance of its own
     RigidInstance instance = {{1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f}};
@@ -1475,12 +1556,30 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::allocInstanceDataBuffer(&instances, 1, sizeof(RigidInstance));
     std::memcpy(instances.data, &instance, sizeof(instance));
     bgfx::setInstanceDataBuffer(&instances, 0, 1);
+    // The flat-shaded program for a material whose shader cleared IIP (the skid marks' own does not: it sets gouraud 1),
+    // else the interpolating one -- the same choice the rigid and skin paths make per pass
     bgfx::ProgramHandle stripProgram = bgfx::isValid(program) ? program : g_rigidProgram;
     if (g_overdraw)
     {
         u64 mapState = state | BGFX_STATE_PT_TRISTRIP;
         OverdrawDraw(stripProgram, mapState, false);
         bgfx::setState(mapState);
+    }
+    // The testless programme, as the packet paths take it, and only for the frame's own picture (the map took the program
+    // above when it is on)
+    if (alpha[0] == g_noAlphaTest[0] && alpha[1] == g_noAlphaTest[1] && alpha[2] == g_noAlphaTest[2] &&
+        alpha[3] == g_noAlphaTest[3])
+    {
+        if (stripProgram.idx == g_rigidProgram.idx && bgfx::isValid(g_rigidPlainProgram))
+        {
+            stripProgram = g_rigidPlainProgram;
+            g_counters.plainDraws++;
+        }
+        else if (stripProgram.idx == g_rigidFlatProgram.idx && bgfx::isValid(g_rigidFlatPlainProgram))
+        {
+            stripProgram = g_rigidFlatPlainProgram;
+            g_counters.plainDraws++;
+        }
     }
     bgfx::submit(view, stripProgram);
     g_counters.screenDraws++;

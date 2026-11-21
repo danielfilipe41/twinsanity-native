@@ -10,6 +10,8 @@
 #include "shaders/fs_draw2d_gles.bin.h"
 #include "shaders/fs_draw3d_gles.bin.h"
 #include "shaders/fs_draw3dflat_gles.bin.h"
+#include "shaders/fs_draw3dplain_gles.bin.h"
+#include "shaders/fs_draw3dplainflat_gles.bin.h"
 #include "shaders/fs_overdraw_gles.bin.h"
 #include "shaders/fs_fxaa_gles.bin.h"
 #include "shaders/fs_particle_gles.bin.h"
@@ -37,6 +39,8 @@
 #include "shaders/fs_draw2d.bin.h"
 #include "shaders/fs_draw3d.bin.h"
 #include "shaders/fs_draw3dflat.bin.h"
+#include "shaders/fs_draw3dplain.bin.h"
+#include "shaders/fs_draw3dplainflat.bin.h"
 #include "shaders/fs_overdraw.bin.h"
 #include "shaders/fs_fxaa.bin.h"
 #include "shaders/fs_particle.bin.h"
@@ -65,6 +69,8 @@
 #include "shaders/fs_draw2d_wgsl.bin.h"
 #include "shaders/fs_draw3d_wgsl.bin.h"
 #include "shaders/fs_draw3dflat_wgsl.bin.h"
+#include "shaders/fs_draw3dplain_wgsl.bin.h"
+#include "shaders/fs_draw3dplainflat_wgsl.bin.h"
 #include "shaders/fs_overdraw_wgsl.bin.h"
 #include "shaders/fs_fxaa_wgsl.bin.h"
 #include "shaders/fs_particle_wgsl.bin.h"
@@ -92,6 +98,8 @@
 #include "shaders/fs_draw2d_spv.bin.h"
 #include "shaders/fs_draw3d_spv.bin.h"
 #include "shaders/fs_draw3dflat_spv.bin.h"
+#include "shaders/fs_draw3dplain_spv.bin.h"
+#include "shaders/fs_draw3dplainflat_spv.bin.h"
 #include "shaders/fs_overdraw_spv.bin.h"
 #include "shaders/fs_fxaa_spv.bin.h"
 #include "shaders/fs_particle_spv.bin.h"
@@ -207,6 +215,10 @@ constexpr HostShaderBlobs ShaderBlobs[] = {
     {HOST_SHADER_GL_BLOB(vs_draw3dflat), vs_draw3dflat_spv, sizeof(vs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dflat) HOST_SHADER_D3D_BLOB(vs_draw3dflat)},
     {HOST_SHADER_GL_BLOB(vs_draw3dskinflat), vs_draw3dskinflat_spv, sizeof(vs_draw3dskinflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dskinflat) HOST_SHADER_D3D_BLOB(vs_draw3dskinflat)},
     {HOST_SHADER_GL_BLOB(fs_draw3dflat), fs_draw3dflat_spv, sizeof(fs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3dflat) HOST_SHADER_D3D_BLOB(fs_draw3dflat)},
+    // The same two with nothing for the alpha test to reject: no DXBC column, since only a Windows shaderc can make that
+    // blob (tools/build_shaders.py --platform windows --d3d), so a Direct3D build keeps the general programs
+    {HOST_SHADER_GL_BLOB(fs_draw3dplain), fs_draw3dplain_spv, sizeof(fs_draw3dplain_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3dplain)},
+    {HOST_SHADER_GL_BLOB(fs_draw3dplainflat), fs_draw3dplainflat_spv, sizeof(fs_draw3dplainflat_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3dplainflat)},
     // The overdraw map's step of grey, drawn behind the same vertex shaders the 3D rows above are
     {HOST_SHADER_GL_BLOB(fs_overdraw), fs_overdraw_spv, sizeof(fs_overdraw_spv) HOST_SHADER_WEBGPU_BLOB(fs_overdraw)},
     {HOST_SHADER_GL_BLOB(fs_shadowvolume), fs_shadowvolume_spv, sizeof(fs_shadowvolume_spv) HOST_SHADER_WEBGPU_BLOB(fs_shadowvolume) HOST_SHADER_D3D_BLOB(fs_shadowvolume)},

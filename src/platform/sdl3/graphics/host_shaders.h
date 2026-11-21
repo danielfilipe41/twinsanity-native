@@ -22,6 +22,10 @@ enum class HostShader
     Draw3DVertexFlat,
     Draw3DSkinVertexFlat,
     Draw3DFragmentFlat,
+    // The two fragment shaders again without the alpha test, for a material whose test never rejects anything: the same
+    // colour, but no discard, so the hardware can depth-test before the sample (fs_draw3dplain.sc)
+    Draw3DFragmentPlain,
+    Draw3DFragmentPlainFlat,
     // The overdraw map's fragment shader: one step of grey a draw, behind the geometry's own vertex shader (fs_overdraw.sc,
     // draws_host.cpp HostSetOverdraw)
     OverdrawFragment,

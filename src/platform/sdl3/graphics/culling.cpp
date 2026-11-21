@@ -84,6 +84,13 @@ u32 g_Clipped;
 s32 g_Distance;
 Matrix4x4 g_Clip;
 Matrix4x4 g_Screen;
+// CullTestBoxAt's matrix to the screen, kept as its inputs until something reads it: the box test's callers read the verdict,
+// and the ones that also want the matrix call CullMatrices in the same step (ChunkView::MeshResult) or never ask for it at all
+// (InstanceResult). The two copies cost less than the product, and the value the first read makes is the one the test would
+// have made then, because both inputs are copied at the test
+bool g_ScreenPending;
+Matrix4x4 g_ScreenModel;
+Matrix4x4 g_ScreenLink;
 
 f32& FieldOf(Vector4& vector, u32 field)
 {
@@ -397,6 +404,7 @@ void CullLoadLink(const Matrix4x4* chunk, const Matrix4x4* object)
 void CullLoadModel(const Matrix4x4* model)
 {
     g_Screen = Product(*model, g_LinkToScreen);
+    g_ScreenPending = false;
     g_Distance = CameraDistance(model);
 }
 
@@ -513,7 +521,9 @@ void CullTestBox(const Vector4* corners)
 void CullTestBoxAt(const Box* box, const Matrix4x4* model)
 {
     g_Distance = CameraDistance(model);
-    g_Screen = Product(*model, g_LinkToScreen);
+    g_ScreenPending = true;
+    g_ScreenModel = *model;
+    g_ScreenLink = g_LinkToScreen;
     g_Clip = Product(*model, g_LinkToClip);
 
     u32 any = 0;
@@ -542,6 +552,13 @@ CullOutcome CullResult()
 
 void CullMatrices(Matrix4x4* clipped, Matrix4x4* toScreen)
 {
+    // The box test's product, made here if nothing has read it since (nothing else reads it)
+    if (g_ScreenPending)
+    {
+        g_Screen = Product(g_ScreenModel, g_ScreenLink);
+        g_ScreenPending = false;
+    }
+
     if (clipped != nullptr)
     {
         *clipped = g_Clip;

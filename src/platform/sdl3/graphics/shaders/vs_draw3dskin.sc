@@ -32,16 +32,21 @@ uniform vec4 u_material[2];
 uniform vec4 u_joints[228];
 uniform vec4 u_blendWeights[4];
 
-// A joint's matrix, from its three packed rows: the retail matrices are row-major with the position in their fourth row
-// (math.h PositionRow) and a vertex is multiplied by their transpose, so the packed rows are this matrix's three columns
-// and the position its fourth. The three rows' own fourth lane is what a transposed affine matrix leaves at zero
-mat4 JointMatrix(int index)
+// A vertex through one joint's matrix, straight from its three packed rows: the retail matrices are row-major with the
+// position in their fourth row (math.h PositionRow) and a vertex is multiplied by their transpose, so the packed rows are
+// this matrix's three columns and the position its fourth. The three rows' own fourth lane is what a transposed affine
+// matrix leaves at zero
+//
+// This is a vertex times that matrix's three axes plus its position, the same arithmetic a mat4 built from the rows and
+// multiplied would do, with the three rows weighed directly instead of a matrix being assembled first: assembling one per
+// joint per vertex meant building up to three mat4s and taking the fourth row's dot product the skinning never uses
+vec3 JointPosition(int index, vec3 position)
 {
     int at = index * 3;
     vec4 x = u_joints[at];
     vec4 y = u_joints[at + 1];
     vec4 z = u_joints[at + 2];
-    return mat4(vec4(x.xyz, 0.0), vec4(y.xyz, 0.0), vec4(z.xyz, 0.0), vec4(x.w, y.w, z.w, 1.0));
+    return x.xyz * position.x + y.xyz * position.y + z.xyz * position.z + vec3(x.w, y.w, z.w);
 }
 
 // The attributes are parameters rather than globals: shaderc's SPIR-V path compiles HLSL, where the $input attributes
@@ -62,9 +67,9 @@ vec3 SkinPosition(vec3 position, vec3 indices, vec3 inputWeights)
     int first = min(int(indices.x + 0.5), last);
     int second = min(int(indices.y + 0.5), last);
     int third = min(int(indices.z + 0.5), last);
-    vec3 skinned = mul(JointMatrix(first), vec4(position, 1.0)).xyz * weights.x;
-    skinned += mul(JointMatrix(second), vec4(position, 1.0)).xyz * weights.y;
-    skinned += mul(JointMatrix(third), vec4(position, 1.0)).xyz * weights.z;
+    vec3 skinned = JointPosition(first, position) * weights.x;
+    skinned += JointPosition(second, position) * weights.y;
+    skinned += JointPosition(third, position) * weights.z;
     return skinned;
 }
 

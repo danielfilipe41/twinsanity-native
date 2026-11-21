@@ -29,15 +29,13 @@ void main()
     // The four vec4s are the model-to-clip matrix's columns: exactly the bytes a mat4 uniform took, now one per instance
     mat4 mvp = mat4(i_data0, i_data1, i_data2, i_data3);
     gl_Position = mul(mvp, vec4(a_position, 1.0));
-    // i_data4-6 are the model's rotation: the scene's light directions turned into the model's own space, which is what the host's
-    // LightUniforms did per draw (a model lights with the scene's lights rotated by its matrix). Doing it here keeps the light set a
-    // submit's uniform, so a packet's draws share one submission
-    mat3 rot = mat3(i_data4.xyz, i_data5.xyz, i_data6.xyz);
+    // i_data4-6 carry the scene light directions already rotated into model space once per instance by the host. Computing this
+    // transform per model instead of for every vertex removes nine multiplies and six adds per directional light per vertex.
     vec3 normal = normalize(a_normal.xyz * 2.0 - 1.0);
     vec3 light = u_lights[6].rgb;
-    light += u_lights[3].rgb * max(dot(normal, mul(rot, u_lights[0].xyz)), 0.0);
-    light += u_lights[4].rgb * max(dot(normal, mul(rot, u_lights[1].xyz)), 0.0);
-    light += u_lights[5].rgb * max(dot(normal, mul(rot, u_lights[2].xyz)), 0.0);
+    light += u_lights[3].rgb * max(dot(normal, i_data4.xyz), 0.0);
+    light += u_lights[4].rgb * max(dot(normal, i_data5.xyz), 0.0);
+    light += u_lights[5].rgb * max(dot(normal, i_data6.xyz), 0.0);
     v_texcoord0 = a_texcoord0 + u_material[0].xy;
     // The lit vertex colour, saturated: the GS takes the vertex colour's bytes times the light
     // and keeps what fits, and TT-Lab's own shader clamps the same product; without it a
