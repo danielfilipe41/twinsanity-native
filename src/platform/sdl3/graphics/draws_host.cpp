@@ -43,6 +43,10 @@ namespace
 // embedded blobs, the s_tex sampler and the light/matrix uniforms
 bgfx::ProgramHandle g_rigidProgram = BGFX_INVALID_HANDLE;
 bgfx::ProgramHandle g_skinProgram = BGFX_INVALID_HANDLE;
+// The overdraw map's pair: the geometry's own vertex shaders with fs_overdraw's step of grey (HostSetOverdraw)
+bgfx::ProgramHandle g_rigidOverdrawProgram = BGFX_INVALID_HANDLE;
+bgfx::ProgramHandle g_skinOverdrawProgram = BGFX_INVALID_HANDLE;
+bool g_overdraw = false;
 // The two flat-shaded programs: the same vertex and fragment code over the flat-qualified varyings, which a shader with the
 // GS's IIP bit cleared draws with (HostMaterialState::flat). A flat draw submits these in place of the interpolated ones and
 // is otherwise identical, uniforms and all
@@ -245,6 +249,13 @@ void MakeShared()
     bgfx::ShaderHandle skinFlatVs = HostCreateShader(HostShader::Draw3DSkinVertexFlat);
     bgfx::ShaderHandle skinFlatFs = HostCreateShader(HostShader::Draw3DFragmentFlat);
     g_skinFlatProgram = bgfx::createProgram(skinFlatVs, skinFlatFs, true);
+    // The overdraw map's programs, from the same vertex shaders: only what the fragment shader writes changes
+    bgfx::ShaderHandle overdrawRigidVs = HostCreateShader(HostShader::Draw3DVertex);
+    bgfx::ShaderHandle overdrawRigidFs = HostCreateShader(HostShader::OverdrawFragment);
+    g_rigidOverdrawProgram = bgfx::createProgram(overdrawRigidVs, overdrawRigidFs, true);
+    bgfx::ShaderHandle overdrawSkinVs = HostCreateShader(HostShader::Draw3DSkinVertex);
+    bgfx::ShaderHandle overdrawSkinFs = HostCreateShader(HostShader::OverdrawFragment);
+    g_skinOverdrawProgram = bgfx::createProgram(overdrawSkinVs, overdrawSkinFs, true);
     g_sampler = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);
     g_mvp = bgfx::createUniform("u_mvp", bgfx::UniformType::Mat4);
     g_lights = bgfx::createUniform("u_lights", bgfx::UniformType::Vec4, 7);
@@ -788,6 +799,30 @@ u32 RigidDrawKind(u64 state)
     return RigidKindOrdered;
 }
 
+// A 3D draw's program and state as the overdraw map draws them: the geometry's own vertex shader still places the triangles
+// (skinning included), and the fragment shader adds one step of grey where they are, with the depth test off so nothing hides
+// anything and the draw's own culling kept so no triangle is counted twice for a face the frame never saw. A build with no
+// blobs for the overdraw shader (a backend tools/build_shaders.py did not make) leaves the draw as it is, so the map falls
+// back to the normal picture
+void OverdrawDraw(bgfx::ProgramHandle& program, u64& state, bool skinned)
+{
+    if (!g_overdraw)
+    {
+        return;
+    }
+
+    const bgfx::ProgramHandle map = skinned ? g_skinOverdrawProgram : g_rigidOverdrawProgram;
+    if (!bgfx::isValid(map))
+    {
+        return;
+    }
+
+    program = map;
+    // What the draw keeps of its own state: which way its faces are culled, and whether they are a strip (the screen models')
+    state = (state & (BGFX_STATE_CULL_MASK | BGFX_STATE_PT_MASK)) | BGFX_STATE_WRITE_RGB |
+            BGFX_STATE_BLEND_FUNC(BGFX_STATE_BLEND_ONE, BGFX_STATE_BLEND_ONE) | BGFX_STATE_DEPTH_TEST_ALWAYS;
+}
+
 // One group of draws as one instanced submit: the state, the texture and the material's uniforms are its, the matrices its instance data.
 // The pool clamps to what is left of the frame's space, so a short answer is drawn as the part that fits and the rest follows
 // arena is the flush's one allocation and arenaStart the group's run inside it; null when the pool had no room, and the group
@@ -795,7 +830,10 @@ u32 RigidDrawKind(u64 state)
 void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceDataBuffer* arena, u32 arenaStart)
 {
     const RigidQueued& first = group[0];
-    bgfx::setState(first.state, first.blendFactor);
+    bgfx::ProgramHandle program = first.program;
+    u64 state = first.state;
+    OverdrawDraw(program, state, false);
+    bgfx::setState(state, first.blendFactor);
     const bgfx::TextureHandle texture = bgfx::isValid(first.texture) ? first.texture : HostWhiteTexture();
     if (first.minifiesThroughMips)
     {
@@ -816,7 +854,7 @@ void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceD
     if (arena != nullptr)
     {
         bgfx::setInstanceDataBuffer(arena, arenaStart, count);
-        bgfx::submit(first.view, first.program);
+        bgfx::submit(first.view, program);
         g_counters.rigidSubmits++;
         return;
     }
@@ -840,7 +878,7 @@ void SubmitRigidGroup(const RigidQueued* group, u32 count, const bgfx::InstanceD
         }
 
         bgfx::setInstanceDataBuffer(&buffer, 0, available);
-        bgfx::submit(first.view, first.program);
+        bgfx::submit(first.view, program);
         g_counters.rigidSubmits++;
         done += available;
     }
@@ -1188,8 +1226,16 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     {
         bgfx::setUniform(g_alpha, g_noAlphaTest, 1);
     }
-    // The flat-shaded program for a shader with IIP cleared, else the interpolating one
-    bgfx::submit(view, bgfx::isValid(program) ? program : g_skinProgram);
+    // The flat-shaded program for a shader with IIP cleared, else the interpolating one; the overdraw map swaps both the
+    // program and what the draw writes, keeping the vertex shader that placed the triangles
+    bgfx::ProgramHandle drawProgram = bgfx::isValid(program) ? program : g_skinProgram;
+    if (g_overdraw)
+    {
+        u64 mapState = MarkedForCaster(state);
+        OverdrawDraw(drawProgram, mapState, true);
+        bgfx::setState(mapState);
+    }
+    bgfx::submit(view, drawProgram);
     g_counters.skinDraws++;
     return true;
 }
@@ -1280,7 +1326,14 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     bgfx::allocInstanceDataBuffer(&instances, 1, sizeof(RigidInstance));
     std::memcpy(instances.data, &instance, sizeof(instance));
     bgfx::setInstanceDataBuffer(&instances, 0, 1);
-    bgfx::submit(view, bgfx::isValid(program) ? program : g_rigidProgram);
+    bgfx::ProgramHandle stripProgram = bgfx::isValid(program) ? program : g_rigidProgram;
+    if (g_overdraw)
+    {
+        u64 mapState = state | BGFX_STATE_PT_TRISTRIP;
+        OverdrawDraw(stripProgram, mapState, false);
+        bgfx::setState(mapState);
+    }
+    bgfx::submit(view, stripProgram);
     g_counters.screenDraws++;
     return true;
 }
@@ -1293,6 +1346,16 @@ const HostDrawCounters& HostDrawCounts()
 void HostCountDraw2D()
 {
     g_counters.draw2dDraws++;
+}
+
+void HostSetOverdraw(bool on)
+{
+    g_overdraw = on;
+}
+
+bool HostOverdraw()
+{
+    return g_overdraw;
 }
 
 void HostFlushRigidInstances()

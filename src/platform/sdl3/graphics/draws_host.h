@@ -324,6 +324,14 @@ const HostDrawCounters& HostDrawCounts();
 // One 2D submit made (the draw2d's two submitters call it as they hand their quads to bgfx)
 void HostCountDraw2D();
 
+// Draws the frame's 3D geometry as an overdraw map: every triangle reaches the colour buffer and adds one step of grey (a
+// sixteenth of white, so sixteen layers are white), with the depth test off so nothing hides anything. What a pixel shows is
+// how many times the frame shaded it -- the fill a slow picture spends, a bright patch being a place drawn many times over.
+// The binds, the vertex shaders, the skinning and the instancing are the frame's own, so the map's triangles are exactly the
+// picture's. `--overdraw` on a host build, `?overdraw` on the web page
+void HostSetOverdraw(bool on);
+bool HostOverdraw();
+
 // The rigid draws held for the next one are handed to bgfx: the draws between them that are not rigid (the skin and screen model
 // paths, the frame's end) call this first, so the submission order stays the order the draws came in
 void HostFlushRigidInstances();

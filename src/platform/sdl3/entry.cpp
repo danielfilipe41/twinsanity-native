@@ -2,6 +2,7 @@
 // creates bgfx objects during startup (materials, textures), so the context must exist before Main runs.
 #include "common.h"
 #include "graphics/bgfx_context.h"
+#include "graphics/draws_host.h"
 
 #include "display_sdl.h"
 
@@ -119,6 +120,13 @@ int main(int argc, char** argv)
         if (std::strcmp(argv[index], "--skip-intro") == 0)
         {
             skipIntro = true;
+            continue;
+        }
+        // The overdraw map (draws_host.h): the picture's 3D geometry drawn as layers of grey instead of shaded, so what the
+        // frame spends its fill on is where it is bright. On every host build, the web's included
+        if (std::strcmp(argv[index], "--overdraw") == 0)
+        {
+            Platform::Graphics::HostSetOverdraw(true);
             continue;
         }
 #if defined(__EMSCRIPTEN__)

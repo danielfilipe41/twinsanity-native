@@ -10,6 +10,7 @@
 #include "shaders/fs_draw2d_gles.bin.h"
 #include "shaders/fs_draw3d_gles.bin.h"
 #include "shaders/fs_draw3dflat_gles.bin.h"
+#include "shaders/fs_overdraw_gles.bin.h"
 #include "shaders/fs_fxaa_gles.bin.h"
 #include "shaders/fs_particle_gles.bin.h"
 #include "shaders/fs_scenecomposite_gles.bin.h"
@@ -36,6 +37,7 @@
 #include "shaders/fs_draw2d.bin.h"
 #include "shaders/fs_draw3d.bin.h"
 #include "shaders/fs_draw3dflat.bin.h"
+#include "shaders/fs_overdraw.bin.h"
 #include "shaders/fs_fxaa.bin.h"
 #include "shaders/fs_particle.bin.h"
 #include "shaders/fs_scenecomposite.bin.h"
@@ -63,6 +65,7 @@
 #include "shaders/fs_draw2d_wgsl.bin.h"
 #include "shaders/fs_draw3d_wgsl.bin.h"
 #include "shaders/fs_draw3dflat_wgsl.bin.h"
+#include "shaders/fs_overdraw_wgsl.bin.h"
 #include "shaders/fs_fxaa_wgsl.bin.h"
 #include "shaders/fs_particle_wgsl.bin.h"
 #include "shaders/fs_scenecomposite_wgsl.bin.h"
@@ -89,6 +92,7 @@
 #include "shaders/fs_draw2d_spv.bin.h"
 #include "shaders/fs_draw3d_spv.bin.h"
 #include "shaders/fs_draw3dflat_spv.bin.h"
+#include "shaders/fs_overdraw_spv.bin.h"
 #include "shaders/fs_fxaa_spv.bin.h"
 #include "shaders/fs_particle_spv.bin.h"
 #include "shaders/fs_scenecomposite_spv.bin.h"
@@ -203,6 +207,8 @@ constexpr HostShaderBlobs ShaderBlobs[] = {
     {HOST_SHADER_GL_BLOB(vs_draw3dflat), vs_draw3dflat_spv, sizeof(vs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dflat) HOST_SHADER_D3D_BLOB(vs_draw3dflat)},
     {HOST_SHADER_GL_BLOB(vs_draw3dskinflat), vs_draw3dskinflat_spv, sizeof(vs_draw3dskinflat_spv) HOST_SHADER_WEBGPU_BLOB(vs_draw3dskinflat) HOST_SHADER_D3D_BLOB(vs_draw3dskinflat)},
     {HOST_SHADER_GL_BLOB(fs_draw3dflat), fs_draw3dflat_spv, sizeof(fs_draw3dflat_spv) HOST_SHADER_WEBGPU_BLOB(fs_draw3dflat) HOST_SHADER_D3D_BLOB(fs_draw3dflat)},
+    // The overdraw map's step of grey, drawn behind the same vertex shaders the 3D rows above are
+    {HOST_SHADER_GL_BLOB(fs_overdraw), fs_overdraw_spv, sizeof(fs_overdraw_spv) HOST_SHADER_WEBGPU_BLOB(fs_overdraw)},
     {HOST_SHADER_GL_BLOB(fs_shadowvolume), fs_shadowvolume_spv, sizeof(fs_shadowvolume_spv) HOST_SHADER_WEBGPU_BLOB(fs_shadowvolume) HOST_SHADER_D3D_BLOB(fs_shadowvolume)},
     {HOST_SHADER_GL_BLOB(vs_particle), vs_particle_spv, sizeof(vs_particle_spv) HOST_SHADER_WEBGPU_BLOB(vs_particle) HOST_SHADER_D3D_BLOB(vs_particle)},
     {HOST_SHADER_GL_BLOB(fs_particle), fs_particle_spv, sizeof(fs_particle_spv) HOST_SHADER_WEBGPU_BLOB(fs_particle) HOST_SHADER_D3D_BLOB(fs_particle)},

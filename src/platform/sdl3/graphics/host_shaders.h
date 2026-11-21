@@ -22,6 +22,9 @@ enum class HostShader
     Draw3DVertexFlat,
     Draw3DSkinVertexFlat,
     Draw3DFragmentFlat,
+    // The overdraw map's fragment shader: one step of grey a draw, behind the geometry's own vertex shader (fs_overdraw.sc,
+    // draws_host.cpp HostSetOverdraw)
+    OverdrawFragment,
     ShadowVolumeFragment,
     ParticleVertex,
     ParticleFragment,
