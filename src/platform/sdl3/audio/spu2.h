@@ -65,6 +65,18 @@ struct VolumeSlide
     u32 counter = 0;
     s32 level = 0;
 
+    // The rate's own numbers, worked out once per register value and phase rather than per output frame: a slide holds one rate
+    // for the thousands of frames it takes to run, and only the counter moves between them. The two fields they are made from
+    // are also the check, so a register write or a phase change can never leave a stale pair in use. Only the exponential curves'
+    // level-scaled parts and the increase's level-dependent counter shift stay per frame
+    u16 cachedValue = 0;
+    u8 cachedPhase = 0;
+    bool cached = false;
+    bool cachedClamps = true;
+    s32 cachedCounterStep = 0;
+    s32 cachedLevelStep = 0;
+    s32 cachedLevelStepRate = 0;
+
     // A plain volume register: the slide off, the level the register's own
     void Set(u16 source);
     // One output frame of the slide, if it is on
@@ -118,6 +130,11 @@ struct Envelope
         u8 shift = 0;
         s8 step = 0;
         s32 target = 0;
+        // The rate as the frame will add it, worked out by Cache() rather than per output frame: a phase runs with one rate for
+        // the hundreds of frames it takes to reach its target, and only the counter moves between them. Only the two parts the
+        // exponential curves scale with the level are left to the frame
+        s32 counterStep = 0x8000;
+        s32 levelStep = 0;
     };
 
     // The four phases after attack (attack, decay, sustain, release), read by phase's own index

@@ -2067,12 +2067,268 @@ void CheckStreams()
 }
 }
 
+// The slide's arithmetic as it ran while every frame rebuilt the rate from the register: this is the reference the cached rate
+// has to step exactly like, over the whole register space
+void ReferenceSlideStep(SdlAudio::Spu2::VolumeSlide& slide)
+{
+    if (!slide.enable)
+    {
+        return;
+    }
+
+    s32 stepSize = 7 - static_cast<s32>(slide.step);
+    if (slide.decrease)
+    {
+        stepSize = ~stepSize;
+    }
+
+    u32 counterStep = static_cast<u32>(slide.shift) > 11 ? 0x8000u >> (slide.shift - 11) : 0x8000u;
+    s32 levelStep = static_cast<s32>(stepSize) * (static_cast<u32>(slide.shift) < 11 ? (1 << (11 - slide.shift)) : 1);
+
+    if (slide.exponential)
+    {
+        if (!slide.decrease && slide.level > 0x6000)
+        {
+            counterStep >>= 2;
+        }
+
+        if (slide.decrease)
+        {
+            levelStep = static_cast<s16>((levelStep * slide.level) >> 15);
+        }
+    }
+
+    if (slide.step != 3 || slide.shift != 0x1F)
+    {
+        counterStep = counterStep < 1 ? 1 : counterStep;
+    }
+
+    slide.counter += counterStep;
+
+    if (!(slide.exponential && slide.decrease))
+    {
+        levelStep = slide.phase ? -levelStep : levelStep;
+    }
+
+    if (slide.counter >= 0x8000)
+    {
+        slide.counter = 0;
+        if (!slide.decrease)
+        {
+            slide.level = Saturate(slide.level + levelStep);
+        }
+        else
+        {
+            s32 low = slide.phase ? -32768 : 0;
+            s32 high = slide.phase ? 0 : 32767;
+            if (slide.exponential)
+            {
+                low = 0;
+                high = 32767;
+            }
+
+            const s32 moved = slide.level + levelStep;
+            slide.level = moved < low ? low : (moved > high ? high : moved);
+        }
+    }
+}
+
+// The rate is now worked out once per register value and phase. Every register the chip can hold, from four starting levels that
+// straddle the exponential increase's 0x6000 and both phases, has to step exactly as the per-frame arithmetic did: same counter,
+// same level, frame for frame
+void CheckVolumeSlideRate()
+{
+    Phase("volume slide rate");
+
+    const s32 starts[4] = {0, 0x6001, -20000, 32000};
+    s32 mismatches = 0;
+    s32 firstValue = -1;
+    s32 firstFrame = 0;
+    for (s32 registerValue = 0; registerValue <= 0xFFFF; registerValue++)
+    {
+        for (const s32 start : starts)
+        {
+            SdlAudio::Spu2::VolumeSlide cached;
+            SdlAudio::Spu2::VolumeSlide reference;
+            cached.value = static_cast<u16>(registerValue);
+            reference.value = static_cast<u16>(registerValue);
+            cached.level = start;
+            reference.level = start;
+
+            for (s32 frame = 0; frame < 256; frame++)
+            {
+                cached.Step();
+                ReferenceSlideStep(reference);
+                if (cached.counter != reference.counter || cached.level != reference.level)
+                {
+                    if (mismatches == 0)
+                    {
+                        firstValue = registerValue;
+                        firstFrame = frame;
+                    }
+                    mismatches++;
+                    break;
+                }
+            }
+        }
+    }
+
+    char detail[96];
+    if (mismatches == 0)
+    {
+        std::snprintf(detail, sizeof(detail), "(all 0x10000 registers, 256 frames each)");
+    }
+    else
+    {
+        std::snprintf(detail, sizeof(detail), "(%d mismatched, first 0x%04X at frame %d)", mismatches, firstValue, firstFrame);
+    }
+    Check("the cached rate steps exactly as the per-frame one", mismatches == 0, detail);
+}
+
+// The envelope's arithmetic as it ran while every frame rebuilt the phase's rate from the phase's own fields: the reference the
+// cached rate has to step exactly like
+bool ReferenceEnvelopeStep(SdlAudio::Spu2::Envelope& envelope)
+{
+    using Envelope = SdlAudio::Spu2::Envelope;
+    const Envelope::Cached& current = envelope.phases[envelope.phase];
+    if (envelope.phase == Envelope::Stopped)
+    {
+        envelope.level = 0;
+        return false;
+    }
+
+    u32 counterStep = static_cast<u32>(current.shift) > 11 ? 0x8000u >> (current.shift - 11) : 0x8000u;
+    s32 levelStep =
+        static_cast<s32>(current.step) * (static_cast<u32>(current.shift) < 11 ? (1 << (11 - current.shift)) : 1);
+
+    if (current.exponential)
+    {
+        if (!current.decrease && envelope.level > 0x6000)
+        {
+            counterStep >>= 2;
+        }
+
+        if (current.decrease)
+        {
+            levelStep = static_cast<s16>((levelStep * envelope.level) >> 15);
+        }
+    }
+
+    counterStep = counterStep < 1 ? 1 : counterStep;
+    envelope.counter += counterStep;
+
+    if (envelope.counter >= 0x8000)
+    {
+        envelope.counter = 0;
+        const s32 moved = envelope.level + levelStep;
+        envelope.level = moved < 0 ? 0 : (moved > SdlAudio::Spu2::FullEnvelope ? SdlAudio::Spu2::FullEnvelope : moved);
+    }
+
+    if (envelope.phase == Envelope::Sustain)
+    {
+        return envelope.level != 0;
+    }
+
+    if ((!current.decrease && envelope.level >= current.target) || (current.decrease && envelope.level <= current.target))
+    {
+        envelope.phase++;
+    }
+
+    if (envelope.phase > Envelope::Release)
+    {
+        envelope.phase = Envelope::Stopped;
+        envelope.level = 0;
+        return false;
+    }
+
+    return true;
+}
+
+// The envelope's rate is now worked out once per register write. Every one of the phase fields' combinations that matter -- every
+// shift, both curves, both directions -- from levels that straddle the exponential increase's 0x6000 has to step exactly as the
+// per-frame arithmetic did: same counter, same level, same phase, same answer about the voice
+void CheckEnvelopeRate()
+{
+    Phase("envelope rate");
+
+    const s32 starts[3] = {0, 0x6001, 0x4000};
+    u32 random = 0x2545F491u;
+    s32 mismatches = 0;
+    s32 firstValue = -1;
+    s32 firstFrame = 0;
+    // The register space is 2^33: a fixed-seed walk over it, plus every shift the four rate fields can hold, is what a proof can
+    // afford, and the fields that matter are all reachable from the walk
+    for (s32 trial = 0; trial < 60000; trial++)
+    {
+        s32 value;
+        if (trial < 1024)
+        {
+            // The first trials walk the shifts instead of the whole register: the rate's extremes are the ones a walk finds last
+            value = (trial & 0x1F) << 8 | ((trial >> 5) & 0x1F) << 16 | ((trial >> 10) & 0x1F) << 24 | 0xF;
+        }
+        else
+        {
+            random = random * 1664525u + 1013904223u;
+            value = static_cast<s32>(random);
+        }
+
+        for (const s32 start : starts)
+        {
+            SdlAudio::Spu2::Envelope cached;
+            SdlAudio::Spu2::Envelope reference;
+            cached.value = static_cast<u32>(value);
+            reference.value = static_cast<u32>(value);
+            cached.Cache();
+            reference.Cache();
+            cached.phase = SdlAudio::Spu2::Envelope::Attack;
+            reference.phase = SdlAudio::Spu2::Envelope::Attack;
+            cached.level = start;
+            reference.level = start;
+
+            for (s32 frame = 0; frame < 96; frame++)
+            {
+                const bool cachedRunning = cached.Step();
+                const bool referenceRunning = ReferenceEnvelopeStep(reference);
+                if (cachedRunning != referenceRunning || cached.counter != reference.counter || cached.level != reference.level ||
+                    cached.phase != reference.phase)
+                {
+                    if (mismatches == 0)
+                    {
+                        firstValue = value;
+                        firstFrame = frame;
+                    }
+                    mismatches++;
+                    break;
+                }
+
+                if (!cachedRunning)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    char detail[96];
+    if (mismatches == 0)
+    {
+        std::snprintf(detail, sizeof(detail), "(60000 register values, 96 frames each)");
+    }
+    else
+    {
+        std::snprintf(detail, sizeof(detail), "(%d mismatched, first 0x%08X at frame %d)", mismatches, firstValue, firstFrame);
+    }
+    Check("the cached envelope rate steps exactly as the per-frame one", mismatches == 0, detail);
+}
+
 int main()
 {
     CheckInterpolation();
     CheckAdpcm();
     CheckVolume();
+    CheckVolumeSlideRate();
     CheckEnvelope();
+    CheckEnvelopeRate();
     CheckLoops();
     CheckSaturation();
     CheckReverb();

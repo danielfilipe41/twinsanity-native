@@ -147,45 +147,54 @@ void SdlAudio::Spu2::VolumeSlide::Step()
         return;
     }
 
-    s32 stepSize = 7 - static_cast<s32>(step);
-    if (decrease)
+    // The rate's numbers, unless the register or the phase has moved since they were last worked out
+    if (!cached || cachedValue != value || cachedPhase != phase)
     {
-        stepSize = ~stepSize;
-    }
-
-    u32 counterStep = static_cast<u32>(shift) > 11 ? 0x8000u >> (shift - 11) : 0x8000u;
-    s32 levelStep = static_cast<s32>(stepSize) * (static_cast<u32>(shift) < 11 ? (1 << (11 - shift)) : 1);
-
-    if (exponential)
-    {
-        if (!decrease && level > 0x6000)
-        {
-            counterStep >>= 2;
-        }
-
+        s32 stepSize = 7 - static_cast<s32>(step);
         if (decrease)
         {
-            levelStep = static_cast<s16>((levelStep * level) >> 15);
+            stepSize = ~stepSize;
         }
+
+        const s32 counterStep = static_cast<u32>(shift) > 11 ? static_cast<s32>(0x8000u >> (shift - 11)) : 0x8000;
+        const s32 levelStep =
+            static_cast<s32>(stepSize) * (static_cast<u32>(shift) < 11 ? (1 << (11 - shift)) : 1);
+
+        cachedCounterStep = counterStep;
+        // A negative phase counts its level up to -0x8000 and down towards 0, unless the exponential decrease is what moves it
+        cachedLevelStepRate = levelStep;
+        cachedLevelStep = (exponential && decrease) || !phase ? levelStep : -levelStep;
+        // The counter stands still only when every bit of the rate is set: the slide is then over rather than never ending
+        cachedClamps = step != 3 || shift != 0x1F;
+        cachedValue = value;
+        cachedPhase = phase;
+        cached = true;
     }
 
-    // The counter stands still only when every bit of the rate is set: the slide is then over rather than never ending
-    if (step != 3 || shift != 0x1F)
+    // The two parts of the rate the level itself decides: an exponential increase only takes a quarter counter step once it is
+    // past 0x6000, and an exponential decrease scales the level step by the level reached, which this frame's overflow is the
+    // only thing that changes
+    s32 counterStep = cachedCounterStep;
+    if (exponential && !decrease && level > 0x6000)
     {
-        counterStep = counterStep < 1 ? 1 : counterStep;
+        counterStep >>= 2;
     }
-
-    counter += counterStep;
-
-    // A negative phase counts its level up to -0x8000 and down towards 0, unless the exponential decrease is what moves it
-    if (!(exponential && decrease))
+    if (cachedClamps && counterStep < 1)
     {
-        levelStep = phase ? -levelStep : levelStep;
+        counterStep = 1;
     }
+
+    counter += static_cast<u32>(counterStep);
 
     if (counter >= 0x8000)
     {
         counter = 0;
+        s32 levelStep = cachedLevelStep;
+        if (exponential && decrease)
+        {
+            levelStep = static_cast<s16>((cachedLevelStepRate * level) >> 15);
+        }
+
         if (!decrease)
         {
             level = Clamp16(level + levelStep);
@@ -237,6 +246,18 @@ void SdlAudio::Spu2::Envelope::Cache()
     phases[Release].shift = static_cast<u8>(releaseShift);
     phases[Release].step = -8;
     phases[Release].target = 0;
+
+    // Each phase's rate, as the frame will add it: the same arithmetic Step used to do every output frame, done once per
+    // register write instead. The rate field picks how often the level moves against how far it moves: every step of the shift
+    // doubles one and halves the other, so the rate as a whole is four steps per doubling
+    for (u32 index = Attack; index <= Release; index++)
+    {
+        Cached& entry = phases[index];
+        entry.counterStep =
+            static_cast<u32>(entry.shift) > 11 ? static_cast<s32>(0x8000u >> (entry.shift - 11)) : 0x8000;
+        entry.levelStep =
+            static_cast<s32>(entry.step) * (static_cast<u32>(entry.shift) < 11 ? (1 << (11 - entry.shift)) : 1);
+    }
 }
 
 bool SdlAudio::Spu2::Envelope::Step()
@@ -248,32 +269,31 @@ bool SdlAudio::Spu2::Envelope::Step()
         return false;
     }
 
-    // The rate field picks how often the level moves against how far it moves: every step of the shift doubles one and
-    // halves the other, so the rate as a whole is four steps per doubling
-    u32 counterStep = static_cast<u32>(current.shift) > 11 ? 0x8000u >> (current.shift - 11) : 0x8000u;
-    s32 levelStep = static_cast<s32>(current.step) * (static_cast<u32>(current.shift) < 11 ? (1 << (11 - current.shift)) : 1);
-
-    if (current.exponential)
+    // The phase's rate, as Cache() worked it out, and the two parts of it the level itself decides: rising exponentially is
+    // slow at first and quick near the top, so the counter only takes a quarter step past 0x6000; falling exponentially covers
+    // less and less ground, so the level step scales with the level reached
+    s32 counterStep = current.counterStep;
+    if (current.exponential && !current.decrease && level > 0x6000)
     {
-        // Rising exponentially is slow at first and quick near the top; falling exponentially covers less and less ground
-        if (!current.decrease && level > 0x6000)
-        {
-            counterStep >>= 2;
-        }
-
-        if (current.decrease)
-        {
-            levelStep = static_cast<s16>((levelStep * level) >> 15);
-        }
+        counterStep >>= 2;
     }
 
     // A rate of nothing would hold the voice for good, so the counter always takes at least one step
-    counterStep = counterStep < 1 ? 1 : counterStep;
-    counter += counterStep;
+    if (counterStep < 1)
+    {
+        counterStep = 1;
+    }
+    counter += static_cast<u32>(counterStep);
 
     if (counter >= 0x8000)
     {
         counter = 0;
+        s32 levelStep = current.levelStep;
+        if (current.exponential && current.decrease)
+        {
+            levelStep = static_cast<s16>((levelStep * level) >> 15);
+        }
+
         s32 moved = level + levelStep;
         level = moved < 0 ? 0 : (moved > FullEnvelope ? FullEnvelope : moved);
     }
