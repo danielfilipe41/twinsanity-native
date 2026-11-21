@@ -312,6 +312,14 @@ struct HostDrawCounters
     u32 rigidBlended;
     // The submissions those draws actually made: the instanced batch's, which is what the draw count falls to
     u32 rigidSubmits;
+    // The queue flushes behind those submissions, and the ones a blended draw's own place in the frame ordered (the draw that comes
+    // after a held run has to be submitted after it, so it cuts the run in two). Their difference is what the frame's own order costs
+    // the batch, which is the headroom no reordering can take without changing the picture
+    u32 rigidFlushes;
+    u32 rigidFlushBlended;
+    // How many skin packets the frame parsed: the cache's misses. A shaped blend skin's draw is the one caller that gives no vertex
+    // budget, so a parse count that keeps up with the skin draws is a cache check that never matched (see HostDrawSkinPacket)
+    u32 skinParses;
     // The strip models (the skid marks): parsed from the game's own vertex bytes, no packet, so their own count
     u32 screenDraws;
     // The 2D batch's submits: one per material and view the quads were flushed in, from the draw2d module's own submitters

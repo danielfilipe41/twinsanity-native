@@ -129,15 +129,14 @@ int main(int argc, char** argv)
             Platform::Graphics::HostSetOverdraw(true);
             continue;
         }
-#if defined(__EMSCRIPTEN__)
-        // The page cannot set a variable for the run it starts, and its log is where the frame's numbers are read: the flag
-        // turns on the line graphics.cpp prints once a second (the same one TWINSANITY_FRAME_LOG does)
+        // The flag turns on the line graphics.cpp prints once a second (the same one TWINSANITY_FRAME_LOG does), so a run
+        // started by a launcher or the web page can ask for it without a variable of its own. Every host takes it: a build
+        // that ignored it would hand it to the game as an argument, which reads it as the disc's path
         if (std::strcmp(argv[index], "--frame-log") == 0)
         {
             setenv("TWINSANITY_FRAME_LOG", "1", 1);
             continue;
         }
-#endif
         argv[count++] = argv[index];
     }
     argc = count;

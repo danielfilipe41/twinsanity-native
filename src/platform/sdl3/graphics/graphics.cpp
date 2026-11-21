@@ -802,6 +802,16 @@ struct FrameStats
     u32 repeats;
     u32 blended;
     u32 submits;
+    u32 flushes;
+    u32 flushBlended;
+    u32 parses;
+    // The transient vertex buffer's headroom left at the frame's last submit, in KB: the largest usage a frame has made is the
+    // capacity (bgfx logs it) minus the smallest this ever is, which is the number the cap in BgfxInit should sit just above
+    u32 transientFreeKb;
+    u32 transientFreeLeastKb;
+    u32 flushesTotal;
+    u32 flushBlendedTotal;
+    u32 parsesTotal;
     u32 submitsTotal;
     u32 packetsTotal;
     u32 repeatsTotal;
@@ -839,7 +849,13 @@ void ShowFrameStats(const bgfx::Stats* stats)
     g_frameStats.repeats = counts.rigidRepeats - g_frameStats.repeatsTotal;
     g_frameStats.blended = counts.rigidBlended - g_frameStats.blendedTotal;
     g_frameStats.submits = counts.rigidSubmits - g_frameStats.submitsTotal;
+    g_frameStats.flushes = counts.rigidFlushes - g_frameStats.flushesTotal;
+    g_frameStats.flushBlended = counts.rigidFlushBlended - g_frameStats.flushBlendedTotal;
+    g_frameStats.parses = counts.skinParses - g_frameStats.parsesTotal;
     g_frameStats.submitsTotal = counts.rigidSubmits;
+    g_frameStats.flushesTotal = counts.rigidFlushes;
+    g_frameStats.flushBlendedTotal = counts.rigidFlushBlended;
+    g_frameStats.parsesTotal = counts.skinParses;
     g_frameStats.packetsTotal = counts.rigidPackets;
     g_frameStats.repeatsTotal = counts.rigidRepeats;
     g_frameStats.blendedTotal = counts.rigidBlended;
@@ -869,6 +885,18 @@ void ShowFrameStats(const bgfx::Stats* stats)
                              : 0.0f;
     g_frameStats.draws = stats->numDraw;
 
+    // What the frame left of the transient vertex buffer. bgfx hands the recording of that buffer its own limit back, and
+    // getAvailInstanceDataBuffer is that limit minus what the frame has asked for so far (the stride is a byte), so asking for
+    // more than any limit returns the headroom itself. BgfxInit creates the buffer at that limit and bgfx orphans the whole of
+    // it every frame, which is why the limit is a per-frame cost and not just a ceiling -- the smallest headroom a run of real
+    // play leaves is what the limit has to cover, and anything above it is paid for every frame
+    const u32 transientFree = bgfx::getAvailInstanceDataBuffer(8u << 20, 1);
+    g_frameStats.transientFreeKb = transientFree / 1024;
+    if (g_frameStats.transientFreeLeastKb == 0 || g_frameStats.transientFreeKb < g_frameStats.transientFreeLeastKb)
+    {
+        g_frameStats.transientFreeLeastKb = g_frameStats.transientFreeKb;
+    }
+
     // The same numbers once a second in the log, for a run that is read back rather than watched (and for a report): a normal
     // run prints nothing, so the line is behind its own flag (TWINSANITY_FRAME_LOG=1), apart from the picture's (TWINSANITY_FPS)
     // The packet draws named, and whatever the total has left: the passes and the batched paths, which is where a draw count worth
@@ -883,11 +911,14 @@ void ShowFrameStats(const bgfx::Stats* stats)
         const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
         std::fprintf(stderr,
                      "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u "
-                     "passes %u) packets %u repeats %u blended %u submits %u views %u tris %d textures %d programs %d\n",
+                     "passes %u) packets %u repeats %u blended %u submits %u flushes %u/%u parses %u views %u tris %d textures %d "
+                     "programs %d tfree %u KB least %u\n",
                      g_frameCounter, g_frameStats.fps, g_frameStats.stepsPerSecond, g_frameStats.cpuMs, g_frameStats.gpuMs,
                      g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
-                     g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, stats->numViews,
-                     stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms);
+                     g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.submits, g_frameStats.flushes,
+                     g_frameStats.flushBlended, g_frameStats.parses, stats->numViews,
+                     stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms,
+                     g_frameStats.transientFreeKb, g_frameStats.transientFreeLeastKb);
     }
 
     g_frameStats.frames = 0;
@@ -1379,7 +1410,11 @@ void Platform::Graphics::FinishFrame()
     // (TWINSANITY_FPS=1); the once-a-second log line stays either way
     static const bool shown = [] {
         const char* value = std::getenv("TWINSANITY_FPS");
-        return value != nullptr && std::strcmp(value, "0") != 0;
+        const bool on = value != nullptr && std::strcmp(value, "0") != 0;
+        // The corner text is the only thing the debug text is for. Left on, bgfx builds and blits the text's quads every frame
+        // whether anything was written or not (0.7% of a frame, measured), so the flag follows the text
+        bgfx::setDebug(on ? BGFX_DEBUG_TEXT : BGFX_DEBUG_NONE);
+        return on;
     }();
     g_frameStats.shown = shown;
     ShowFrameStats(bgfx::getStats());
@@ -2237,6 +2272,12 @@ GameTexture* Platform::Graphics::NewTexture(u32 id)
 // A draw resolved this material: it's still in use, so it leaves the quarantine last (see the quarantine's note above)
 void Platform::Graphics::TouchFreedMaterial(const void* host)
 {
+    // Nothing is quarantined in a normal frame, so the lookup -- one per 3D and 2D draw -- has nothing to find
+    if (g_freedByHost.empty())
+    {
+        return;
+    }
+
     const auto found = g_freedByHost.find(host);
     if (found != g_freedByHost.end())
     {
