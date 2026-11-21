@@ -91,6 +91,14 @@
             color: rgba(240, 240, 235, .8); font: 11px/1.2 Consolas, "Cascadia Mono", Menlo, monospace; cursor: pointer; }
   #expand:hover { background: rgba(8, 8, 12, .75); }
   body.playing #expand { display: block; }
+  /* The log's own send, for a run watched on a phone whose log cannot be copied out by hand */
+  #send { display: none; position: fixed; right: calc(6.2rem + env(safe-area-inset-right));
+          top: calc(.5rem + env(safe-area-inset-top)); z-index: 5; margin: 0; padding: .3rem .55rem;
+          border: 1px solid rgba(240, 240, 235, .22); border-radius: .3rem; background: rgba(8, 8, 12, .5);
+          color: rgba(240, 240, 235, .8); font: 11px/1.2 Consolas, "Cascadia Mono", Menlo, monospace; cursor: pointer; }
+  #send:hover { background: rgba(8, 8, 12, .75); }
+  body.playing #send { display: block; }
+  body.touch #send { display: none; }
   /* A touch screen has this switch with its layout's controls instead */
   body.touch #expand { display: none; }
   /* A touch screen has no F3 key: its switch is the log button by the layout's gear */
@@ -200,6 +208,7 @@
 <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 <pre id="log"></pre>
 <button type="button" id="hint" title="The run's log: F3, or the backquote key">log</button>
+<button type="button" id="send" title="Send this run's log to the server it came from" aria-label="Send the log">send</button>
 <button type="button" id="expand" title="Fullscreen: the picture and its controls" aria-label="Fullscreen">&#9974;</button>
 <div id="touch">
   <div class="stick" id="stick"><div class="knob" id="stick-knob"></div></div>
@@ -224,6 +233,7 @@
   <button type="button" id="touch-edit" aria-label="Move the touch controls">&#9881;</button>
   <button type="button" id="touch-reset" aria-label="Put the touch controls back">&#8634;</button>
   <button type="button" id="touch-expand" aria-label="Fullscreen">&#9974;</button>
+  <button type="button" id="touch-send" aria-label="Send the log">send</button>
   <button type="button" id="touch-log" aria-label="The run's log">log</button>
 </div>
 <div id="touch-panel">
@@ -273,6 +283,19 @@
     } else {
       showLog();
     }
+  }
+
+  // The log sent to the server the page came from: a run watched on a phone has no way to copy the log panel out, and the
+  // frame's numbers are what a slow picture is judged by. The host (tools/web_host.py) writes it beside the build; a static
+  // host has nowhere to put it, and the button says so
+  function sendLog() {
+    var body = lines.join('\n');
+    report('sending the log: ' + lines.length + ' lines');
+    fetch('report', { method: 'POST', body: body }).then(function (response) {
+      report(response.ok ? 'log sent: ' + body.length + ' bytes' : 'log not sent: ' + response.status);
+    }, function (error) {
+      report('log not sent: ' + error);
+    });
   }
 
   // The log, asked for and put away again. Capture, so the game's own key handling (SDL's, on the canvas) does not take the
@@ -363,6 +386,7 @@
 
   document.getElementById('expand').addEventListener('click', toggleFullscreen);
   document.getElementById('touch-expand').addEventListener('click', toggleFullscreen);
+  document.getElementById('send').addEventListener('click', sendLog);
 
   var reportedError = false;
   window.addEventListener('error', function (event) {
@@ -846,6 +870,11 @@
         // second, which is what a report of a slow picture is made of
         if (/[?&]stats\b/.test(location.search)) {
           args.push('--frame-log');
+        }
+        // ?overdraw draws the 3D geometry as an overdraw map -- a layer a sixteenth of white, depth off -- instead of shaded, so
+        // a bright patch on the screen is a place the frame drew many times over (draws_host.h HostSetOverdraw)
+        if (/[?&]overdraw\b/.test(location.search)) {
+          args.push('--overdraw');
         }
         report('starting the game with ' + args.join(' '));
         // Added, not set: the touch controls' class is already there on a device that wants them
@@ -1628,6 +1657,7 @@
 
     // The log, for a screen with no F3 key to ask with
     document.getElementById('touch-log').addEventListener('click', toggleLog);
+    document.getElementById('touch-send').addEventListener('click', sendLog);
   })();
 </script>
 {{{ SCRIPT }}}

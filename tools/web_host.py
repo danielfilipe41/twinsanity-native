@@ -138,6 +138,22 @@ class Handler(BaseHTTPRequestHandler):
             # The page navigated away or the game stopped reading: nothing left to send
             pass
 
+    def do_POST(self):
+        # A run's log, sent by the page's own button: a phone's log panel cannot be copied out by hand mid-run, and the frame
+        # numbers a slow picture is judged by are in it. The body is what the page had in the log, written beside the build
+        if urllib.parse.urlparse(self.path).path != "/report":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length > 0 else b""
+        target = Path(self.server.report_path)
+        with open(target, "w", encoding="utf-8", errors="replace") as file:
+            file.write(body.decode("utf-8", "replace"))
+        sys.stderr.write(f"report: {len(body)} bytes from {self.client_address[0]} -> {target}\n")
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, format, *args):
         sys.stderr.write("%s %s\n" % (self.log_date_time_string(), format % args))
 
@@ -171,6 +187,8 @@ def main() -> int:
     handler = type("BoundHandler", (Handler,), {"root": root, "image": FindImage(root, args.iso)})
 
     server = ThreadingHTTPServer((args.bind, args.port), handler)
+    # Where a run's log lands when the page's button sends it (Handler.do_POST)
+    server.report_path = root / "report.txt"
     shown = "localhost" if args.bind in ("127.0.0.1", "0.0.0.0") else args.bind
     print(f"serving {root}")
     if handler.image is not None:
