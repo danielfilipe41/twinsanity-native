@@ -9,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -178,18 +179,10 @@ void Worker(Channel* channel)
     }
 }
 
-// Hands a read to a channel (waiting for the previous one, as a channel reads one thing at a time)
-void Submit(s32 channel, ReadJob job)
+// A read run on the calling thread, the way a page's is: the channel is marked busy for as long as it takes, so IsReading and
+// Wait answer the same as they would with a worker behind them
+void ReadNow(Channel* state, ReadJob& job)
 {
-    Channel* state = ChannelAt(channel);
-    if (state == nullptr)
-    {
-        return;
-    }
-
-#if defined(__EMSCRIPTEN__)
-    // The web build has no pthreads (a page's wasm cannot start one without the page being cross-origin isolated), and the
-    // page's file system reads are already on this thread: the read runs now, where a channel's worker would run it
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         state->job = std::move(job);
@@ -203,7 +196,42 @@ void Submit(s32 channel, ReadJob job)
         state->busy = false;
         state->activeFile = -1;
     }
+}
+
+// Whether a channel's reads run on the calling thread instead of a worker: on by necessity on the web (a page's wasm cannot
+// start a thread without the page being cross-origin isolated) and by request on a desktop build, through
+// TWINSANITY_STREAM_INLINE, so the stutter a page shows when it reaches a new area is reproducible where the frame log can
+// measure it. A local file read of a few hundred KB is not what such a frame spends, so the desktop keeps the part that matters
+// (the parse and upload the read unblocks) even with the disc's speed out of the picture
+bool InlineReads()
+{
+#if defined(__EMSCRIPTEN__)
+    return true;
 #else
+    static const bool inlineReads = [] {
+        const char* value = std::getenv("TWINSANITY_STREAM_INLINE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return inlineReads;
+#endif
+}
+
+// Hands a read to a channel (waiting for the previous one, as a channel reads one thing at a time)
+void Submit(s32 channel, ReadJob job)
+{
+    Channel* state = ChannelAt(channel);
+    if (state == nullptr)
+    {
+        return;
+    }
+
+    if (InlineReads())
+    {
+        ReadNow(state, job);
+        return;
+    }
+
+#if !defined(__EMSCRIPTEN__)
     std::unique_lock<std::mutex> lock(state->mutex);
     state->ready.wait(lock, [state] { return !state->busy; });
     state->job = std::move(job);

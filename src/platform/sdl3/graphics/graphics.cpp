@@ -914,6 +914,24 @@ void ShowFrameStats(const bgfx::Stats* stats)
     {
         const u32 packets = g_frameStats.submits + g_frameStats.skin + g_frameStats.screen + g_frameStats.draw2d;
         const u32 other = g_frameStats.draws > packets ? g_frameStats.draws - packets : 0;
+        // bgfx reports a stat entry for each view AND kind of work submitted to it rather than a view count, so the count is
+        // the distinct views among them (the frame uses one view and the shadow and overlay passes reuse it)
+        u32 views = 0;
+        bgfx::ViewId viewIds[8];
+        for (u32 entry = 0; entry < stats->numViewStats && views < 8; entry++)
+        {
+            const bgfx::ViewId view = stats->viewStats[entry].view;
+            bool known = false;
+            for (u32 seen = 0; seen < views; seen++)
+            {
+                known = known || viewIds[seen] == view;
+            }
+
+            if (!known)
+            {
+                viewIds[views++] = view;
+            }
+        }
         std::fprintf(stderr,
                      "host frame %u: fps %.1f steps %.0f cpu %.2f ms gpu %.2f ms draws %u (rigid %u skin %u screen %u 2d %u "
                      "passes %u) packets %u repeats %u blended %u plain %u submits %u flushes %u/%u parses %u views %u tris %d textures %d "
@@ -922,7 +940,7 @@ void ShowFrameStats(const bgfx::Stats* stats)
                      g_frameStats.draws, g_frameStats.rigid, g_frameStats.skin, g_frameStats.screen, g_frameStats.draw2d, other,
                      g_frameStats.packets, g_frameStats.repeats, g_frameStats.blended, g_frameStats.plain, g_frameStats.submits,
                      g_frameStats.flushes,
-                     g_frameStats.flushBlended, g_frameStats.parses, stats->numViews,
+                     g_frameStats.flushBlended, g_frameStats.parses, views,
                      stats->numPrims[bgfx::Topology::TriList], stats->numTextures, stats->numPrograms,
                      g_frameStats.transientFreeKb, g_frameStats.transientFreeLeastKb);
     }

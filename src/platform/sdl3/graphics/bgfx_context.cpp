@@ -246,15 +246,14 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
     init.swapChain.width = static_cast<std::uint16_t>(g_backbufferWidth);
     init.swapChain.height = static_cast<std::uint16_t>(g_backbufferHeight);
     // The frame's transient vertex space: what the rigid draws' instance data, the particles, the decals and the 2D batches go
-    // through before bgfx copies them to the GPU once a frame. bgfx creates the buffer AT this size and orphans all of it every
-    // frame (delete, create, then copy what the frame used), so the size is a per-frame cost and not just a ceiling: a picture
-    // that spends 300 KB a frame was paying 175 us for the 2 MB, the heaviest frame measured (a boss arena, 2203 rigid draws)
-    // leaving 1749 of 2048 KB free. Three of bgfx's defaults' worth of slack were not buying anything. 768 KB is two and a half
-    // times what any frame measured has asked for, and every draw checks the space it is handed before writing into it, so a
-    // frame that ever did run out loses that draw rather than writing past the buffer (the frame log's `tfree ... least ...`
-    // says when that has happened: it is the space the frame left, and a `least` near zero is a cap too small rather than a
-    // scene that fits)
-    init.limits.maxTransientVbSize = 768 << 10;
+    // through before bgfx copies them to the GPU once a frame. bgfx orphans all of it every frame (delete, create, then copy
+    // what the frame used), so its size is a per-frame cost and not just a floor: a picture that spends 300 KB a frame was
+    // paying 175 us for the 2 MB, the heaviest frame measured (a boss arena, 2203 rigid draws) leaving 1749 of 2048 KB free.
+    // Three of bgfx's defaults' worth of slack were not buying anything. 768 KB is two and a half times what any frame measured
+    // has asked for; bgfx grows the buffer on demand past this size now rather than capping it, which is the better of the two,
+    // and every draw still checks the space it is handed before writing into it (the frame log's `tfree ... least ...` says how
+    // close a frame came to the size it started with)
+    init.limits.minTransientVbSize = 768 << 10;
 
 #if defined(__EMSCRIPTEN__)
     // The page's canvas: bgfx's WebGL backend takes a context (made on the canvas its swap chain names) and its WebGPU one
@@ -309,7 +308,7 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
                  caps->originBottomLeft ? "bottom" : "top");
     // The transient vertex space the frame's instance data, particles, decals and 2D batches share (see the init's limit): a run
     // that ever outgrew it loses the draws that no longer fit, so the size is in the log beside the renderer
-    std::fprintf(stderr, "bgfx: transient vertex space %u KB\n", bgfx::getCaps()->limits.maxTransientVbSize >> 10);
+    std::fprintf(stderr, "bgfx: transient vertex space %u KB\n", bgfx::getCaps()->limits.minTransientVbSize >> 10);
     // What the frame's picture goes through, so a log says which antialiasing drew it (the settings file's antialias line)
     const AntiAlias antiAliasing = HostAntiAliasing();
     switch (antiAliasing)

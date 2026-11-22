@@ -181,7 +181,13 @@ def bgfx_flags():
     """bgfx+bx+bimg compile and link flags for a 32-bit host build. The libraries are built once from third_party/
     (bgfx's GENie flow: genie --gcc=linux-gcc gmake, then make config=release32 in third_party/bgfx/.build/projects/
     gmake-linux-gcc; the toolchain script already passes -m32 for the x32 platform) into .build/linux32_gcc/bin;
-    SDL3 headers come from third_party/SDL, the link from the system's 32-bit SDL3."""
+    SDL3 headers come from third_party/SDL, the link from the system's 32-bit SDL3.
+
+    CXXFLAGS=-malign-double must be passed to that make, because it is what this game is compiled with (and what the MIPS ABI
+    needs): bgfx::Init holds a uint64_t member, so a library laid out with i386's 4-byte alignment puts every field after it
+    four bytes early, and bgfx then reads the game's callback as its allocator and aborts in bx::alloc before the first frame.
+    bimg needs CXXFLAGS/CFLAGS=-DASTCENC_POPCNT=0 as well: its astc-encoder calls _mm_popcnt_u64, which GCC declares only for
+    x86-64, so a 32-bit build of it does not compile otherwise."""
     bgfx_lib = HERE / "third_party" / "bgfx" / ".build" / "linux32_gcc" / "bin"
     cflags = ["-DBX_CONFIG_DEBUG=0",
               "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include",
