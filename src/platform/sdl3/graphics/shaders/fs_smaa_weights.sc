@@ -118,8 +118,8 @@ vec2 AreaDiag(vec2 dist, vec2 e, float offset)
 // Both diagonals' weights, in the same two-pass shape as the reference: the "/" diagonal first, then the "\" one
 vec2 CalculateDiagWeights(vec2 uv, vec2 e)
 {
-    vec2 weights = vec2(0.0);
-    vec4 d = vec4(0.0);
+    vec2 weights = vec2(0.0, 0.0);
+    vec4 d = vec4(0.0, 0.0, 0.0, 0.0);
     vec2 end;
 
     if (e.x > 0.0)
@@ -152,7 +152,7 @@ vec2 CalculateDiagWeights(vec2 uv, vec2 e)
     }
     else
     {
-        d.yw = vec2(0.0);
+        d.yw = vec2(0.0, 0.0);
     }
 
     if (d.x + d.y > 2.0)
@@ -176,8 +176,8 @@ float SearchLength(vec2 e, float offset)
     vec2 bias = SMAA_SEARCHTEX_SIZE * vec2(offset, 1.0);
     scale += vec2(-1.0, 1.0);
     bias += vec2(0.5, -0.5);
-    scale *= vec2(1.0) / SMAA_SEARCHTEX_PACKED_SIZE;
-    bias *= vec2(1.0) / SMAA_SEARCHTEX_PACKED_SIZE;
+    scale *= vec2(1.0, 1.0) / SMAA_SEARCHTEX_PACKED_SIZE;
+    bias *= vec2(1.0, 1.0) / SMAA_SEARCHTEX_PACKED_SIZE;
     return SearchSample(scale * e + bias);
 }
 
@@ -288,7 +288,7 @@ void main()
     offset2 = vec4(offset2.x * texel.x, offset2.y * texel.x, offset2.z * texel.y, offset2.w * texel.y) +
               vec4(offset0.xz, offset1.yw);
 
-    vec4 weights = vec4(0.0);
+    vec4 weights = vec4(0.0, 0.0, 0.0, 0.0);
     vec2 e = EdgesSample(v_texcoord0);
 
     // A horizontal edge (g) runs along x: its span is walked left and right

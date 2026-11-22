@@ -26,9 +26,13 @@ uniform vec4 u_material[2];
 
 void main()
 {
-    // The four vec4s are the model-to-clip matrix's columns: exactly the bytes a mat4 uniform took, now one per instance
-    mat4 mvp = mat4(i_data0, i_data1, i_data2, i_data3);
-    gl_Position = mul(mvp, vec4(a_position, 1.0));
+    // The four vec4s are the model-to-clip matrix's columns: exactly the bytes a mat4 uniform took, now one per instance.
+    // The product is written out as a weighted sum rather than built as mat4(i_data0, i_data1, i_data2, i_data3) and
+    // multiplied, because the two languages fill a matrix constructor differently: GLSL's fills columns, HLSL's fills
+    // rows. A Direct3D build of the constructor drew the transpose, which smeared every rigid mesh the level draws across
+    // the near plane. A sum of the columns scaled by the vertex's own lanes says the same thing in either language
+    vec4 position = vec4(a_position, 1.0);
+    gl_Position = i_data0 * position.x + i_data1 * position.y + i_data2 * position.z + i_data3 * position.w;
     // i_data4-6 carry the scene light directions already rotated into model space once per instance by the host. Computing this
     // transform per model instead of for every vertex removes nine multiplies and six adds per directional light per vertex.
     vec3 normal = normalize(a_normal.xyz * 2.0 - 1.0);
@@ -42,10 +46,10 @@ void main()
     // full light over a full ambient runs past white and only the target clamps
     // The material's colour scales the lit colour for the one type whose program does that (0x1F) and not at all for
     // every other material, whose draws leave the uniform's flag lane zero
-    vec3 lit = min(a_color0.rgb * light, vec3(1.0));
+    vec3 lit = min(a_color0.rgb * light, vec3(1.0, 1.0, 1.0));
     if (u_material[1].w != 0.0)
     {
-        lit = min(lit * u_material[1].rgb, vec3(1.0));
+        lit = min(lit * u_material[1].rgb, vec3(1.0, 1.0, 1.0));
     }
     v_color0 = vec4(lit, a_color0.a);
 }

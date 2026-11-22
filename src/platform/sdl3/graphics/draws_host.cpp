@@ -762,6 +762,10 @@ void HostModelClipMatrix(const Matrix4x4* world, const Matrix4x4* toScreen, Matr
                                   world->m[row][3] * toScreen->m[3][column];
         }
     }
+
+    // This is the game's matrix as it stands. The clip space of the renderer drawing it is the draws' business, not this
+    // helper's: not every 3D draw comes through here (the shadow volumes and the sky compose their own), so ClipSpaceDepth
+    // puts the depth range in at the point a draw uploads its matrix
 }
 
 // One instance of a rigid packet: the draw's model-to-clip matrix and nothing else. The light set stays the submit's uniform (a group
@@ -1040,6 +1044,34 @@ void FlushRigidQueue()
     g_rigidQueueKind = RigidKindNone;
 }
 
+namespace
+{
+// A model-to-clip matrix as the renderer's clip space takes it. The game's projection is OpenGL's: its clip-space z runs
+// -w..w, where Direct3D, Vulkan and the web's WebGPU take 0..w and clip everything under 0 (bgfx names the difference
+// Caps::homogeneousDepth, which only its GL family answers true for). bgfx converts the matrices it builds itself and
+// passes an application's own through unchanged, so the depth half of clip space has to be put in here: z' = (z + w) / 2,
+// which in this row-major, row-vector matrix is each row's z column taking half of itself plus half of its w column.
+//
+// It belongs here rather than in HostModelClipMatrix because three kinds of draw hand their own matrix in: the 3D loops
+// through that helper, the shadow volumes' scaled ones and the sky's, which the game layer composes itself. A Direct3D
+// build that converted only the helper's drew the level and clipped the volumes away entirely -- so a character had no
+// shadow while the ground under it did -- and its sky was cut short too
+Matrix4x4 ClipSpaceDepth(const Matrix4x4& mvp)
+{
+    if (Platform::Graphics::HostHomogeneousDepth())
+    {
+        return mvp;
+    }
+
+    Matrix4x4 fixed = mvp;
+    for (u32 row = 0; row < 4; row++)
+    {
+        fixed.m[row][2] = 0.5f * (fixed.m[row][2] + fixed.m[row][3]);
+    }
+    return fixed;
+}
+}
+
 bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, const Matrix4x4* mvp,
                          const Matrix4x4* world, const ModelLights* lights, bgfx::TextureHandle texture,
                          bgfx::ViewId view, u64 state, const f32* alphaRef, u32 blendFactor,
@@ -1049,6 +1081,10 @@ bool HostDrawRigidPacket(const u8* packet, u32 packetSize, u32 vertexCount, cons
     {
         return false;
     }
+
+    // This renderer's clip space, on a copy: the matrix the caller holds is its own
+    const Matrix4x4 clipMvp = ClipSpaceDepth(*mvp);
+    mvp = &clipMvp;
 
     MakeShared();
     MakeEntries();
@@ -1240,6 +1276,10 @@ bool HostDrawSkinPacket(const u8* packet, u32 packetSize, u32 vertexCount, u32 s
     {
         return false;
     }
+
+    // This renderer's clip space, on a copy (see ClipSpaceDepth)
+    const Matrix4x4 clipMvp = ClipSpaceDepth(*mvp);
+    mvp = &clipMvp;
 
     // A blend skin part with shapes the draw gives a weight: this frame's
     // offsets bake into a copy of the parsed vertexes, so the draw cannot use
@@ -1479,6 +1519,10 @@ bool HostDrawScreenModel(const HostScreenModel* model, const Matrix4x4* mvp, bgf
     {
         return false;
     }
+
+    // This renderer's clip space, on a copy (see ClipSpaceDepth)
+    const Matrix4x4 clipMvp = ClipSpaceDepth(*mvp);
+    mvp = &clipMvp;
 
     FlushRigidQueue();
     MakeShared();

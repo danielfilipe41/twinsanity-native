@@ -755,9 +755,14 @@ void DrawParticleBlock(u8* block, u8* table, const Matrix4x4* matrix, Material* 
     // 1 / (the display's half width in 1/16th-pixel units) and the same for the height, then the middle the game's
     // coordinates are around (2048 pixels) and 1 / the GS depth range, which the shader takes the GS depth back to the
     // scene's own clip z with
+    // The depth factor halves on a renderer whose clip space is 0..w (Direct3D, Vulkan, WebGPU): the shader's
+    // depth = w - z * k is OpenGL's -w..w clip z, and halving k is exactly the z' = (z + w) / 2 fold (draws_host.cpp's
+    // ClipSpaceDepth) written into it -- w - z * k/2 = (w + (w - z * k)) / 2. Unhalved, a Direct3D build put every
+    // particle's depth in front of whatever it hung over, which is how the effects came through walls
+    const f32 depthScale = Platform::Graphics::HostHomogeneousDepth() ? 1.0f : 0.5f;
     const f32 uniform[4] = {2.0f / (static_cast<f32>(HostDisplayWidth()) * GsUnitsPerPixel),
                             2.0f / (static_cast<f32>(HostDisplayHeight()) * GsUnitsPerPixel), GsScreenMiddleUnits,
-                            1.0f / GsDepthRange};
+                            depthScale / GsDepthRange};
 
     bgfx::setViewMode(HostParticlesView, bgfx::ViewMode::Sequential);
     HostSceneSetView(HostParticlesView);
@@ -972,7 +977,20 @@ bool SubmitDecals(DecalData* decals, u32 key, const StqVertex* vertices, u32 cou
 
     bgfx::TransientVertexBuffer buffer;
     bgfx::allocTransientVertexBuffer(&buffer, count, StqLayout());
-    std::memcpy(buffer.data, vertices, count * sizeof(StqVertex));
+    // Copied rather than memcpy'd when the renderer's clip space is 0..w: the decal's z is OpenGL's -w..w one (its w rides
+    // the STQ's q), and the fold z' = (z + q) / 2 has to be in the vertex the shader hands out, or the fragment's depth
+    // lands in front of the wall the decal hangs on and it draws through it. The caller's list keeps the game's own values
+    const bool foldDepth = !Platform::Graphics::HostHomogeneousDepth();
+    auto* written = reinterpret_cast<StqVertex*>(buffer.data);
+    const auto* source = reinterpret_cast<const StqVertex*>(vertices);
+    for (u32 index = 0; index < count; index++)
+    {
+        written[index] = source[index];
+        if (foldDepth)
+        {
+            written[index].z = 0.5f * (source[index].z + source[index].q);
+        }
+    }
 
     bgfx::TextureHandle texture = HostMaterialBoundTexture(hostMaterial);
     if (!bgfx::isValid(texture))

@@ -78,14 +78,16 @@ workflow is started by hand, and any difference fails the job.
 
 ## Renderers
 
-A build carries only the renderers its platform uses. `TWINSANITY_RENDERER` names one of them, or `auto` (the first the
-machine supports, and the only one that falls back to another); a named renderer the build or the driver cannot start
-fails the launch rather than quietly rendering another way.
+A build carries only the renderers its platform uses. `TWINSANITY_RENDERER` names one of them; a named renderer the build
+or the driver cannot start fails the launch rather than quietly rendering another way. With no name (or `auto`) the platform
+walks its order below and starts the first renderer the machine takes, so a machine without a Vulkan driver still runs on
+Direct3D, and one with neither on OpenGL. Vulkan leads because it is the fastest of them by a wide margin: the same scene
+measured about four times OpenGL's frame rate on the Windows test machine.
 
-| Platform | Renderers |
+| Platform | Renderers, best first |
 |---|---|
-| Linux | `opengl` (default), `vulkan` |
-| Windows | `opengl` (default), `vulkan`, `direct3d11`/`direct3d12` (see [the Direct3D blobs](BUILD_WINDOWS.md#direct3d)) |
+| Linux | `vulkan` (default), `opengl` |
+| Windows | `vulkan` (default), `direct3d12`, `direct3d11`, `opengl` (see [the Direct3D blobs](BUILD_WINDOWS.md#direct3d)) |
 | Android | `opengles` / `gles` (default; its GL), `vulkan` |
 | macOS | `metal` (no Metal shaders yet) |
 | Web | `webgl` / `opengles` (WebGL, GLSL ES 300), `webgpu` (WGSL) |

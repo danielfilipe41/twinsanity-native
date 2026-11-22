@@ -603,6 +603,15 @@ inline bool HostDepthBlitSupported()
     return bgfx::getRendererType() != bgfx::RendererType::Vulkan;
 }
 
+// Whether the renderer's clip-space z runs -w..w (the GL family) rather than 0..w (Direct3D, Vulkan and the web's
+// WebGPU). bgfx's Caps::homogeneousDepth is the answer, and it decides two things for a draw that builds its own clip
+// space: the depth fold every 3D draw's matrix takes (draws_host.cpp's ClipSpaceDepth) and the factor the particle and
+// decal shaders' own depth work is scaled by (particles_host.cpp)
+inline bool HostHomogeneousDepth()
+{
+    return bgfx::getCaps()->homogeneousDepth;
+}
+
 // Whether the renderer's clip space has +Y downwards (Vulkan, WebGPU, Metal, Direct3D) rather than OpenGL's +Y
 // upwards. The host's clip-space geometry is written OpenGL's way (the game's PS2 matrices are y-up), which is why the
 // pass that lands on the backbuffer mirrors its y there. bgfx itself only applies this convention to the projection it

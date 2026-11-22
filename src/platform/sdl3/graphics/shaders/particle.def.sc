@@ -8,9 +8,11 @@ vec3 a_position  : POSITION;
 
 // One particle an instance: its clip position, the quad's four corners (two a quadword), its premultiplied colour
 // and the texture rectangle - all the CPU worked out from the block's record and the system's render table
-vec4 i_data0 : TEXCOORD7;
-vec4 i_data1 : TEXCOORD6;
-vec4 i_data2 : TEXCOORD5;
-vec4 i_data3 : TEXCOORD4;
-vec4 i_data4 : TEXCOORD3;
-vec4 i_data5 : TEXCOORD2;
+// TEXCOORD31 down, as varying_draw3d.def.sc explains: Direct3D binds an attribute by semantic, and its renderer feeds
+// instance data at TEXCOORD(31 - i)
+vec4 i_data0 : TEXCOORD31;
+vec4 i_data1 : TEXCOORD30;
+vec4 i_data2 : TEXCOORD29;
+vec4 i_data3 : TEXCOORD28;
+vec4 i_data4 : TEXCOORD27;
+vec4 i_data5 : TEXCOORD26;

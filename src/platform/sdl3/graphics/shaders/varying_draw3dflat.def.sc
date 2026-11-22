@@ -16,10 +16,11 @@ vec3 a_indices   : BLENDINDICES;
 vec3 a_weight    : BLENDWEIGHT;
 
 // varying_draw3d.def.sc's instance matrix, here too because the flat rigid source includes the interpolated one's body
-vec4 i_data0 : TEXCOORD7;
-vec4 i_data1 : TEXCOORD6;
-vec4 i_data2 : TEXCOORD5;
-vec4 i_data3 : TEXCOORD4;
-vec4 i_data4 : TEXCOORD3;
-vec4 i_data5 : TEXCOORD2;
-vec4 i_data6 : TEXCOORD1;
+// (and the same TEXCOORD31 down, for the reason that file gives: Direct3D binds by semantic)
+vec4 i_data0 : TEXCOORD31;
+vec4 i_data1 : TEXCOORD30;
+vec4 i_data2 : TEXCOORD29;
+vec4 i_data3 : TEXCOORD28;
+vec4 i_data4 : TEXCOORD27;
+vec4 i_data5 : TEXCOORD26;
+vec4 i_data6 : TEXCOORD25;

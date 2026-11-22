@@ -77,13 +77,14 @@ bgfx::UniformHandle g_shadowRampU = BGFX_INVALID_HANDLE;
 f32 g_shadowLinearValue[4] = {0.1f, 1000.0f, 0.0f, 1.0f};
 
 // Whether the volumes' fragment shader can pick the channel by a face's own facing (fs_shadowvolume.sc), which is what lets the
-// pair of shell draws be one. The Direct3D blobs are built on Windows (tools/build_shaders.py --platform windows --d3d) and the
-// ones checked in predate that test: a stale one writes both channels, and the resolve's difference of them is nothing, so
-// those renderers keep the pair until the blob is rebuilt
+// pair of shell draws be one. Every backend's blob carries that test now: the Direct3D ones used to predate it (they are built
+// on Windows, tools/build_shaders.py --platform windows --d3d, and the checked-in pair wrote both channels, which the resolve's
+// difference then cancelled to nothing), so those renderers kept the pair. With the blobs rebuilt from the same source every
+// renderer takes one draw, and it is the only path an entity's shadow works on: a character's volume is a stack of proxy
+// capsules whose shells lie on the same triangle, which a culled pair cannot count apart
 bool ShadowShellsMerge()
 {
-    const bgfx::RendererType::Enum type = bgfx::getRendererType();
-    return type != bgfx::RendererType::Direct3D11 && type != bgfx::RendererType::Direct3D12;
+    return true;
 }
 
 // The resolve's fullscreen triangle: clip-space positions only (the shader derives the target's UVs from them)
@@ -171,6 +172,8 @@ bgfx::TextureHandle g_halfColour = BGFX_INVALID_HANDLE;
 bgfx::TextureHandle g_halfDepth = BGFX_INVALID_HANDLE;
 // Whether the volumes are testing against that copied scene depth (true) or against their own footprint depth (false)
 bool g_volumesOverSceneDepth = false;
+// Whether the coverage target's depth texture is this pass's to destroy, rather than the scene target's own (Vulkan)
+bool g_halfDepthOwned = false;
 
 // The coverage target: the frame's size, an RGBA8 colour the volumes write their coverage's alpha into and a D24S8 depth
 // (their own test, which they write as they draw). Remade when the frame's size changes
@@ -183,14 +186,19 @@ void MakeHalf(u32 width, u32 height)
 
     if (bgfx::isValid(g_half))
     {
+        // The framebuffer is made without taking the textures' ownership, so they go here: the colour always, the depth only
+        // when this pass made it (a shared depth is the SCENE's, and destroying it would take the frame's own depth away)
         bgfx::destroy(g_half);
-#if defined(__EMSCRIPTEN__)
-        // The framebuffer was made without taking the textures' ownership (the depth is the scene's), so the colour is ours to free
         if (bgfx::isValid(g_halfColour))
         {
             bgfx::destroy(g_halfColour);
         }
-#endif
+        if (g_halfDepthOwned && bgfx::isValid(g_halfDepth))
+        {
+            bgfx::destroy(g_halfDepth);
+        }
+        g_halfColour = BGFX_INVALID_HANDLE;
+        g_halfDepth = BGFX_INVALID_HANDLE;
     }
 
     g_halfWidth = width;
@@ -239,22 +247,37 @@ void MakeHalf(u32 width, u32 height)
     // the renderer can attach: D24S8 is attachment-only on some Vulkan drivers (AMD's radv), so the first the renderer
     // accepts is taken
     const bool depthBlit = Platform::Graphics::HostDepthBlitSupported();
+    // Vulkan cannot make the copy either -- vkCmdBlitImage refuses depth/stencil formats -- so there the coverage target takes
+    // the SCENE's own depth texture as its attachment, the way the web's does: one depth texture may be attached to two
+    // framebuffers, and the scene's pass and the volumes' never run at once. The volumes then test against the frame's depth
+    // exactly as they do where the copy is made, which is what the shells need (with only their own cleared depth, the pair of
+    // culling passes the proxy meshes do not support is all they would have)
+    const bool shareSceneDepth = bgfx::getRendererType() == bgfx::RendererType::Vulkan;
+    g_halfDepthOwned = !shareSceneDepth;
+    bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
+    if (shareSceneDepth && bgfx::isValid(g_frame) && g_frameHasDepth)
+    {
+        depth = bgfx::getTexture(g_frame, 1);
+    }
     // A texture on every renderer, never a BGFX_TEXTURE_RT_WRITE_ONLY renderbuffer: GL turns a write-only target into a
     // renderbuffer, which is an attachment and nothing else, while this depth is the coverage target's own test surface and
     // the copy destination the scene's depth is blitted into. BGFX_TEXTURE_RT alone already says it is drawn, never sampled
-    const u64 depthFlags = BGFX_TEXTURE_RT | (depthBlit ? BGFX_TEXTURE_BLIT_DST : 0) | BGFX_SAMPLER_MIN_POINT |
-                           BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
-    static constexpr bgfx::TextureFormat::Enum DepthFormats[] = {bgfx::TextureFormat::D24S8,
-                                                                 bgfx::TextureFormat::D32F,
-                                                                 bgfx::TextureFormat::D16};
-    bgfx::TextureHandle depth = BGFX_INVALID_HANDLE;
-    for (bgfx::TextureFormat::Enum format : DepthFormats)
+    if (!bgfx::isValid(depth))
     {
-        depth = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, format, depthFlags);
-        if (bgfx::isValid(depth))
+        const u64 depthFlags = BGFX_TEXTURE_RT | (depthBlit ? BGFX_TEXTURE_BLIT_DST : 0) | BGFX_SAMPLER_MIN_POINT |
+                               BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
+        static constexpr bgfx::TextureFormat::Enum DepthFormats[] = {bgfx::TextureFormat::D24S8,
+                                                                     bgfx::TextureFormat::D32F,
+                                                                     bgfx::TextureFormat::D16};
+        for (bgfx::TextureFormat::Enum format : DepthFormats)
         {
-            break;
+            depth = bgfx::createTexture2D(static_cast<u16>(width), static_cast<u16>(height), false, 1, format, depthFlags);
+            if (bgfx::isValid(depth))
+            {
+                break;
+            }
         }
+        g_halfDepthOwned = true;
     }
     if (!bgfx::isValid(colour) || !bgfx::isValid(depth))
     {
@@ -271,10 +294,22 @@ void MakeHalf(u32 width, u32 height)
         return;
     }
     const bgfx::TextureHandle handles[2] = {colour, depth};
-    g_half = bgfx::createFrameBuffer(2, handles, true);
+    // Not owned: with a shared depth the framebuffer must never destroy it, so both textures are let go above instead
+    g_half = bgfx::createFrameBuffer(2, handles, false);
+    if (!bgfx::isValid(g_half))
+    {
+        bgfx::destroy(colour);
+        if (g_halfDepthOwned)
+        {
+            bgfx::destroy(depth);
+        }
+        std::fprintf(stderr, "bgfx: no shadow coverage target the renderer accepts\n");
+        return;
+    }
     g_halfColour = colour;
     g_halfDepth = depth;
-    g_halfDepthBlit = depthBlit;
+    // Either way the volumes test against the frame's depth: blitted in here, or the frame's own attachment when shared
+    g_halfDepthBlit = depthBlit || shareSceneDepth;
 #endif
 }
 }

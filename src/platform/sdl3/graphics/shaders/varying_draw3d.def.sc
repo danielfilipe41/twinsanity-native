@@ -13,12 +13,14 @@ vec3 a_indices   : BLENDINDICES;
 vec3 a_weight    : BLENDWEIGHT;
 
 // The rigid draws' per-instance model-to-clip matrix: one instance per draw of a packet, so a packet the level places many times
-// is one submit. TEXCOORD7 down are the slots bgfx's instance data fills (the particles take theirs the same way), and the mesh
-// vertexes use TEXCOORD0 alone
-vec4 i_data0 : TEXCOORD7;
-vec4 i_data1 : TEXCOORD6;
-vec4 i_data2 : TEXCOORD5;
-vec4 i_data3 : TEXCOORD4;
-vec4 i_data4 : TEXCOORD3;
-vec4 i_data5 : TEXCOORD2;
-vec4 i_data6 : TEXCOORD1;
+// is one submit. TEXCOORD31 down are the slots bgfx's instance data fills (the particles take theirs the same way), and the mesh
+// vertexes use TEXCOORD0 alone. The numbers matter only to Direct3D, which binds an attribute by its semantic: its renderer
+// builds the instance vertex buffer's elements at TEXCOORD(31 - i), so a lower number here (TEXCOORD7 was this file's, harmless
+// on GL, which binds by name) leaves every instance attribute unfed and every rigid mesh at a zero matrix
+vec4 i_data0 : TEXCOORD31;
+vec4 i_data1 : TEXCOORD30;
+vec4 i_data2 : TEXCOORD29;
+vec4 i_data3 : TEXCOORD28;
+vec4 i_data4 : TEXCOORD27;
+vec4 i_data5 : TEXCOORD26;
+vec4 i_data6 : TEXCOORD25;

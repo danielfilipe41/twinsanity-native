@@ -134,7 +134,11 @@ int main(int argc, char** argv)
         // that ignored it would hand it to the game as an argument, which reads it as the disc's path
         if (std::strcmp(argv[index], "--frame-log") == 0)
         {
+#ifdef _WIN32
+            _putenv_s("TWINSANITY_FRAME_LOG", "1");
+#else
             setenv("TWINSANITY_FRAME_LOG", "1", 1);
+#endif
             continue;
         }
         argv[count++] = argv[index];

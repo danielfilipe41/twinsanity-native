@@ -1,10 +1,11 @@
 # Building for Windows
 
 `PLATFORM=sdl3 TARGET=windows` compiles the same sdl3 platform layer and game code with a 32-bit MinGW compiler into
-`build/win32/game-with-data.exe` (a console program, since the port logs to stdout). It builds from Linux, and under Wine
-it starts, loads its data, draws through bgfx's OpenGL renderer and runs at the disc's 50 Hz logic rate; it has not been
-run on Windows itself yet, and Wine's `WineDbg`/desktop still show its share of fixmes. The shared requirements are in
-[BUILDING.md](BUILDING.md).
+`build/win32/game-with-data.exe` (a console program, since the port logs to stdout). It builds from Linux and from
+MSYS2's mingw32 shell, and on Windows it starts, loads its data and runs at the disc's 50 Hz logic rate with all four of
+its renderers: Vulkan by default, then Direct3D 12 and 11, then OpenGL (see [Renderers](BUILDING.md#renderers)). Under
+Wine it starts and draws through OpenGL, and Wine's `WineDbg`/desktop still show its share of fixmes. The shared
+requirements are in [BUILDING.md](BUILDING.md).
 
 ## What it needs
 
@@ -27,7 +28,8 @@ run on Windows itself yet, and Wine's `WineDbg`/desktop still show its share of 
   `.build/win32_mingw-gcc/bin`, which is where the build looks, or point `$BGFX_PREFIX` at them. bgfx dlopens
   `vulkan-1.dll` itself, so the Vulkan renderer needs no import library to link.
 - Shaders: `python3 tools/build_shaders.py --platform windows` generates the same GLSL 330 and SPIR-V blobs Linux checks
-  in. Direct3D's DXBC blobs are the one thing a Linux shaderc cannot make (see [Direct3D](#direct3d)).
+  in. Direct3D's DXBC blobs are the one thing a Linux shaderc cannot make, so they are generated on Windows and checked in
+  (see [Direct3D](#direct3d)); a normal build only reads them.
 
 ```sh
 PLATFORM=sdl3 TARGET=windows python3 configure.py
@@ -84,10 +86,11 @@ these shaders (`D3DCompile failed 0x80004005`, then a crash inside wined3d). So 
 python3 tools/build_shaders.py --platform windows --d3d
 ```
 
-The rest of the plumbing is in place and waits on those files: `shaders/<name>_dxbc.bin.h`, array `<name>_dxbc`, which
-`configure.py` notices (it defines `TWINSANITY_HAVE_DXBC` then), `host_shaders.cpp` hands to
+Every shader's DXBC blob is checked in beside the other backends' as `shaders/<name>_dxbc.bin.h` (array `<name>_dxbc`);
+`configure.py` notices the set (it defines `TWINSANITY_HAVE_DXBC` then), `host_shaders.cpp` hands it to
 `direct3d11`/`direct3d12`, and `bgfx_context.cpp` accepts those two names. A build without them carries OpenGL and Vulkan
-and refuses the Direct3D names with a line saying why. Neither renderer has been run on real Windows yet.
+and refuses the Direct3D names with a line saying why. Both renderers have been run on real Windows, and they are the
+second and third renderers a default launch tries, after Vulkan.
 
 ### Building the shaderc that makes them
 

@@ -37,11 +37,11 @@ void main()
 
     // The two neighbours the edges are tested against, and the step each of them has on its far side
     vec2 delta = vec2(abs(lumaCentre - lumaLeft), abs(lumaCentre - lumaTop));
-    vec2 edges = step(vec2(SMAA_THRESHOLD), delta);
+    vec2 edges = step(vec2(SMAA_THRESHOLD, SMAA_THRESHOLD), delta);
     if (dot(edges, vec2(1.0, 1.0)) == 0.0)
     {
         // Nothing on either axis: the weights pass reads this as "no edge here" and leaves the pixel alone
-        gl_FragColor = vec4(0.0);
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         return;
     }
 

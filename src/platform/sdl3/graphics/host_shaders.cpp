@@ -266,20 +266,25 @@ bgfx::ShaderHandle HostCreateShader(HostShader shader)
         data = blobs.wgsl;
         size = blobs.wgslSize;
         break;
-    case bgfx::RendererType::OpenGLES:
-#elif defined(__ANDROID__)
-    case bgfx::RendererType::OpenGLES:
-#else
-    case bgfx::RendererType::OpenGL:
 #endif
 #if defined(TWINSANITY_HAVE_DXBC)
+    // Direct3D's own blobs, before the GL case labels: those share one body, and a label with no statement would fall
+    // into these and hand DXBC to a GL renderer
     case bgfx::RendererType::Direct3D11:
     case bgfx::RendererType::Direct3D12:
         data = blobs.dxbc;
         size = blobs.dxbcSize;
         break;
 #endif
-    // Noop never reads the bytecode: it keeps the headless proofs and their object counts renderer-independent
+    // The GL family's blob, and Noop's: it never reads the bytecode, which keeps the headless proofs and their object
+    // counts renderer-independent
+#if defined(__EMSCRIPTEN__)
+    case bgfx::RendererType::OpenGLES:
+#elif defined(__ANDROID__)
+    case bgfx::RendererType::OpenGLES:
+#else
+    case bgfx::RendererType::OpenGL:
+#endif
     case bgfx::RendererType::Noop:
         data = blobs.gl;
         size = blobs.glSize;

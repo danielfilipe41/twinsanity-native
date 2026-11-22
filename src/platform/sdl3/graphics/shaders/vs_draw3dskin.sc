@@ -88,10 +88,10 @@ void main()
     // full light over a full ambient runs past white and only the target clamps
     // The material's colour scales the lit colour for the one type whose program does that (0x1F) and not at all for
     // every other material, whose draws leave the uniform's flag lane zero
-    vec3 lit = min(a_color0.rgb * light, vec3(1.0));
+    vec3 lit = min(a_color0.rgb * light, vec3(1.0, 1.0, 1.0));
     if (u_material[1].w != 0.0)
     {
-        lit = min(lit * u_material[1].rgb, vec3(1.0));
+        lit = min(lit * u_material[1].rgb, vec3(1.0, 1.0, 1.0));
     }
     v_color0 = vec4(lit, a_color0.a);
 }

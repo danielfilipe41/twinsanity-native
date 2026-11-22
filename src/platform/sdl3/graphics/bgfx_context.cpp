@@ -44,16 +44,61 @@ u32 ScaledDimension(int design, u32 percent)
     return size;
 }
 
+// The order the port starts a renderer in when it is not told which (no TWINSANITY_RENDERER, or "auto"), best first:
+//   Windows  vulkan, direct3d12, direct3d11, opengl
+//   Linux    vulkan, opengl
+//   Android  opengles (its GL; Vulkan on Android is untested here)
+//   macOS    opengl (Metal has no blobs yet)
+//   web      webgl/opengles
+// Vulkan leads everywhere it exists: on the Windows test machine it drew the same scene at about four times OpenGL's
+// frame rate, which is the difference between the two backends' submit cost. OpenGL is the last resort and is still
+// tried, because it is the one renderer every driver has. The chain is the port's own rather than bgfx's: bgfx::init
+// takes one renderer and a bool, so a machine without a Vulkan driver is walked down the list by BgfxInit instead
+// (bgfx's own examples retry an init the same way). Each attempt is a real init, so a renderer that starts is the one
+// that drew -- the log names it
+void DefaultRendererChain(bgfx::RendererType::Enum* chain, u32* count)
+{
+    u32 n = 0;
+#if defined(__EMSCRIPTEN__)
+    chain[n++] = bgfx::RendererType::OpenGLES;
+#elif defined(__ANDROID__)
+    chain[n++] = bgfx::RendererType::OpenGLES;
+#elif defined(_WIN32)
+    chain[n++] = bgfx::RendererType::Vulkan;
+#if defined(TWINSANITY_HAVE_DXBC)
+    chain[n++] = bgfx::RendererType::Direct3D12;
+    chain[n++] = bgfx::RendererType::Direct3D11;
+#endif
+    chain[n++] = bgfx::RendererType::OpenGL;
+#else
+    // Linux' and the other X11/Wayland platforms': Vulkan through bgfx's own backend, then GL
+    chain[n++] = bgfx::RendererType::Vulkan;
+    chain[n++] = bgfx::RendererType::OpenGL;
+#endif
+    *count = n;
+}
+
+// Whether TWINSANITY_RENDERER named one renderer, which is then tried alone ("auto" asks for the chain, not a name)
+bool RendererNamed()
+{
+    const char* requested = std::getenv("TWINSANITY_RENDERER");
+    if (requested == nullptr || *requested == '\0')
+    {
+        return false;
+    }
+    return std::strcmp(requested, "auto") != 0;
+}
+
 // The renderers each platform has, so a build carries only its own (and tools/build_shaders.py's platform backends hold
 // the shader side of the same sets):
-//   Linux    opengl (the default), vulkan
-//   Windows  opengl (the default), vulkan, direct3d11, direct3d12
-//   Android  opengles (its GL, the default), vulkan
+//   Linux    opengl, vulkan
+//   Windows  opengl, vulkan, direct3d11, direct3d12
+//   Android  opengles (its GL), vulkan
 //   macOS    metal (no blobs yet)
 //   web      webgpu, webgl/opengles (no blobs yet)
 // A named renderer is tried alone, so a driver that cannot take it fails here instead of quietly rendering on another
-// backend; "auto" leaves the choice (and the fallback when it fails) to bgfx. A renderer this build has no shader blobs
-// for is refused with a word rather than started and failing at its first draw (HostCreateShader)
+// backend; the default order is DefaultRendererChain's. A renderer this build has no shader blobs for is refused with a
+// word rather than started and failing at its first draw (HostCreateShader)
 bgfx::RendererType::Enum RendererFromEnvironment(bool* fallback)
 {
     *fallback = false;
@@ -294,9 +339,36 @@ bool BgfxInit(SDL_Window* window, int width, int height, bool vsync)
     }
 #endif
 
-    if (!bgfx::init(init))
+    // The renderers tried in turn. A name from the environment is the whole list -- a driver that cannot take it fails
+    // here rather than quietly rendering on another backend -- and otherwise the platform's chain runs best first, so a
+    // machine with no Vulkan driver still starts on Direct3D, and one with neither on OpenGL
+    bgfx::RendererType::Enum chain[4] = {};
+    u32 chainCount = 0;
+    if (RendererNamed())
     {
-        std::fprintf(stderr, "bgfx: bgfx::init failed (renderer %s)\n", bgfx::getRendererName(init.type));
+        chain[0] = init.type;
+        chainCount = 1;
+    }
+    else
+    {
+        DefaultRendererChain(chain, &chainCount);
+    }
+
+    bool started = false;
+    for (u32 attempt = 0; attempt < chainCount && !started; attempt++)
+    {
+        init.type = chain[attempt];
+        init.fallback = false;
+        started = bgfx::init(init);
+        if (!started)
+        {
+            std::fprintf(stderr, "bgfx: %s did not start%s\n", bgfx::getRendererName(init.type),
+                         attempt + 1 < chainCount ? ", trying the next renderer" : "");
+        }
+    }
+    if (!started)
+    {
+        std::fprintf(stderr, "bgfx: bgfx::init failed for every renderer this build can start\n");
         return false;
     }
 

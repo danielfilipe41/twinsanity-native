@@ -241,8 +241,8 @@ def main_windows():
     compiler, so the retail 32-bit pointer layouts and absolute addresses hold. It is a console program: the port logs to
     stdout, and SDL_MAIN_HANDLED keeps the entry's own main instead of SDL's WinMain shim. Cross-compiling from Linux works
     with mingw-w64's i686 g++ ($CXX overrides the compiler); SDL3 comes from $SDL_PREFIX, bgfx+bx+bimg (bgfx's gmake-mingw-gcc
-    project) from $BGFX_PREFIX. Renderers: OpenGL and Vulkan -- Direct3D needs DXBC/DXIL blobs, which only a Windows shaderc
-    with fxc/dxc can make (tools/build_shaders.py --platform windows --d3d)"""
+    project) from $BGFX_PREFIX. Renderers: Vulkan (the default), Direct3D 12, Direct3D 11 and OpenGL. Direct3D's DXBC
+    blobs are checked in (tools/build_shaders.py --platform windows --d3d makes them on a Windows machine)"""
     if PLATFORM != "sdl3":
         raise SystemExit("TARGET=windows builds the sdl3 platform: PLATFORM=sdl3 TARGET=windows python configure.py")
     cxx_name = os.environ.get("CXX", "g++" if os.name == "nt" else "i686-w64-mingw32-g++")
@@ -268,7 +268,7 @@ def main_windows():
               "-fno-omit-frame-pointer", "-Wall", "-Wno-invalid-offsetof", "-Wno-attributes", "-msse2", "-mfpmath=sse",
               "-malign-double",
               "-DSDL_MAIN_HANDLED", "-Iinclude", "-Iinclude/host", "-Ithird_party/miniz",
-              f"-I{sdl_prefix}/include/SDL3",
+              f"-I{sdl_prefix}/include",
               "-Ithird_party/bgfx/include", "-Ithird_party/bx/include", "-Ithird_party/bimg/include"] + cflags_extra
     # DATA=runtime: the image the loader fills at the first start, and the tables that name it (tools/retail_map.py)
     if RUNTIME_DATA:
