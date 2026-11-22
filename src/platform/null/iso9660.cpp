@@ -599,3 +599,9 @@ s32 Platform::Iso9660::ReadAt(u64 offset, void* buffer, s32 size)
     std::lock_guard<std::mutex> lock(g_Mutex);
     return ReadBytes(offset, buffer, size);
 }
+
+bool Platform::Iso9660::Direct()
+{
+    std::lock_guard<std::mutex> lock(g_Mutex);
+    return g_Image != nullptr && g_Stride == SectorSize && g_UserOffset == 0 && !Platform::DiscPatch::Loaded();
+}

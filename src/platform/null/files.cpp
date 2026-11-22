@@ -1698,3 +1698,38 @@ s32 Platform::Files::ReadAt(s32 file, u32 offset, void* buffer, s32 size)
     }
     return static_cast<s32>(std::fread(buffer, 1, static_cast<size_t>(size), handle->stream));
 }
+
+bool Platform::Files::ImageRange(s32 file, u32 offset, u32 size, u32* imageOffset)
+{
+    if (!g_ImageRoot || imageOffset == nullptr)
+    {
+        return false;
+    }
+
+    HostFile* handle = HandleAt(file);
+    if (handle == nullptr || !handle->image || handle->memory != nullptr || handle->composed)
+    {
+        return false;
+    }
+
+    // The read must be inside the file (one that runs past its end is short, and ReadAt is what makes it so), and the image's
+    // offset must fit what a host can be asked for in one go
+    if (offset >= handle->imageSize || size > handle->imageSize - offset)
+    {
+        return false;
+    }
+
+    const u64 at = handle->imageOffset + offset;
+    if (at + size > 0xFFFFFFFFull)
+    {
+        return false;
+    }
+
+    if (!Platform::Iso9660::Direct())
+    {
+        return false;
+    }
+
+    *imageOffset = static_cast<u32>(at);
+    return true;
+}

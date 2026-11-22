@@ -17,6 +17,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
 // The sdl3 host's side of Platform::Stream: reads from the disc files on the host filesystem through Platform::Files
 // (the null platform's own stream.cpp returns 0 from FreeBufferMemory and drops sound banks, which stops music playing).
 //
@@ -90,6 +94,10 @@ struct ReadJob
     s32 descriptor = -1;
     u32 offset = 0;
     u32 size = 0;
+    // The disc image's own offset of the bytes, when the page is asked for them instead (the web's stream), and whether the
+    // read is one of those (offset 0 is a real image offset, so the offset alone cannot say)
+    u32 imageOffset = 0;
+    bool image = false;
     u8* destination = nullptr;
     std::string path;
     // A sound bank: the bytes go to the sound processor's module instead of the game's memory
@@ -105,6 +113,8 @@ struct Channel
     bool quit = false;
     bool busy = false;
     bool pending = false;
+    // Counts the reads the channel has started: a page's copy of one it has since finished here (Wait) is dropped by it
+    u32 generation = 0;
     // The file the job in flight reads (the job itself is moved out to the worker)
     s32 activeFile = -1;
     ReadJob job;
@@ -119,36 +129,104 @@ Channel* ChannelAt(s32 channel)
     return channel >= 0 && channel < g_ChannelCount ? &g_Channels[channel] : nullptr;
 }
 
-void Work(ReadJob* job)
+// The bytes themselves, on the calling thread: into the sound processor's bank or into the game's memory
+s32 ReadBytes(ReadJob* job)
 {
     if (job->descriptor < 0)
     {
-        return;
+        return 0;
     }
 
-    s32 got = 0;
     if (job->soundBank)
     {
-        got = Platform::Files::ReadAt(job->descriptor, job->offset, job->samples.data(), static_cast<s32>(job->size));
-        if (got != static_cast<s32>(job->size))
-        {
-            ReportReadFailure(job->path.c_str(), job->offset, job->size, got);
-        }
+        return Platform::Files::ReadAt(job->descriptor, job->offset, job->samples.data(), static_cast<s32>(job->size));
+    }
 
+    return Platform::Files::ReadAt(job->descriptor, job->offset, job->destination, static_cast<s32>(job->size));
+}
+
+// What follows the bytes being in place: a short read said once in a while, and a bank's samples given to the module
+void Finish(const ReadJob& job, s32 got)
+{
+    if (got != static_cast<s32>(job.size))
+    {
+        ReportReadFailure(job.path.c_str(), job.offset, job.size, got);
+    }
+
+    if (job.soundBank)
+    {
         // The module's memory is behind the audio lock (the mixer reads it): registering the bank takes it as the game's
         // own synchronous read did
         SdlAudio::LockAudio();
-        SdlAudio::Spu2::Module().LoadSoundBank(job->bank, job->samples.data(), job->size);
+        SdlAudio::Spu2::Module().LoadSoundBank(job.bank, job.samples.data(), job.size);
         SdlAudio::UnlockAudio();
-        return;
-    }
-
-    got = Platform::Files::ReadAt(job->descriptor, job->offset, job->destination, static_cast<s32>(job->size));
-    if (got != static_cast<s32>(job->size))
-    {
-        ReportReadFailure(job->path.c_str(), job->offset, job->size, got);
     }
 }
+
+void Work(ReadJob* job)
+{
+    const s32 got = ReadBytes(job);
+    Finish(*job, got);
+}
+
+#if defined(__EMSCRIPTEN__)
+// The page's chunk cache, asked for a read's bytes: it copies them where they were asked for and answers how many. The copy is
+// all or nothing -- 0 means a chunk the range needs is not held -- so a destination is never left half written
+EM_JS(s32, CopyCached, (u32 offset, u32 size, void* destination), {
+    return Module.twinsanityCopyCached ? Module.twinsanityCopyCached(offset, size, destination) : 0;
+});
+
+// Hands a read to the page, which fetches the chunks it needs and calls HostReadDone once they are held. Answers -1 when the
+// page has no disc to read that way (an image it copied into its own file system), so the read runs on this thread instead
+EM_JS(s32, ReadInto, (s32 channel, u32 generation, u32 offset, u32 size), {
+    if (!Module.twinsanityReadInto) {
+        return -1;
+    }
+    Module.twinsanityReadInto(channel, generation, offset, size);
+    return 0;
+});
+
+// A read in flight, finished here on the calling thread instead of by the page: a page cannot wait on a fetch (the game's
+// thread is the page's event loop), and the game's blocking readers (Wait, and closing a file a channel is reading) need the
+// bytes before they go on. The generation moves on first, so the fetch the page has on the way is dropped rather than looked
+// at when it lands -- and the page checks that first, so a read waited for in the same frame is never even fetched
+void FinishChannel(Channel* state)
+{
+    ReadJob job;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (!state->busy)
+        {
+            return;
+        }
+        state->generation++;
+        job = std::move(state->job);
+        state->job = ReadJob();
+    }
+
+    // What the page already brought is taken as it is: a fetch that landed during the frame needs no request of its own
+    s32 got = -1;
+    if (job.image && !job.soundBank)
+    {
+        got = CopyCached(job.imageOffset, job.size, job.destination);
+        if (got != static_cast<s32>(job.size))
+        {
+            got = -1;
+        }
+    }
+    if (got < 0)
+    {
+        got = ReadBytes(&job);
+    }
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->busy = false;
+        state->activeFile = -1;
+    }
+    Finish(job, got);
+    job.samples.clear();
+}
+#endif
 
 void Worker(Channel* channel)
 {
@@ -224,6 +302,57 @@ void Submit(s32 channel, ReadJob job)
     {
         return;
     }
+
+#if defined(__EMSCRIPTEN__)
+    // A page reads the disc itself: a read whose chunks the page already holds is copied here, on this thread, and finishes at
+    // once; one that has to fetch them is handed to the page and finished by HostReadDone when they arrive, while the game goes
+    // on stepping. Everything else (a sound bank, a mod's file, a raw dump) is read on this thread, as it was
+    if (state->busy)
+    {
+        // A channel reads one thing at a time, and a read in flight cannot be waited for on a page: this one is finished here
+        // first, and the page's copy of it is dropped
+        FinishChannel(state);
+    }
+
+    const u32 size = job.size;
+    u32 imageOffset = 0;
+    if (!job.soundBank && Platform::Files::ImageRange(job.file, job.offset, size, &imageOffset))
+    {
+        job.imageOffset = imageOffset;
+        job.image = true;
+        const s32 copied = CopyCached(imageOffset, size, job.destination);
+        if (copied == static_cast<s32>(size))
+        {
+            Finish(job, copied);
+            return;
+        }
+
+        u32 generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            generation = ++state->generation;
+            state->job = std::move(job);
+            state->busy = true;
+            state->activeFile = state->job.file;
+        }
+        if (ReadInto(channel, generation, imageOffset, size) == 0)
+        {
+            return;
+        }
+
+        // The page cannot read it: the job comes back and is read here
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            job = std::move(state->job);
+            state->job = ReadJob();
+            state->busy = false;
+            state->activeFile = -1;
+        }
+    }
+
+    ReadNow(state, job);
+    return;
+#endif
 
     if (InlineReads())
     {
@@ -357,8 +486,21 @@ void CloseFile(s32 file)
     for (s32 channel = 0; channel < g_ChannelCount; channel++)
     {
         Channel* state = &g_Channels[channel];
+#if defined(__EMSCRIPTEN__)
+        // A page cannot wait on a fetch: a read of this file still in flight is finished here instead
+        bool reading = false;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            reading = state->busy && state->activeFile == file;
+        }
+        if (reading)
+        {
+            FinishChannel(state);
+        }
+#else
         std::unique_lock<std::mutex> lock(state->mutex);
         state->ready.wait(lock, [state, file] { return !state->busy || state->activeFile != file; });
+#endif
     }
 
     if (g_OpenFiles[file].fd >= 0)
@@ -433,8 +575,64 @@ s32 Wait(s32 channel)
         return 0;
     }
 
+#if defined(__EMSCRIPTEN__)
+    // A page cannot block on a fetch: the read is finished here, on this thread, and the frame that asked for it goes on with
+    // the bytes where it wanted them
+    FinishChannel(state);
+    return 0;
+#else
     std::unique_lock<std::mutex> lock(state->mutex);
     state->ready.wait(lock, [state] { return !state->busy; });
     return 0;
+#endif
 }
+
+#if defined(__EMSCRIPTEN__)
+// The page's answer to ReadInto: the read's chunks are held, so they are copied out of the page's cache here and the read
+// finishes. A read this channel has since done itself has moved the generation on, and the copy is dropped: the destination
+// is the game's memory, and what it holds now is not this read's. Called from the page, so it is a C symbol of the module's
+// own (stream.cpp's EM_JS ReadInto is what starts the read it answers)
+// Whether the read the page is about to fetch is still the one its channel wants. A read the game waits for in the frame it
+// was asked for is finished here, and the page asks this before spending a request on it
+extern "C" EMSCRIPTEN_KEEPALIVE s32 HostReadValid(s32 channel, u32 generation)
+{
+    Channel* state = ChannelAt(channel);
+    if (state == nullptr)
+    {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(state->mutex);
+    return state->busy && state->generation == generation;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void HostReadDone(s32 channel, u32 generation)
+{
+    Channel* state = ChannelAt(channel);
+    if (state == nullptr)
+    {
+        return;
+    }
+
+    ReadJob job;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (!state->busy || state->generation != generation)
+        {
+            return;
+        }
+        job = std::move(state->job);
+        state->job = ReadJob();
+    }
+
+    const s32 got = CopyCached(job.imageOffset, job.size, job.destination);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->busy = false;
+        state->activeFile = -1;
+    }
+    Finish(job, got);
+    job.samples.clear();
+}
+#endif
 }

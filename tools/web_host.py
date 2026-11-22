@@ -45,6 +45,10 @@ UNCACHED = {".html", ".js", ".mjs", ".wasm"}
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1, so a connection is reused: the page asks for the disc a 2 MB chunk at a time, and under HTTP/1.0 every one
+    # of those paid a fresh connection's handshake (the transport bench read 4.5 ms/MB of it). Keep-alive is also what any
+    # real host of this page does, so a local run matches one
+    protocol_version = "HTTP/1.1"
     root = DEFAULT_ROOT
     image = None
 
@@ -75,6 +79,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size))
         if path.suffix.lower() in UNCACHED:
             self.send_header("Cache-Control", "no-cache")
+        # ?nostore=1 asks for a response the browser may not keep: the page's transport bench compares a request whose
+        # response can be written to the HTTP cache against one that cannot, which is a header only the server can send
+        if urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("nostore"):
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
     def Range(self, size: int):

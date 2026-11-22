@@ -177,6 +177,23 @@ def sdl_flags():
     return cflags, [f"-L{libdir.as_posix()}", "-Wl,-Bstatic", "-lSDL3", "-Wl,-Bdynamic", "-lm", "-ldl", "-lpthread"]
 
 
+def bgfx_archives(directory, prefix="lib"):
+    """The four static libraries a bgfx link uses, as paths rather than -l flags: ninja tracks the inputs of a build and not
+    what a flag names, so without them a rebuilt library does not relink anything. That once ran a binary compiled against one
+    bgfx::Init layout with a library built for another, and bgfx read the game's callback as its allocator and aborted before
+    the first frame."""
+    return [f"{directory}/{prefix}{name}Release.a" for name in ("bgfx", "bimg", "bimg_decode", "bx")]
+
+
+def with_archive_inputs(lines, archives):
+    """Puts the archives in every link edge's inputs (`build ...: link ... | archive`), so ninja relinks when one changes"""
+    if not archives:
+        return lines
+    inputs = " " + " ".join(archives)
+    return [f"{line} |{inputs}" if line.startswith("build ") and ": link " in line and " | " not in line else line
+            for line in lines]
+
+
 def bgfx_flags():
     """bgfx+bx+bimg compile and link flags for a 32-bit host build. The libraries are built once from third_party/
     (bgfx's GENie flow: genie --gcc=linux-gcc gmake, then make config=release32 in third_party/bgfx/.build/projects/
@@ -342,6 +359,7 @@ def main_windows():
         "default compile",
         "",
     ]
+    lines = with_archive_inputs(lines, bgfx_archives("third_party/bgfx/.build/win32_mingw-gcc/bin"))
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
     (HERE / "build").mkdir(exist_ok=True)
     (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
@@ -373,8 +391,12 @@ def main_web():
                                           # prototypes differ between files, and wasm's typed indirect calls reject
                                           # the mismatch where the x86 builds silently tolerate it
                                           '-sEMULATE_FUNCTION_POINTER_CASTS=1',
+                                          # Function names in the module, so a stack trace from a run names what stopped instead of
+                                          # "wasm-function[3286]": the difference between a report that can be acted on and one that
+                                          # cannot, for a few hundred kilobytes over the wire (nothing at run time)
+                                          '--profiling-funcs',
                                           '-sINVOKE_RUN=0', '-sFORCE_FILESYSTEM=1', '-lidbfs.js',
-                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS',                                '--shell-file', 'web/shell.html'] +
+                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS,HEAPU8',                                '--shell-file', 'web/shell.html'] +
                                 (['--profiling-funcs'] if PROFILE else []) +
                                 web_bgfx_flags())}",
         "",
@@ -443,6 +465,7 @@ def main_web():
         "default compile",
         "",
     ]
+    lines = with_archive_inputs(lines, [str(path) for path in web_bgfx_flags()])
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
     (HERE / "build").mkdir(exist_ok=True)
     (HERE / "build" / "compile_commands.json").write_text(json.dumps(compile_commands, indent=1), newline="\n")
@@ -708,6 +731,7 @@ def main_host():
                                  "output": "build/host/tools/audio_disc.o",
                                  "arguments": ["g++"] + HOST_CXXFLAGS +
                                  ["-c", "-o", "build/host/tools/audio_disc.o", "tools/audio_disc.cpp"]})
+    lines = with_archive_inputs(lines, bgfx_archives("third_party/bgfx/.build/linux32_gcc/bin"))
     (HERE / "build.ninja").write_text("\n".join(lines), newline="\n")
 
 

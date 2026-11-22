@@ -48,4 +48,8 @@ s32 Seek(s32 file, s32 offset, Whence whence);
 // two of them possibly from one file, so a read that moved the shared position would race: this leaves it alone. Returns
 // the bytes read, negative on failure
 s32 ReadAt(s32 file, u32 offset, void* buffer, s32 size);
+// The disc image's own offset of what ReadAt would copy, when the read is exactly a range of the image and nothing has to be
+// undone on the way (no raw-sector remapping, no patch, no mod's file): a host that can fetch part of the image itself (the
+// page's disc) reads it without this layer. False when the host must go through ReadAt
+bool ImageRange(s32 file, u32 offset, u32 size, u32* imageOffset);
 }

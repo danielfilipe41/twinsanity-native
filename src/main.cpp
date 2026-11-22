@@ -16,6 +16,13 @@
 #include "platform/time.h"
 #include "retail/libc.h"
 
+#ifndef __mips__
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#endif
+
 namespace
 {
 constexpr u32 MaxArguments = 256;
@@ -32,6 +39,64 @@ bool IsPlayingMovie(const GameMovieController* movie)
 {
     return movie != nullptr && movie->IsPlaying();
 }
+
+#ifndef __mips__
+// Where a host frame's time goes, printed with the frame log once a second: the game's step (update and end), its draw, the
+// wait for the display's turn, and a redraw between two steps. A load's worst frame is then read beside the page's own disc
+// line, which says how much of the step was the disc
+struct FramePhases
+{
+    std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
+    double logic = 0.0;
+    double draw = 0.0;
+    double present = 0.0;
+    double redraw = 0.0;
+    double worstLogic = 0.0;
+    double worstDraw = 0.0;
+    u32 frames = 0;
+};
+FramePhases g_Phases;
+
+double PhaseMs(std::chrono::steady_clock::time_point at)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - at).count();
+}
+
+void CountFrame(double logic, double draw, double present, double redraw)
+{
+    g_Phases.frames++;
+    g_Phases.logic += logic;
+    g_Phases.draw += draw;
+    g_Phases.present += present;
+    g_Phases.redraw += redraw;
+    g_Phases.worstLogic = logic > g_Phases.worstLogic ? logic : g_Phases.worstLogic;
+    g_Phases.worstDraw = draw > g_Phases.worstDraw ? draw : g_Phases.worstDraw;
+
+    static const bool logged = [] {
+        const char* value = std::getenv("TWINSANITY_FRAME_LOG");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    if (!logged)
+    {
+        return;
+    }
+
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    const long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_Phases.since).count();
+    if (elapsed < 1000)
+    {
+        return;
+    }
+
+    const double frames = static_cast<double>(g_Phases.frames);
+    std::fprintf(stderr,
+                 "host phases: %.2f logic %.2f draw %.2f present %.2f redraw ms a frame, worst %.2f logic %.2f draw, over %u "
+                 "frames\n",
+                 g_Phases.logic / frames, g_Phases.draw / frames, g_Phases.present / frames, g_Phases.redraw / frames,
+                 g_Phases.worstLogic, g_Phases.worstDraw, g_Phases.frames);
+    g_Phases = FramePhases();
+}
+#endif
 }
 
 extern "C"
@@ -47,16 +112,24 @@ namespace
 // run is still going
 bool GameFrame(GameContext* context, bool& drawn)
 {
+#ifndef __mips__
+    const std::chrono::steady_clock::time_point frameStart = std::chrono::steady_clock::now();
+#endif
     Platform::Graphics::WaitVSync();
     const bool playingMovie = IsPlayingMovie(G_GameMovieController);
 
 #ifndef __mips__
+    const double present = PhaseMs(frameStart);
     if (!Platform::Time::LogicStepDue())
     {
+        double redraw = 0.0;
         if (drawn && !playingMovie)
         {
+            const std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now();
             HostRedrawFrame(Platform::Time::LogicAlpha());
+            redraw = PhaseMs(at);
         }
+        CountFrame(0.0, 0.0, present, redraw);
         return g_GameState != GameStateQuitting;
     }
 
@@ -76,10 +149,20 @@ bool GameFrame(GameContext* context, bool& drawn)
     (void)drawn;
 #endif
 
+#ifndef __mips__
+    const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
+#endif
     context->BeginFrame(playingMovie);
     context->Update(playingMovie);
     context->EndFrame(playingMovie);
+#ifndef __mips__
+    const double logic = PhaseMs(stepStart);
+    const std::chrono::steady_clock::time_point drawStart = std::chrono::steady_clock::now();
+#endif
     context->Render(playingMovie);
+#ifndef __mips__
+    CountFrame(logic, PhaseMs(drawStart), present, 0.0);
+#endif
     return g_GameState != GameStateQuitting;
 }
 }

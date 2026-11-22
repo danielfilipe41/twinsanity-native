@@ -23,9 +23,10 @@
   #menu h1 { margin: 0 0 .7rem; font: 600 2.5rem/1.08 var(--sans); letter-spacing: -.015em; }
   #menu p { margin: 0 0 1.6rem; max-width: 30rem; color: var(--mute); font: 400 1rem/1.6 var(--sans); }
   #menu hr { border: 0; border-top: 1px solid var(--line); margin: 1.8rem 0 1.5rem; }
-  /* A picker is one row: its name in a narrow column, then the system's own picker beside it */
-  #menu .field { display: grid; grid-template-columns: 9rem minmax(0, 1fr); align-items: center;
-                 gap: 1rem; margin: 0 0 .8rem; }
+  /* A picker: its name, and the system's own picker directly under it, so the button reads as that field's rather than as a
+     column of its own beside the labels */
+  #menu .field { display: flex; flex-direction: column; align-items: flex-start; gap: .45rem;
+                 margin: 0 0 1.05rem; }
   #menu .field > span { font: 400 .88rem/1.4 var(--sans); color: var(--ink); white-space: nowrap; }
   #menu .field > span.tech { font-family: var(--mono); font-size: .84rem; }
   #menu .field input { font: 400 .8rem/1.4 var(--mono); color: var(--mute); min-width: 0; }
@@ -35,36 +36,43 @@
   #menu input[type=file]::file-selector-button:hover { background: #444548; }
   #menu .note { margin: .5rem 0 0; font: 400 .8rem/1.5 var(--mono); color: var(--mute); }
   #menu .note:empty { display: none; }
-  #menu .small { margin: 2.4rem 0 0; color: var(--mute); font: 400 .84rem/1.6 var(--sans); }
+  #menu .small { margin: 1.5rem 0 0; color: var(--mute); font: 400 .84rem/1.6 var(--sans); }
   input, button { font: inherit; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  #play { margin: 1.8rem 0 0; padding: .75rem 2rem; border: 0; border-radius: 3px; background: var(--accent);
+  #play { margin: 0; padding: .75rem 2rem; border: 0; border-radius: 3px; background: var(--accent);
           color: #1d1d1e; cursor: pointer; font: 600 .95rem/1 var(--sans); }
   #play:hover:not(:disabled) { background: #f0c05a; }
   #play:disabled { background: #38393c; color: #7c7b78; cursor: default; }
-  #status { margin: 1rem 0 0; min-height: 1.2em; font: .8rem/1.5 var(--mono); color: var(--mute); }
+  /* The row Play shares with its caption: the button's state (why it is grey, then what the page is doing) reads as one with
+     it, and on a narrow screen the caption wraps to the line under the button */
+  #menu .start-row { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; margin: 1.8rem 0 0; }
+  /* Named through the row: #menu's own paragraph rule is more specific than a bare #status, and its 1.6rem bottom margin was
+     what held the caption up off the button's centre (a flex row centres the margin box) */
+  #menu .start-row #status { margin: 0; min-height: 1.2em; font: .8rem/1.2 var(--mono); color: var(--mute); }
   code { font-family: var(--mono); font-size: .92em; color: var(--ink); }
   @media (max-width: 32rem) {
     #menu { padding-top: 7vh; }
     #menu h1 { font-size: 2rem; }
-    #menu .field { grid-template-columns: minmax(0, 1fr); gap: .35rem; margin-bottom: 1.1rem; }
   }
   /* The picture and everything over it. A phone's browser bar takes room out of the window: 100vh is the height the page
      would have with the bar hidden, so a canvas that tall has its lower part off the screen and the picture sits off centre.
      The dynamic height is the room that is really there, and it is re-read as the bar comes and goes. The fallback is for a
      browser that has no dvh */
-  #play-area { position: relative; }
-  canvas { display: block; width: 100vw; height: 100vh; outline: none; background: #000; touch-action: none; }
+  /* The picture's area is the run's, not the menu's: in the flow under the start screen it made the page two screens tall,
+     the second one empty black. Hidden until the run starts, and the canvas takes the area's width rather than 100vw, which
+     is wider than the page whenever a scrollbar is down the side -- what let some windows scroll from left to right */
+  #play-area { display: none; }
+  canvas { display: block; width: 100%; height: 100vh; outline: none; background: #000; touch-action: none; }
   @supports (height: 100dvh) { canvas { height: 100dvh; } }
   /* Fullscreen root: the page asks for this to be the fullscreen element, not the canvas, so the controls (which are inside
      it) are still drawn over the picture. A fullscreen canvas is the whole screen by itself and everything beside it goes */
-  #play-area:fullscreen { width: 100vw; height: 100vh; background: #000; }
-  #play-area:fullscreen canvas { width: 100vw; height: 100vh; }
+  #play-area:fullscreen { width: 100%; height: 100%; background: #000; }
+  #play-area:fullscreen canvas { width: 100%; height: 100%; }
   body.playing #menu { display: none; }
   /* A run fills the window: no page scroll behind the picture (a phone's own scroll of the page, and the pull that reloads
      it), and no rubber banding */
   body.playing { overflow: hidden; overscroll-behavior: none; }
-  body.playing #play-area { position: fixed; inset: 0; }
+  body.playing #play-area { display: block; position: fixed; inset: 0; }
   /* The run's log: the page has no terminal to write it to, so it is kept here and shown when the run stops on something
      the player needs to read, or when the player asks for it (F3) */
   /* A run that stopped, or one whose numbers are wanted, is read here: grey on a phone with no keyboard and no terminal, so
@@ -197,8 +205,10 @@
     <input id="mods" type="file" webkitdirectory multiple>
   </label>
   <p id="mods-status" class="note"></p>
-  <button id="play" disabled>Play</button>
-  <p id="status">Loading the game…</p>
+  <div class="start-row">
+    <button id="play" disabled>Play</button>
+    <p id="status">Loading the game…</p>
+  </div>
   <p class="small">You can also drop the image, or a folder of mods, anywhere on this page. An image from another region needs
      the European release's <code>SLES_525.68</code>, which this build reads its data from.</p>
 </div>
@@ -861,6 +871,31 @@
     }
 
     function begin(image) {
+      // ?benchkey: F9 measures the page's read ways while the game is running. Armed here, where the run starts, because the
+      // module's start-up callback lives on the Module object outside this scope and could not see a function defined in it
+      if (/[?&]benchkey\b/.test(location.search)) {
+        // Capture first: the game's own key handling must not swallow F9
+        window.addEventListener('keydown', function (event) {
+          if (event.key === 'F9') {
+            event.preventDefault();
+            transportBench(5, 'transport in game');
+          }
+        }, true);
+        report('web: bench key armed, F9 measures the read path while the game runs');
+      }
+      // ?transport measures the page's own read path first, then starts the run: the bench makes the same requests the game
+      // does, so it has to finish before the game's reads are in flight
+      if (/[?&]transport\b/.test(location.search)) {
+        transportBench().then(function () { beginRun(image); }, function (error) {
+          report('transport: ' + error);
+          beginRun(image);
+        });
+        return;
+      }
+      beginRun(image);
+    }
+
+    function beginRun(image) {
       writeMods().then(writeExe).then(function (exe) {
         var args = ['--mods-dir', ModsDirectory, '--disc', image];
         if (exe) {
@@ -887,12 +922,19 @@
     // time, so a 2.5 GB image costs only the chunks the run touches. A blocking read through XHR's binary response types is
     // refused on the page thread, but one through the old user-defined charset is not, and that is what keeps the reads
     // synchronous (the game's file I/O is) without a worker or a SharedArrayBuffer
+    // Where a blocking read's time goes: the request (the round trip plus the response string) and the byte loop that turns
+    // that string into bytes both run on the frame's thread. Which one dominates is what says whether the chunks should be
+    // larger (fewer round trips, more per request) or whether the decode itself is the problem
+    var readCost = { request: 0, decode: 0 };
+
     function readRange(url, offset, length) {
       var request = new XMLHttpRequest();
       request.open('GET', url, false);
       request.overrideMimeType('text/plain; charset=x-user-defined');
       request.setRequestHeader('Range', 'bytes=' + offset + '-' + (offset + length - 1));
+      var asked = performance.now();
       request.send();
+      readCost.request += performance.now() - asked;
       if (request.status !== 206) {
         // A server, or a browser's own file, that ignores the Range header answers 200 with the whole image in one string,
         // which is the memory this path exists to avoid: both callers read ranges only after a probe said they are answered
@@ -900,9 +942,11 @@
       }
       var text = request.responseText;
       var bytes = new Uint8Array(length);
+      var began = performance.now();
       for (var index = 0; index < length; index++) {
         bytes[index] = text.charCodeAt(index) & 0xFF;
       }
+      readCost.decode += performance.now() - began;
       return bytes;
     }
 
@@ -911,15 +955,33 @@
     function discFilesystem(url, size) {
       // 2 MB a read: each one is a blocking request plus a byte-by-byte decode of the response string, so fewer, larger reads
       // cost less per byte than many small ones. 32 of them kept is the same 64 MB of disc the page held before
-      var chunkSize = 1 << 21;
+      // 256 KB. Swept in real headed runs on the same route, lookahead off: two windows, then a real area load
+      // (menu -> new game, 70 s), which is the window a player waits through:
+      //   2 MB   191/674 ms, load 33 MB in 367 ms, worst stall 84 ms
+      //   1 MB   153/97  ms, load 33 MB in 367 ms, worst stall 84 ms
+      //   512 KB 112/95  ms, loads 31 MB in 217, 230, 317, 320, 325 ms; worst stalls 10, 17, 81, 90, 91 ms
+      //   256 KB 159/104 ms, loads 31 MB in 215, 218, 215, 335 ms; worst stalls 4, 4, 4, 87 ms
+      // 256 KB wins three loads in four, and its ordinary stalls are 3-4 ms against 10-17 at 512 KB, for twice as many
+      // requests. The ~90 ms load still appears at both sizes: the gaps say why (119 of 124 reads arrive under 16 ms apart),
+      // so that window is one frame doing several adjacent reads in a row against a cold disc. No chunk size fixes that --
+      // it is a synchronous read per chunk, and only reading without blocking would
+      var chunkSize = 1 << 18;
       var chunks = new Map();
       var order = [];
       var kept = 32;
       // The chunks a background request is already bringing, so one is not asked for twice, and how many may be in flight:
       // a load's misses come in bursts, and one request per miss at once would hold the page's memory in whole chunks
-      var fetching = {};
+      // The chunks on their way, by index: a read and the lookahead both join the one request a chunk is being fetched by
+      var pendingChunks = {};
       var inFlight = 0;
-      var ahead = 1;
+      // How far past a miss the page fetches ahead, and how many of those requests may be in flight. Four was tried against
+      // one on the same route: the same 84 reads and the same ~1100 ms of stalls either way (prefetched doubled to 44), because
+      // a load asks for the next chunk before a request can land. What a burst can do instead is ask once for several chunks
+      // Off, measured again with the reads asynchronous and joining one another: a run prefetched 10 chunks and the game
+      // took none of them, because the reads that miss are the ones the game waits for (its section loader asks for a read and
+      // waits in the same frame), and those are served by the synchronous request they make anyway. The chunks a polled read
+      // needs are its own, and it asks for them a frame at most before it needs them
+      var ahead = 0;
       var maxInFlight = 2;
 
       function remember(index, bytes) {
@@ -933,54 +995,275 @@
         }
       }
 
-      // The next chunks, fetched while the page is free: the reads that need them then find them here instead of stopping
-      // the game for a request each. An asynchronous request may take its bytes as an ArrayBuffer (only a blocking one may
-      // not), so a chunk brought this way costs no decode at all
-      function prefetch(index) {
-        var start = index * chunkSize;
-        if (start >= size || chunks.has(index) || fetching[index] || inFlight >= maxInFlight) {
+      // What the disc reads cost the frame: a native run's reads are the file system's and take microseconds, while here a
+      // chunk the page does not hold is a blocking request and a byte-by-byte decode on the frame's own thread. Reported
+      // beside the game's frame numbers every few seconds, so a stutter at a new area says whether it is the disc or the
+      // game's own loading (the frame log's cpu column says the rest)
+      var readCount = 0;
+      var readBytes = 0;
+      var readMs = 0;
+      var readWorst = 0;
+      var readHeld = 0;
+      // The bytes of the fetched chunks the game actually took: what a chunk size is worth depending on is how much of each
+      // one is used, because the stall follows the bytes fetched and a chunk fetched for a hundred kilobytes of it is waste
+      var readServed = 0;
+      var prefetched = 0;
+      // The shape of the misses: how often one is the chunk right after the last (which a prefetch would have served) and how
+      // much frame time passed in between (the room a prefetch had to land in). A chunk size or a read-ahead is judged on these
+      // two, and neither can be read off a total
+      var readAdjacent = 0;
+      var readGap = 0;
+      var lastMiss = -1;
+      var lastMissAt = 0;
+      // What the lookahead did: a chunk it delivered that the game then took (a stall that did not happen), one the game asked
+      // for while the prefetch was still in flight (the synchronous read cannot join it, so it asks again -- a duplicate), and
+      // the gaps binned, because a mean hides a burst next to a long quiet stretch
+      var prefetchWins = 0;
+      var readCollisions = 0;
+      var gapBuckets = [0, 0, 0, 0, 0];
+      var delivered = {};
+      var lastCost = 0;
+
+      function cost() {
+        var now = performance.now();
+        if ((readCount === 0 && readAsync === 0) || now - lastCost < 5000) {
           return;
         }
-        fetching[index] = true;
-        inFlight++;
-        var length = Math.min(chunkSize, size - start);
-        var request = new XMLHttpRequest();
-        request.open('GET', url, true);
-        request.responseType = 'arraybuffer';
-        request.setRequestHeader('Range', 'bytes=' + start + '-' + (start + length - 1));
-        request.onload = function () {
-          delete fetching[index];
-          inFlight--;
-          if (request.status !== 206 && request.status !== 200) {
-            return;
-          }
-          var bytes = new Uint8Array(request.response || new ArrayBuffer(0));
-          if (request.status === 206) {
-            remember(index, bytes);
-          } else if (bytes.length >= start + length) {
-            remember(index, bytes.subarray(start, start + length));
-          }
-        };
-        request.onerror = function () {
-          delete fetching[index];
-          inFlight--;
-        };
-        request.send();
+        report('disc: ' + readCount + ' blocking reads, ' + Math.round(readBytes / 1048576) + ' MB fetched (' +
+               Math.round(readServed / 1048576) + ' MB used), ' + Math.round(readMs) + ' ms on the frame thread (worst ' +
+               Math.round(readWorst) + ' ms: request ' + Math.round(readCost.request) + ' ms, decode ' +
+               Math.round(readCost.decode) + ' ms), ' + readHeld + ' held, ' + prefetched + ' prefetched, adjacent ' +
+               readAdjacent + '/' + readCount + ', gap ' + (readCount > 1 ? Math.round(readGap / (readCount - 1)) : 0) +
+               ' ms, gaps <16/<50/<200/<1000/rest ' + gapBuckets.join('/') + ', lookahead took ' + prefetchWins + ' of ' +
+               prefetched + ', collisions ' + readCollisions + ', async ' + readAsync + ' reads ' +
+               Math.round(readAsyncBytes / 1048576) + ' MB, ' + readRequests + ' requests, ' + Math.round(readAsyncMs) +
+               ' ms wall (worst ' + Math.round(readAsyncWorst) + ' ms)');
+        lastCost = now;
+        readCount = 0;
+        readBytes = 0;
+        readMs = 0;
+        readWorst = 0;
+        readHeld = 0;
+        readServed = 0;
+        prefetched = 0;
+        readCost.request = 0;
+        readCost.decode = 0;
+        readAdjacent = 0;
+        readGap = 0;
+        lastMiss = -1;
+        lastMissAt = 0;
+        prefetchWins = 0;
+        readCollisions = 0;
+        gapBuckets = [0, 0, 0, 0, 0];
+        readAsync = 0;
+        readAsyncBytes = 0;
+        readAsyncMs = 0;
+        readAsyncWorst = 0;
+        readRequests = 0;
       }
 
+      // The next chunk, fetched while the page is free: the read that needs it then finds it held, or joins the request it
+      // started. Every chunk request is made in loadChunk, so a prefetch and a read of one chunk share one request
+      function prefetch(index) {
+        var start = index * chunkSize;
+        if (start >= size || chunks.has(index) || pendingChunks[index] || inFlight >= maxInFlight) {
+          return;
+        }
+        inFlight++;
+        loadChunk(index).then(function () {
+          inFlight--;
+          prefetched++;
+          delivered[index] = true;
+        }, function () {
+          inFlight--;
+        });
+      }
+
+
+      // One chunk a miss. Four at once was tried against this on the same route: 84 reads and 168 MB fetched became 38 reads
+      // and 208 MB, with the stall unchanged at ~1150 ms. A read's time follows its bytes, not the request count, so fetching
+      // ahead of the game only pulled over data it never asked for -- 40 MB of a transition's disc read for nothing
       function chunk(index) {
         var held = chunks.get(index);
         if (held) {
+          if (delivered[index]) {
+            prefetchWins++;
+            delete delivered[index];
+          }
+          readHeld++;
+          cost();
           return held;
         }
+        // Two chunks in one request was tried three ways and measured worse every time: on adjacency alone (29-30 MB fetched for
+        // 14-15 MB used), as a flat 1 MB chunk (worst stall 84 ms on a real area load), and gated on the utilisation the run is
+        // actually getting (34 MB fetched for 27, and an 87 ms stall). One 512 KB request per chunk is the shape that fits this
+        // engine's reads -- a longer read costs more in one stall than the request it saves
         var start = index * chunkSize;
-        var bytes = readRange(url, start, Math.min(chunkSize, size - start));
+        var length = Math.min(chunkSize, size - start);
+        if (pendingChunks[index]) {
+          // A lookahead for this very chunk is still on the way: the synchronous read cannot wait on it, so it asks for the same
+          // bytes again. Every one of these is bytes bought twice
+          readCollisions++;
+        }
+        var began = performance.now();
+        var bytes = readRange(url, start, length);
+        var took = performance.now() - began;
+        if (lastMiss >= 0) {
+          if (index === lastMiss + 1) {
+            readAdjacent++;
+          }
+          var gap = began - lastMissAt;
+          readGap += gap;
+          gapBuckets[gap < 16 ? 0 : gap < 50 ? 1 : gap < 200 ? 2 : gap < 1000 ? 3 : 4]++;
+        }
+        lastMiss = index;
+        lastMissAt = performance.now();
+        readCount++;
+        readBytes += length;
+        readMs += took;
+        readWorst = Math.max(readWorst, took);
         remember(index, bytes);
         for (var next = 1; next <= ahead; next++) {
           prefetch(index + next);
         }
+        cost();
         return bytes;
       }
+
+      // A chunk an asynchronous read waits on. Unlike the lookahead this is never narrowed by a budget -- the game is stopped on
+      // the read, and one chunk of latency is the read's whole cost -- and a chunk the lookahead is already bringing is joined
+      function loadChunk(index) {
+        if (chunks.has(index)) {
+          return Promise.resolve(chunks.get(index));
+        }
+        if (pendingChunks[index]) {
+          return pendingChunks[index];
+        }
+        var start = index * chunkSize;
+        var length = Math.min(chunkSize, size - start);
+        var promise = new Promise(function (resolve, reject) {
+          var request = new XMLHttpRequest();
+          try {
+            request.open('GET', url, true);
+            request.responseType = 'arraybuffer';
+            request.setRequestHeader('Range', 'bytes=' + start + '-' + (start + length - 1));
+          } catch (error) {
+            delete pendingChunks[index];
+            reject(error);
+            return;
+          }
+          request.onload = function () {
+            delete pendingChunks[index];
+            var whole = new Uint8Array(request.response || new ArrayBuffer(0));
+            if (request.status === 206) {
+              remember(index, whole);
+              resolve(whole);
+              return;
+            }
+            // A server that ignores the Range header: the whole image came, so the chunk is cut out of it
+            if (request.status === 200 && whole.length >= start + length) {
+              var part = whole.subarray(start, start + length);
+              remember(index, part);
+              resolve(part);
+              return;
+            }
+            reject(new Error('range ' + request.status));
+          };
+          request.onerror = function () {
+            delete pendingChunks[index];
+            reject(new Error('range request failed'));
+          };
+          readRequests++;
+          request.send();
+        });
+        pendingChunks[index] = promise;
+        return promise;
+      }
+
+      // The engine's streaming reads (src/platform/sdl3/stream.cpp's Submit on the web): what the game asks for is copied out
+      // of the chunks the page holds, or fetched and then copied when it lands. The engine keeps the game's destination
+      // pointer and its own generation number, which says whether the copy is still the one it wants
+      var readAsync = 0;
+      var readAsyncBytes = 0;
+      var readAsyncMs = 0;
+      var readAsyncWorst = 0;
+      // The chunk requests made off the frame thread (a read's, and the lookahead's), which is what a fetch costs before its
+      // bytes are there
+      var readRequests = 0;
+
+      function copyRange(offset, length, destination) {
+        if (length <= 0) {
+          return 0;
+        }
+        var first = Math.floor(offset / chunkSize);
+        var last = Math.floor((offset + length - 1) / chunkSize);
+        for (var index = first; index <= last; index++) {
+          if (!chunks.has(index)) {
+            return 0;
+          }
+        }
+        var position = offset;
+        var done = 0;
+        var heap = Module.HEAPU8;
+        if (!heap) {
+          return 0;
+        }
+        while (done < length) {
+          var at = Math.floor(position / chunkSize);
+          var within = position - at * chunkSize;
+          var bytes = chunks.get(at);
+          var take = Math.min(length - done, bytes.length - within);
+          heap.set(bytes.subarray(within, within + take), destination + done);
+          if (delivered[at]) {
+            prefetchWins++;
+            delete delivered[at];
+          }
+          position += take;
+          done += take;
+        }
+        readServed += done;
+        return done;
+      }
+
+      // The fetch starts on the next task, not inside the engine's call: the game's section loader asks for a read and then waits
+      // for it in the same frame, which the engine finishes on its own thread -- asking the engine first means that read is never
+      // fetched at all, where starting here would fetch its bytes twice (measured: 40 MB fetched for 27 MB used)
+      function startRead(channel, generation, offset, length) {
+        // The whole wait the game sees, not just the fetch: a polled read is noticed on the frame after its bytes are here
+        var began = performance.now();
+        setTimeout(function () {
+          try {
+            if (!Module._HostReadValid(channel, generation)) {
+              return;
+            }
+            var first = Math.floor(offset / chunkSize);
+            var last = Math.floor((offset + length - 1) / chunkSize);
+            var needed = [];
+            for (var index = first; index <= last; index++) {
+              needed.push(loadChunk(index));
+            }
+            Promise.all(needed).then(function () {
+              readAsync++;
+              readAsyncBytes += length;
+              var took = performance.now() - began;
+              readAsyncMs += took;
+              readAsyncWorst = Math.max(readAsyncWorst, took);
+              Module._HostReadDone(channel, generation);
+            }, function (error) {
+              // The engine still has to hear about it: the copy comes up short and the read fails as a short one
+              report('disc: async read failed: ' + error);
+              Module._HostReadDone(channel, generation);
+            });
+          } catch (error) {
+            // A read the engine is waiting on must always be answered, or the channel would stay busy for good
+            report('disc: async read failed: ' + error);
+            Module._HostReadDone(channel, generation);
+          }
+        }, 0);
+      }
+
+      Module.twinsanityCopyCached = copyRange;
+      Module.twinsanityReadInto = startRead;
 
       // The stat every node answers with: the image's size for the file, and no timestamps to speak of
       function statOf(node, fileSize) {
@@ -1001,6 +1284,7 @@
             var bytes = chunk(index);
             var take = Math.min(end - position, bytes.length - within);
             buffer.set(bytes.subarray(within, within + take), offset + done);
+            readServed += take;
             position += take;
             done += take;
           }
@@ -1050,10 +1334,176 @@
       };
     }
 
+    // What the two ways of asking for the same bytes cost: the synchronous text request the game's reads go through (the
+    // browser turns every byte into a UTF-16 character, and the page turns them back) against an asynchronous arraybuffer
+    // request, which skips that conversion. The arraybuffer path cannot feed a synchronous read -- Atomics.wait is not
+    // allowed on a window's main thread, so a worker cannot hand the bytes back while the page waits -- which is why this is
+    // measured rather than used: it is what making the engine's reads asynchronous (or running the game on a worker) is worth.
+    // Two ranges, not the same one twice, so the second is not a cache hit of the first
+    function probeReadCost(url, size) {
+      var span = 4 << 20;
+      var at = size - (span * 4);
+      if (at <= 0) {
+        return;
+      }
+      var text = new XMLHttpRequest();
+      text.open('GET', url, false);
+      text.overrideMimeType('text/plain; charset=x-user-defined');
+      text.setRequestHeader('Range', 'bytes=' + at + '-' + (at + span - 1));
+      var textBegan = performance.now();
+      text.send();
+      var textMs = performance.now() - textBegan;
+      var other = at + (span * 2);
+      var bufferBegan = performance.now();
+      fetch(url, { headers: { Range: 'bytes=' + other + '-' + (other + span - 1) } }).then(function (response) {
+        return response.arrayBuffer();
+      }).then(function (buffer) {
+        // What the arraybuffer request waited is its own duration, not the time this callback ran: the game is loading on the
+        // main thread by then, and every blocking read there delays the callback without delaying the bytes. Resource Timing
+        // has the request's start and end, which is what the two ways are really compared on
+        var waited = performance.now() - bufferBegan;
+        var entries = performance.getEntriesByType('resource');
+        for (var index = entries.length - 1; index >= 0; index--) {
+          if (entries[index].name.indexOf(url) >= 0 && entries[index].startTime >= bufferBegan - 1) {
+            waited = entries[index].duration;
+            break;
+          }
+        }
+        var mb = span / 1048576;
+        report('disc: probe ' + mb + ' MB: text request ' + Math.round(textMs) + ' ms (' + (textMs / mb).toFixed(2) +
+               ' ms/MB, ' + (text.responseText ? text.responseText.length : 0) + ' bytes), arraybuffer ' +
+               Math.round(waited) + ' ms (' + (waited / mb).toFixed(2) + ' ms/MB, ' + buffer.byteLength + ' bytes)');
+      }, function (error) {
+        report('disc: probe arraybuffer failed: ' + error);
+      });
+    }
+
+    // Where the disc came from and how big it is: the transport bench asks for ranges of it
+    var discSource = null;
+
+    // ?benchkey: F9 measures the page's read ways while the game is running. The boot-time bench cannot say whether the
+    // game's request cost is the transport or the state the page is in while loading (a heavy frame, the chunk cache, GC), and
+    // five ranges are enough to tell: same arms, same page, the game drawing behind them
+    // What the page's two ways of reading 2 MB off the disc cost, on ranges it has not touched: the game's synchronous text
+    // request, an awaited arraybuffer fetch, the same request with a response the browser may not cache (a header only the
+    // server can send), and the synchronous path split into four smaller requests. The probe measures one warm range and
+    // cannot tell those apart; this measures thirty distinct ones, arms round-robin so drift hits them alike, and reports
+    // ms/MB per arm. Run with ?transport, before the run starts
+    function transportBench(howMany, label) {
+      if (!discSource) {
+        report('transport: no disc mounted');
+        return Promise.resolve();
+      }
+      var wanted = howMany || 30;
+      var target = discSource.url;
+      var uncached = target + (target.indexOf('?') >= 0 ? '&' : '?') + 'nostore=1';
+      var span = 2 << 20;
+      var step = Math.max(span, Math.floor((discSource.size * 0.8) / 32));
+      var ranges = [];
+      for (var index = 0; index < wanted; index++) {
+        var at = (8 << 20) + (index * step);
+        if (at + span >= discSource.size) {
+          break;
+        }
+        ranges.push(at);
+      }
+
+      function bytesHeader(at, length) {
+        return 'bytes=' + at + '-' + (at + length - 1);
+      }
+
+      function textRange(url, at, length) {
+        var began = performance.now();
+        var request = new XMLHttpRequest();
+        request.open('GET', url, false);
+        request.overrideMimeType('text/plain; charset=x-user-defined');
+        request.setRequestHeader('Range', bytesHeader(at, length));
+        request.send();
+        return { ms: performance.now() - began, bytes: request.responseText ? request.responseText.length : 0 };
+      }
+
+      function bufferRange(url, at, length, cache) {
+        var began = performance.now();
+        var settings = { headers: { Range: bytesHeader(at, length) } };
+        if (cache) {
+          settings.cache = cache;
+        }
+        return fetch(url, settings).then(function (response) {
+          // Until the headers are in, the transfer has not started: what the body costs is the rest
+          var headers = performance.now() - began;
+          return response.arrayBuffer().then(function (buffer) {
+            return { ms: performance.now() - began, headers: headers, bytes: buffer.byteLength };
+          });
+        });
+      }
+
+      var arms = [
+        {
+          name: 'sync text',
+          run: function (at) { return Promise.resolve(textRange(target, at, span)); }
+        },
+        {
+          name: 'async arraybuffer',
+          run: function (at) { return bufferRange(target, at, span); }
+        },
+        {
+          // The same, with a response nothing may cache and a request that bypasses the cache on this side: if the headers do
+          // not collapse, the latency to them is not the HTTP cache
+          name: 'async uncached',
+          run: function (at) { return bufferRange(uncached, at, span, 'no-store'); }
+        },
+        {
+          name: 'sync text uncached',
+          run: function (at) { return Promise.resolve(textRange(uncached, at, span)); }
+        },
+        {
+          name: 'sync text 4 x 512 KB',
+          run: function (at) {
+            var began = performance.now();
+            var bytes = 0;
+            for (var piece = 0; piece < 4; piece++) {
+              bytes += textRange(target, at + (piece * (span / 4)), span / 4).bytes;
+            }
+            return Promise.resolve({ ms: performance.now() - began, bytes: bytes });
+          }
+        }
+      ];
+      arms.forEach(function (arm) {
+        arm.ms = 0;
+        arm.headers = 0;
+      });
+      var pending = Promise.resolve();
+      ranges.forEach(function (at) {
+        arms.forEach(function (arm) {
+          pending = pending.then(function () { return arm.run(at); }).then(function (got) {
+            arm.ms += got.ms;
+            arm.headers += got.headers || 0;
+          }, function (error) {
+            arm.error = String(error);
+          });
+        });
+      });
+      var megabytes = (span / 1048576) * ranges.length;
+      return pending.then(function () {
+        var line = (label || 'transport') + ': ' + ranges.length + ' x 2 MB distinct ranges, ms/MB';
+        arms.forEach(function (arm) {
+          line += ' | ' + arm.name + ' ' + (arm.error ? arm.error : (arm.ms / megabytes).toFixed(2) +
+                  (arm.headers > 0 ? ' (of it headers ' + (arm.headers / megabytes).toFixed(2) + ')' : ''));
+        });
+        report(line);
+      });
+    }
+
     function mountDisc(url, size) {
       try { FS.unmount('/disc'); } catch (error) {}
       try { FS.mkdir('/disc'); } catch (error) {}
       FS.mount(discFilesystem(url, size), {}, '/disc');
+      discSource = { url: url, size: size };
+      // The probe fetches 8 MB to compare the two transports, and that answer is now in the sweep above: it runs only
+      // when asked (?probe), not on every run's start-up
+      if (/[?&]probe\b/.test(location.search)) {
+        probeReadCost(url, size);
+      }
     }
 
     // Whether a URL answers a request for part of itself. A picked file is one too: the browser gives it a blob: URL of its

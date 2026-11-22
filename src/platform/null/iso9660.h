@@ -25,6 +25,10 @@ bool Find(const char* gamePath, u64* offset, u32* size);
 // Bytes at a position in the image's logical space (offset is a byte, so a file at LBA 300000 reads at 300000 * 2048).
 // Positioned, so two threads reading do not split each other's read; returns the bytes read, negative on failure
 s32 ReadAt(u64 offset, void* buffer, s32 size);
+// Whether a byte at an offset of the logical volume is the image's byte at that offset: true for a plain 2048-byte-sector
+// image with no patch over it, false for a raw dump (whose sectors are remapped) and for a patched volume (whose bytes are
+// the patch's). A host that reads the image itself (the page's disc) may only skip this reader for the true case
+bool Direct();
 
 // The image the reader opened ("" when it has none): a patch of the disc (Platform::DiscPatch) is read over it
 const char* ImagePath();
