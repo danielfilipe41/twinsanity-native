@@ -141,5 +141,6 @@ WebGPU is **blocked** there. bgfx's WebGPU renderer is written against Dawn's `w
 run time, and there is no 32-bit Dawn: Dawn builds for x86-64 and arm64 only (x86 is listed untested upstream), while this
 port is 32-bit because the retail data uses 32-bit pointers. A 32-bit process cannot load a 64-bit library, so
 `TWINSANITY_RENDERER=webgpu` fails with `bgfx::init failed` until a 32-bit Dawn exists. On the web there is no such
-library: the browser provides WebGPU, so the web build's `webgpu` renderer is only waiting on the wasm build itself
-(see [BUILD_WEB.md](BUILD_WEB.md)). Metal and Direct3D need their own platforms.
+library: the browser provides WebGPU, so a `WEBGPU=1` web build runs that renderer against bgfx built for wasm with it
+enabled (`third_party/bgfx/src/config.h`'s Emscripten line; see [BUILD_WEB.md](BUILD_WEB.md)). The default web build is
+WebGL, because WebGPU's link needs Asyncify, which costs size and speed. Metal and Direct3D need their own platforms.

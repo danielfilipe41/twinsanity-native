@@ -58,6 +58,12 @@ RUNTIME_DATA_FLAGS = ["-DTWINSANITY_RUNTIME_DATA", f"-I{(HERE / 'tools').as_posi
                       f"-I{(HERE / 'build' / 'host' / 'runtime').as_posix()}"] if RUNTIME_DATA else []
 # PROFILE=1 (PLATFORM=web): the link keeps the wasm's function names for a profiler (see the docstring)
 PROFILE = os.environ.get("PROFILE") == "1"
+# WEBGPU=1 (PLATFORM=web): the page can run bgfx's WebGPU renderer as well as WebGL. That renderer waits on the browser
+# through wgpuInstanceWaitAny, which the WebGPU port only offers to a module that can suspend, so this build links with
+# Asyncify (see the link flags below; JSPI cannot suspend from the main loop's callback). Asyncify costs size and speed, so
+# it is off by default: the published page is one WebGL build that plays everywhere, and a comparison build is made locally
+# with WEBGPU=1 and opened as ?renderer=webgpu (or ?renderer=webgl, for the same module's other renderer)
+WEBGPU = os.environ.get("WEBGPU") == "1"
 
 # Host builds (PLATFORM=null/sdl3): 32-bit x86 keeps the retail 32-bit-pointer layouts, so CHECK_SIZE/OFFSET hold.
 # -malign-double matches the MIPS ABI's 8-byte doubles; SSE2 avoids x87 extended precision. No -mno-check-zero-division:
@@ -396,8 +402,16 @@ def main_web():
                                           # cannot, for a few hundred kilobytes over the wire (nothing at run time)
                                           '--profiling-funcs',
                                           '-sINVOKE_RUN=0', '-sFORCE_FILESYSTEM=1', '-lidbfs.js',
-                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS,HEAPU8',                                '--shell-file', 'web/shell.html'] +
+                                          '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS,HEAPU8', '--shell-file', 'web/shell.html'] +
                                 (['--profiling-funcs'] if PROFILE else []) +
+                                # WEBGPU=1 (see the top): bgfx waits on the browser with wgpuInstanceWaitAny -- at start-up for the
+                                # adapter and the device, and once a frame for the GPU timer's readback -- and the WebGPU port only
+                                # offers that to a module that can suspend. It has to be Asyncify rather than JSPI: JSPI can only
+                                # suspend inside a promising call, and the page's frames come from emscripten_set_main_loop's
+                                # callback, which is not one, so a JSPI build stops dead at the second frame. Asyncify rewrites
+                                # the module (bigger, and slower) and can suspend anywhere, which is the shape bgfx's own
+                                # Emscripten paths expect (emscripten_has_asyncify)
+                                (['-sASYNCIFY'] if WEBGPU else []) +
                                 web_bgfx_flags())}",
         "",
         "rule cxx",
@@ -415,7 +429,10 @@ def main_web():
         "  command = cp $in $out",
         "  description = COPY $out",
         "rule configure",
-        f"  command = PLATFORM=web{' DATA=runtime' if RUNTIME_DATA else ''} python3 configure.py",
+        # The flags this build was configured with, so ninja's own re-run of the generator (when this script is newer than
+        # build.ninja) writes the same build again instead of quietly dropping them
+        f"  command = PLATFORM=web{' DATA=runtime' if RUNTIME_DATA else ''}"
+        f"{' WEBGPU=1' if WEBGPU else ''}{' PROFILE=1' if PROFILE else ''} {quote(sys.executable)} configure.py",
         "  generator = 1",
         "",
     ]

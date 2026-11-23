@@ -911,6 +911,13 @@
         if (/[?&]overdraw\b/.test(location.search)) {
           args.push('--overdraw');
         }
+        // ?renderer=webgpu (or webgl) starts the run on the renderer it names: the page is the one host with no environment
+        // to set a variable in, so the name goes in as an argument (entry.cpp), and a build carrying both renderers asks
+        // bgfx for the one named -- a renderer it does not have is refused in the log rather than quietly substituted
+        var renderer = /[?&]renderer=([^&]+)/.exec(location.search);
+        if (renderer) {
+          args.push('--renderer', renderer[1]);
+        }
         report('starting the game with ' + args.join(' '));
         // Added, not set: the touch controls' class is already there on a device that wants them
         document.body.classList.add('playing');

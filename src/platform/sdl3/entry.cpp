@@ -42,6 +42,7 @@ int main(int argc, char** argv)
     const char* dumpData = nullptr;
     const char* executable = nullptr;
     const char* modsFolder = nullptr;
+    const char* renderer = nullptr;
     std::vector<std::string> mods;
     bool noMods = false;
     bool verifyMods = false;
@@ -141,9 +142,33 @@ int main(int argc, char** argv)
 #endif
             continue;
         }
+        // The renderer this run starts (the web page's ?renderer=): a browser has no environment to set a variable in
+        // before the module starts, so the name comes in as an argument and goes where bgfx init reads it
+        if (std::strcmp(argv[index], "--renderer") == 0 && index + 1 < argc)
+        {
+            renderer = argv[index + 1];
+            index++;
+            continue;
+        }
+        if (std::strncmp(argv[index], "--renderer=", 11) == 0)
+        {
+            renderer = argv[index] + 11;
+            continue;
+        }
         argv[count++] = argv[index];
     }
     argc = count;
+
+    // The renderer's name, as TWINSANITY_RENDERER: bgfx_context.cpp's RendererFromEnvironment reads it, and a name the
+    // build has no renderer for is refused there with the word, rather than started and failing at its first draw
+    if (renderer != nullptr)
+    {
+#ifdef _WIN32
+        _putenv_s("TWINSANITY_RENDERER", renderer);
+#else
+        setenv("TWINSANITY_RENDERER", renderer, 1);
+#endif
+    }
 
     // The boot logos, for this run only (the settings file's `skip_intro` keeps it): the movies after them, a new game's intro
     // included, still play

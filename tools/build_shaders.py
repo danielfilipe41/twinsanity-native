@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -90,10 +91,14 @@ D3D_BACKENDS = (("_dxbc", "dxbc", "s_5_0", "windows"),)
 
 
 def FindShaderc() -> list:
-    for config in ("linux64_gcc", "linux32_gcc", "osx64_clang", "windows_vs2022"):
-        candidate = BGFX / ".build" / config / "bin" / "shadercRelease"
-        if candidate.is_file():
-            return [str(candidate)]
+    # windows_vs2022 and win32_mingw-gcc are both ways a Windows host builds it (the MinGW project's tools land beside
+    # the libraries this port links, which is where `make tools` in third_party/bgfx puts it here)
+    for config in ("linux64_gcc", "linux32_gcc", "osx64_clang", "windows_vs2022", "win32_mingw-gcc"):
+        # A Windows host's build carries the .exe suffix, and runs directly (the wine path is FindWindowsShaderc's)
+        for name in ("shadercRelease", "shadercRelease.exe"):
+            candidate = BGFX / ".build" / config / "bin" / name
+            if candidate.is_file():
+                return [str(candidate)]
     for name in ("shaderc", "shadercRelease"):
         found = shutil.which(name)
         if found:
@@ -129,7 +134,9 @@ def Build(shaderc: list, stem: str, suffix: str, arraySuffix: str, profile: str,
     shaderType = next(t for prefix, t in TYPE_OF.items() if stem.startswith(prefix))
     array = f"{stem}_{arraySuffix}"
 
-    output = target if not check else Path("/tmp") / f"{stem}{suffix}.bin.h"
+    # The check compiles beside the build and compares: the platform's own temporary directory, since "/tmp" is not a
+    # place a Windows host has
+    output = target if not check else Path(tempfile.gettempdir()) / f"{stem}{suffix}.bin.h"
     command = [
         *shaderc, "-f", str(source), "-o", str(output), "--type", shaderType, "--platform", shadercPlatform,
         "-p", profile, "--bin2c", array, "--varyingdef", str(varying),
