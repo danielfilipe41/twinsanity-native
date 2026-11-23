@@ -60,6 +60,9 @@ void DefaultRendererChain(bgfx::RendererType::Enum* chain, u32* count)
 {
     u32 n = 0;
 #if defined(__EMSCRIPTEN__)
+    // WebGPU first: it measured about ten frames a second more than WebGL on a phone, and WebGL stalls on its first frame
+    // there. Browsers without WebGPU (or a bgfx built without that renderer) fail the first attempt and start on WebGL
+    chain[n++] = bgfx::RendererType::WebGPU;
     chain[n++] = bgfx::RendererType::OpenGLES;
 #elif defined(__ANDROID__)
     chain[n++] = bgfx::RendererType::OpenGLES;
@@ -95,7 +98,7 @@ bool RendererNamed()
 //   Windows  opengl, vulkan, direct3d11, direct3d12
 //   Android  opengles (its GL), vulkan
 //   macOS    metal (no blobs yet)
-//   web      webgpu, webgl/opengles (no blobs yet)
+//   web      webgpu, webgl/opengles
 // A named renderer is tried alone, so a driver that cannot take it fails here instead of quietly rendering on another
 // backend; the default order is DefaultRendererChain's. A renderer this build has no shader blobs for is refused with a
 // word rather than started and failing at its first draw (HostCreateShader)
@@ -104,12 +107,14 @@ bgfx::RendererType::Enum RendererFromEnvironment(bool* fallback)
     *fallback = false;
     const char* requested = std::getenv("TWINSANITY_RENDERER");
 #if defined(__EMSCRIPTEN__)
-    // The web's renderer is WebGL, which is bgfx's GL ES backend: it is the one bgfx's emscripten build carries, and the
-    // browser has it everywhere. WebGPU is named explicitly, for a build of bgfx whose WebGPU backend can wait for the
-    // browser's adapter (bgfx's own emscripten build leaves that renderer out)
-    if (requested == nullptr || *requested == '\0' || std::strcmp(requested, "opengl") == 0 ||
-        std::strcmp(requested, "webgl") == 0 || std::strcmp(requested, "opengles") == 0 ||
-        std::strcmp(requested, "gles") == 0)
+    // WebGPU is the web's renderer where it exists (the chain above puts it first, WebGL second for a browser without it),
+    // and GL ES is what a page names as webgl/opengles. Neither is named here for the default: the chain decides
+    if (requested == nullptr || *requested == '\0')
+    {
+        return bgfx::RendererType::WebGPU;
+    }
+    if (std::strcmp(requested, "opengl") == 0 || std::strcmp(requested, "webgl") == 0 ||
+        std::strcmp(requested, "opengles") == 0 || std::strcmp(requested, "gles") == 0)
     {
         return bgfx::RendererType::OpenGLES;
     }

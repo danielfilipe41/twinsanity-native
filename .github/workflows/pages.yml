@@ -41,18 +41,25 @@ jobs:
           version: 7.0.0
 
       # bgfx's own project files are not in its checkout (its .build is ignored), so its wasm targets are generated first,
-      # then only the four libraries this build links: the examples the makefile's wasm target also builds are not needed
+      # then only the four libraries this build links: the examples the makefile's wasm target also builds are not needed.
+      # Its Emscripten config leaves the WebGPU renderer out, so these two defines turn on the pair the page runs: WebGPU
+      # first, GL ES (WebGL) beside it for a browser without WebGPU, and the GL version named rather than left to the
+      # defaults those defines switch off
       - name: bgfx, bx and bimg for wasm32
         run: |
           set -o pipefail
           export EMSCRIPTEN="$(dirname "$(command -v emcc)")"
           make -C third_party/bgfx .build/projects/gmake-wasm
-          make -C third_party/bgfx/.build/projects/gmake-wasm config=release bgfx bimg bimg_decode bx -j"$(nproc)"
+          make -C third_party/bgfx/.build/projects/gmake-wasm config=release \
+               CPPFLAGS="-DBGFX_CONFIG_RENDERER_WEBGPU=1 -DBGFX_CONFIG_RENDERER_OPENGLES=30" \
+               bgfx bimg bimg_decode bx -j"$(nproc)"
 
+      # WEBGPU=1: the page starts on WebGPU (about ten frames a second more than WebGL on a phone, and the only renderer
+      # that runs there: WebGL stalls on the first frame on Android), which needs the link's Asyncify to wait on the browser
       - name: Build the page
         run: |
           set -o pipefail
-          DATA=runtime PLATFORM=web python3 configure.py
+          DATA=runtime WEBGPU=1 PLATFORM=web python3 configure.py
           ninja game
 
       # The three files and nothing else: the script lists them by name, so a disc image beside the build cannot be

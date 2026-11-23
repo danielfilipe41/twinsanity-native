@@ -90,7 +90,7 @@ measured about four times OpenGL's frame rate on the Windows test machine.
 | Windows | `vulkan` (default), `direct3d12`, `direct3d11`, `opengl` (see [the Direct3D blobs](BUILD_WINDOWS.md#direct3d)) |
 | Android | `opengles` / `gles` (default; its GL), `vulkan` |
 | macOS | `metal` (no Metal shaders yet) |
-| Web | `webgl` / `opengles` (WebGL, GLSL ES 300), `webgpu` (WGSL) |
+| Web | `webgpu` (default, WGSL), `webgl` / `opengles` (GLSL ES 300) |
 
 Android and macOS have no platform layer here yet: their rows are the renderers and shader backends the tables already hold.
 
@@ -142,5 +142,6 @@ run time, and there is no 32-bit Dawn: Dawn builds for x86-64 and arm64 only (x8
 port is 32-bit because the retail data uses 32-bit pointers. A 32-bit process cannot load a 64-bit library, so
 `TWINSANITY_RENDERER=webgpu` fails with `bgfx::init failed` until a 32-bit Dawn exists. On the web there is no such
 library: the browser provides WebGPU, so a `WEBGPU=1` web build runs that renderer against bgfx built for wasm with it
-enabled (`third_party/bgfx/src/config.h`'s Emscripten line; see [BUILD_WEB.md](BUILD_WEB.md)). The default web build is
-WebGL, because WebGPU's link needs Asyncify, which costs size and speed. Metal and Direct3D need their own platforms.
+enabled (`third_party/bgfx/src/config.h`'s Emscripten line; see [BUILD_WEB.md](BUILD_WEB.md)). The web page starts on
+WebGPU and falls back to WebGL where the browser has no WebGPU: WebGPU's link needs Asyncify, which costs size and speed,
+but it was the faster one on a phone and the only one that runs there. Metal and Direct3D need their own platforms.

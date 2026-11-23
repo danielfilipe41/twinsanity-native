@@ -399,8 +399,9 @@ def main_web():
                                           '-sEMULATE_FUNCTION_POINTER_CASTS=1',
                                           # Function names in the module, so a stack trace from a run names what stopped instead of
                                           # "wasm-function[3286]": the difference between a report that can be acted on and one that
-                                          # cannot, for a few hundred kilobytes over the wire (nothing at run time)
-                                          '--profiling-funcs',
+                                          # cannot, for a few hundred kilobytes over the wire (nothing at run time). The WebGPU
+                                          # build is already paying Asyncify's rewrite, so it leaves the names out
+                                          *([] if WEBGPU else ['--profiling-funcs']),
                                           '-sINVOKE_RUN=0', '-sFORCE_FILESYSTEM=1', '-lidbfs.js',
                                           '-sEXPORTED_RUNTIME_METHODS=callMain,FS,IDBFS,HEAPU8', '--shell-file', 'web/shell.html'] +
                                 (['--profiling-funcs'] if PROFILE else []) +
